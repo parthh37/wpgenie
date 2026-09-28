@@ -31,6 +31,7 @@ define( 'WP_POST_REVISIONS', 20 );
 define( 'WP_REDIS_HOST', '{{.RedisHost}}' );
 define( 'WP_REDIS_PREFIX', '{{.SiteID}}:' );
 define( 'WP_CACHE_KEY_SALT', '{{.SiteID}}:' );
+define( 'DISABLE_WP_CRON', true );         // WPGenie runs cron every minute instead of on page views
 // --- end WPGenie ---
 
 if ( ! defined( 'WP_DEBUG' ) ) {

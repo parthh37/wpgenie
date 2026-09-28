@@ -78,6 +78,21 @@
       <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
       <button class="danger ghost delete">Delete</button>
     </div>
+    <details class="perf">
+      <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
+      <div class="controls">
+        <label>Replicas<select class="replicas"></select></label>
+        <label>Memory / replica<select class="memory"></select></label>
+        <label>CPU / replica<select class="cpus"></select></label>
+        <button class="apply">Apply</button>
+      </div>
+      <p class="muted small">Replicas are rolled one set at a time with no downtime. Each replica gets the full memory and CPU shown.</p>
+      <div class="controls">
+        <label class="check"><input type="checkbox" class="page-cache"> Page cache</label>
+        <label class="check"><input type="checkbox" class="object-cache"> Object cache (Redis)</label>
+        <button class="ghost purge">Purge cache</button>
+      </div>
+    </details>
   </article>
 </template>
 </body>

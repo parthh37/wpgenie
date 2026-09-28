@@ -31,6 +31,13 @@ var (
 type DBProvisioner interface {
 	CreateSiteDB(ctx context.Context, name, user, password string) error
 	DropSiteDB(ctx context.Context, name, user string) error
+	SetConnectionLimit(ctx context.Context, user string, n int) error
+}
+
+// ObjectCache clears keys from the shared object cache. Flushing must never
+// run site code (see runtime.Valkey).
+type ObjectCache interface {
+	FlushPrefix(ctx context.Context, prefix string) error
 }
 
 type ProxyApplier interface {
@@ -43,9 +50,13 @@ type Service struct {
 	Runtime runtime.Runtime
 	DB      DBProvisioner
 	Proxy   ProxyApplier
+	Cache   ObjectCache
 	Log     *slog.Logger
 
-	createMu sync.Mutex // serialises port allocation and provisioning
+	// opsMu serialises everything that allocates ports or starts/stops
+	// containers (create, scale, cache changes): port allocation is only
+	// race-free while the allocated ports are recorded under the same lock.
+	opsMu    sync.Mutex
 	shieldSt atomic.Pointer[map[string]shield.SiteSettings]
 }
 
@@ -100,24 +111,27 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 		in.Name = domain
 	}
 
-	s.createMu.Lock()
-	defer s.createMu.Unlock()
+	s.opsMu.Lock()
+	defer s.opsMu.Unlock()
 
 	if taken, err := s.Store.DomainExists(ctx, domain); err != nil {
 		return nil, nil, err
 	} else if taken {
 		return nil, nil, ErrDomainTaken
 	}
-	port, err := s.Store.NextFPMPort(ctx, s.Cfg.SitePortBase)
+	ports, err := s.Store.AllocatePorts(ctx, s.Cfg.SitePortBase, 1)
 	if err != nil {
 		return nil, nil, err
 	}
+	port := ports[0]
 
 	id := "s" + randString(7, lowerAlnum)
 	st := &store.Site{
 		ID: id, Name: in.Name, PrimaryDomain: domain, PHPVersion: "8.3", FPMPort: port,
 		DBName: "wp_" + id, Status: store.StatusProvisioning,
 		ShieldMode: string(shield.ModeStandard), BlockAIBots: true,
+		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
+		PageCache: true, ObjectCache: true, Upstreams: []int{port},
 	}
 	dbUser, dbPass := "u_"+id, randString(32, passAlphabet)
 	dir, docroot := s.Cfg.SiteDir(id), s.Cfg.SiteRoot(id)
@@ -152,18 +166,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 	}
 	undo = append(undo, func() { os.RemoveAll(dir) })
 
-	err = s.Runtime.StartSite(ctx, runtime.SiteSpec{
-		ID: id, Image: s.Cfg.PHPImage, Dir: dir, Docroot: docroot,
-		HostPort: port, Network: s.Cfg.DockerNetwork,
-	})
+	spec, err := s.specFor(ctx, st)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Registered before starting: a failed `docker run` can still leave a
+	// created container behind.
 	undo = append(undo, func() { c, cancel := bg(); defer cancel(); s.Runtime.RemoveSite(c, id) })
+	if err = s.Runtime.StartReplica(ctx, spec, port); err != nil {
+		return nil, nil, err
+	}
 
 	// The image entrypoint copies WordPress core into the empty docroot on
-	// first start; wait for it before installing.
-	if err = waitForFile(ctx, filepath.Join(docroot, "wp-includes", "version.php"), 90*time.Second); err != nil {
+	// first start and only then execs PHP-FPM, so "FPM is listening" means
+	// the copy is complete. (Waiting for one file to appear raced the copy.)
+	if err = s.waitReady(ctx, []string{runtime.ContainerName(id, port)}, 90*time.Second); err != nil {
 		return nil, nil, err
 	}
 
@@ -179,6 +196,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 		return nil, nil, err
 	}
 
+	if err = s.writeCacheFiles(id, CacheSettings{PageCache: st.PageCache, ObjectCache: st.ObjectCache}); err != nil {
+		return nil, nil, err
+	}
+	if err = s.DB.SetConnectionLimit(ctx, dbUser, dbConnLimit(st.Replicas, spec.MaxChildren)); err != nil {
+		return nil, nil, err
+	}
 	if err = s.Store.SetSiteStatus(ctx, id, store.StatusActive); err != nil {
 		return nil, nil, err
 	}
@@ -237,23 +260,6 @@ func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass string) error {
 	return nil
 }
 
-func waitForFile(ctx context.Context, path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for %s", path)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
 // Delete removes a site. Traffic is cut first (proxy), then the workload,
 // database and files. It keeps going on errors so a half-broken site can
 // always be cleaned up, and reports everything that failed.
@@ -300,7 +306,8 @@ func (s *Service) Sync(ctx context.Context) error {
 		settings[st.ID] = shield.SiteSettings{ID: st.ID, Mode: mode, BlockAIBots: st.BlockAIBots}
 		ps = append(ps, proxy.Site{
 			ID: st.ID, Name: st.Name, Domains: st.Domains, Root: s.Cfg.SiteRoot(st.ID),
-			FPMPort: st.FPMPort, ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: true,
+			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: true,
+			PageCache: st.PageCache,
 		})
 	}
 	// Publish shield settings before the proxy starts routing to new sites.

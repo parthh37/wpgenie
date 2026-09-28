@@ -10,9 +10,10 @@ import (
 
 var testSites = []Site{
 	{ID: "sabc1234", Name: "Blog", Domains: []string{"example.com", "www.example.com"},
-		Root: "/var/lib/wpgenie/sites/sabc1234/public", FPMPort: 19000, ShieldEnabled: true, BlockXMLRPC: true},
+		Root: "/var/lib/wpgenie/sites/sabc1234/public", Upstreams: []string{"127.0.0.1:19000", "127.0.0.1:19007"},
+		ShieldEnabled: true, BlockXMLRPC: true, PageCache: true},
 	{ID: "sdef5678", Name: "Shop", Domains: []string{"shop.test"},
-		Root: "/var/lib/wpgenie/sites/sdef5678/public", FPMPort: 19001},
+		Root: "/var/lib/wpgenie/sites/sdef5678/public", Upstreams: []string{"127.0.0.1:19001"}},
 }
 
 func testCaddy() *Caddy {
@@ -30,7 +31,11 @@ func TestRender(t *testing.T) {
 	s := string(out)
 	for _, want := range []string{
 		"example.com, www.example.com {",
-		"php_fastcgi 127.0.0.1:19000",
+		"php_fastcgi 127.0.0.1:19000 127.0.0.1:19007 {",
+		"lb_policy least_conn",
+		"file /wp-content/cache/wpgenie{path}index.html",
+		"route @wpg_cached {",
+		"|edd_items_in_cart|PHPSESSID)",
 		"forward_auth @wpg_dynamic 127.0.0.1:8088",
 		"header_up X-WPGenie-Site sabc1234",
 		"panel.example.com {",
@@ -40,14 +45,37 @@ func TestRender(t *testing.T) {
 			t.Errorf("rendered Caddyfile missing %q", want)
 		}
 	}
+	blog := s[strings.Index(s, "example.com, www.example.com {"):strings.Index(s, "shop.test {")]
+	if strings.Index(blog, "forward_auth") > strings.Index(blog, "route @wpg_cached") {
+		t.Error("cached pages must be served after the shield check, not before")
+	}
+	if strings.Index(blog, "route @wpg_cached") > strings.Index(blog, "php_fastcgi") {
+		t.Error("cache hits must be served before falling through to PHP")
+	}
 	shop := s[strings.Index(s, "shop.test {"):]
 	if strings.Contains(shop, "forward_auth") {
 		t.Error("shield disabled site must not call forward_auth")
 	}
+	if strings.Contains(shop, "wpg_cached") {
+		t.Error("page cache disabled site must not serve cached pages")
+	}
+	if !strings.Contains(blog, "max_fails 3") || strings.Contains(shop, "fail_duration") {
+		t.Error("passive health checks belong on multi-replica sites only: one failure must not take a single-replica site offline")
+	}
+}
+
+func TestRenderRequiresUpstreams(t *testing.T) {
+	if _, err := testCaddy().Render([]Site{{ID: "x", Domains: []string{"a.test"}}}); err == nil {
+		t.Fatal("a site without upstreams must not render (php_fastcgi would have no backend)")
+	}
+	bad := []Site{{ID: "x", Domains: []string{"a.test"}, Upstreams: []string{"127.0.0.1:1 }"}}}
+	if _, err := testCaddy().Render(bad); err == nil {
+		t.Fatal("expected error for upstream containing Caddyfile syntax")
+	}
 }
 
 func TestRenderRejectsInjection(t *testing.T) {
-	bad := []Site{{ID: "x", Domains: []string{"evil.com {\n respond 200 }"}}}
+	bad := []Site{{ID: "x", Domains: []string{"evil.com {\n respond 200 }"}, Upstreams: []string{"127.0.0.1:1"}}}
 	if _, err := testCaddy().Render(bad); err == nil {
 		t.Fatal("expected error for domain containing Caddyfile syntax")
 	}
