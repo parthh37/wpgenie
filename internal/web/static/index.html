@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WPGenie</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">◆</span> WPGenie</div>
+  <button id="logout" class="ghost" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="login" class="card narrow" hidden>
+    <h1>Sign in</h1>
+    <p class="muted">Paste the API token printed by the installer<br>(also in <code>/etc/wpgenie/config.json</code>).</p>
+    <form id="login-form">
+      <input name="token" type="password" placeholder="API token" autocomplete="current-password" required>
+      <button type="submit">Continue</button>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <div class="bar">
+      <h1>Sites</h1>
+      <button id="new-site-btn">New site</button>
+    </div>
+
+    <form id="new-site" class="card" hidden>
+      <h2>Create a WordPress site</h2>
+      <div class="grid">
+        <label>Domain<input name="domain" placeholder="example.com" required></label>
+        <label>Site title<input name="name" placeholder="My Blog"></label>
+        <label>Admin email<input name="admin_email" type="email" required></label>
+        <label>Admin username <span class="muted">(optional)</span><input name="admin_user" placeholder="random if empty"></label>
+      </div>
+      <p class="muted">Point the domain's A/AAAA record at this server first — the TLS certificate is issued automatically.</p>
+      <div class="actions">
+        <button type="button" class="ghost" id="cancel-new">Cancel</button>
+        <button type="submit">Create site</button>
+      </div>
+    </form>
+
+    <div id="creds" class="card notice" hidden></div>
+    <div id="error" class="card error" hidden></div>
+    <div id="sites" class="sites"></div>
+    <p id="empty" class="muted center" hidden>No sites yet. Create your first one.</p>
+  </section>
+</main>
+
+<template id="site-tpl">
+  <article class="card site">
+    <div class="site-head">
+      <div>
+        <a class="domain" target="_blank" rel="noopener"></a>
+        <div class="muted small id"></div>
+      </div>
+      <span class="pill status"></span>
+    </div>
+    <dl class="stats">
+      <div><dt>Visitors 24h</dt><dd data-k="visitors">–</dd></div>
+      <div><dt>Page views</dt><dd data-k="page_views">–</dd></div>
+      <div><dt>Bandwidth</dt><dd data-k="bytes_out">–</dd></div>
+      <div><dt>Blocked</dt><dd data-k="blocked">–</dd></div>
+      <div><dt>Bot hits</dt><dd data-k="bot_hits">–</dd></div>
+    </dl>
+    <div class="controls">
+      <label>Shield
+        <select class="mode">
+          <option value="off">Off</option>
+          <option value="standard">Standard</option>
+          <option value="under_attack">Under attack</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
+      <button class="danger ghost delete">Delete</button>
+    </div>
+  </article>
+</template>
+</body>
+</html>

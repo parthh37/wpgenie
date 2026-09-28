@@ -1,0 +1,29 @@
+[Unit]
+Description=WPGenie control plane
+Documentation=https://github.com/parthh37/wpgenie
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wpgenie serve
+Environment=WPGENIE_CONFIG=/etc/wpgenie/config.json
+Environment=DOCKER_CONFIG=/var/lib/wpgenie/.docker
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+# Runs as root (it manages Docker and file ownership), so fence it in.
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/etc/wpgenie /var/lib/wpgenie /var/log/wpgenie
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

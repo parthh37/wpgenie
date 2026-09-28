@@ -1,0 +1,52 @@
+# WPGenie shared infrastructure. Site containers (wpg-<id>) are created by the
+# wpgenie daemon, not by compose. Managed by `install.sh`; paths are fixed.
+name: wpgenie
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: wpgenie-caddy
+    # Host networking: real client IPs for the shield and analytics, no
+    # docker-proxy hop, and Caddy reaches wpgenie + PHP-FPM on 127.0.0.1.
+    network_mode: host
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - /etc/wpgenie/caddy:/etc/caddy:ro
+      - /var/lib/wpgenie/caddy:/data # certificates and ACME account
+      - /var/lib/wpgenie/sites:/var/lib/wpgenie/sites:ro
+      - /var/log/wpgenie:/var/log/wpgenie
+
+  mariadb:
+    image: mariadb:11.4
+    container_name: wpgenie-mariadb
+    restart: unless-stopped
+    networks: [wpgenie]
+    ports: ["127.0.0.1:3306:3306"] # loopback only: for the wpgenie daemon
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?run install.sh}
+      MARIADB_AUTO_UPGRADE: "1"
+    command:
+      - --innodb-buffer-pool-size=${MARIADB_BUFFER_POOL:-256M}
+      - --max-connections=300
+      - --skip-name-resolve
+      - --performance-schema=OFF
+    volumes:
+      - /var/lib/wpgenie/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: valkey/valkey:8-alpine
+    container_name: wpgenie-redis
+    restart: unless-stopped
+    networks: [wpgenie]
+    # Pure cache: no persistence, evict least-recently-used keys when full.
+    command: ["valkey-server", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+
+networks:
+  wpgenie:
+    name: wpgenie

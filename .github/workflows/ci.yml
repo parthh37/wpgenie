@@ -1,0 +1,48 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go vet ./...
+      - name: test (incl. Caddyfile validation against real Caddy)
+        run: go test -race -count=1 ./...
+        env:
+          WPGENIE_TEST_DOCKER: "1"
+      - run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/wpgenie
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck deploy/install.sh
+      - run: MARIADB_ROOT_PASSWORD=x docker compose -f deploy/docker-compose.yml config -q
+
+  php-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t wpgenie/php:8.3 images/php
+      - name: smoke test (hardened flags)
+        run: |
+          mkdir -p /tmp/s1/public && chmod -R 777 /tmp/s1
+          docker run -d --name php --user 82:82 --cap-drop ALL --security-opt no-new-privileges \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid --tmpfs /var/www/html:ro,noexec,nosuid,size=64k \
+            -v /tmp/s1:/tmp/s1 -w /tmp/s1/public -e WPG_ROOT=/tmp/s1 wpgenie/php:8.3 php-fpm
+          for i in $(seq 1 30); do test -f /tmp/s1/public/wp-includes/version.php && break; sleep 1; done
+          test -f /tmp/s1/public/wp-includes/version.php
+          docker exec php wp --version
+          docker logs php 2>&1 | grep -q "ready to handle connections"

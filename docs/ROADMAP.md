@@ -1,0 +1,60 @@
+# Roadmap
+
+Phases are ordered by what makes WPGenie safe to run real sites on. Each item is a good first
+issue candidate once its phase starts.
+
+## Phase 0 — Foundation ✅ (v0.1)
+- [x] Installer, compose stack, systemd unit
+- [x] Site create/delete with full rollback on failure
+- [x] Hardened per-site PHP-FPM containers + WP-CLI image
+- [x] Caddy auto-TLS, generated config, live reload
+- [x] Shield: bot/AI classification, FCrDNS crawler verification, rate limiting, PoW challenge
+- [ ] Shield policy (`shield.Decide`) — in progress
+- [x] Analytics: visitors (HLL), page views, bandwidth, bot hits, shield blocks
+- [x] Dashboard, REST API, CLI
+
+## Phase 1 — Security & maintenance
+- [ ] **WAF**: custom Caddy build with Coraza + OWASP Core Rule Set, per-site paranoia level
+- [ ] **Vulnerability checks**: nightly `wp plugin/theme/core list` → match against
+      [WPVulnerability.net](https://www.wpvulnerability.net/) (free, no key) and optionally
+      Wordfence Intelligence / Patchstack; alert + dashboard badges
+- [ ] **Plugin analyser**: inventory, abandoned plugins (not updated in 2y / closed on wp.org),
+      nulled/modified detection via `wp plugin verify-checksums`, performance cost per plugin
+- [ ] **Update manager**: scheduled updates → snapshot → update → HTTP + visual health check →
+      auto-rollback on failure (WP Engine Smart Plugin Manager equivalent)
+- [ ] **Malware / integrity scanning**: `wp core verify-checksums`, new-PHP-file alerts in uploads
+- [ ] Panel users with roles, TOTP 2FA, sessions, audit log
+- [ ] Global IP reputation (crowd-sourced blocklists), country rules, per-site allow/deny lists
+- [ ] Shield settings per site: xmlrpc toggle, custom rate limits, challenge difficulty
+
+## Phase 2 — Backups & environments
+- [ ] Backups with restic (dedup + encryption): files + `mysqldump`, to local/S3/B2/SFTP
+- [ ] Retention policies, one-click restore, download backup
+- [ ] Automatic pre-update snapshots (used by the update manager)
+- [ ] Staging environments: clone, search-replace URLs, push staging → live (files/DB selective)
+- [ ] Per-site SFTP (chrooted), Adminer on demand with short-lived tokens
+- [ ] Domain aliases, www ↔ apex redirects, custom SSL certificates
+- [ ] PHP version switching (8.2 / 8.3 / 8.4), per-site PHP settings
+- [ ] Job queue for long operations (create/backup/restore) with progress in the UI
+
+## Phase 3 — Performance
+- [ ] Full-page cache in Caddy (Souin cache-handler) + mu-plugin for purge on publish
+- [ ] Auto-enable Redis object cache drop-in
+- [ ] WebP/AVIF conversion, lazy-loading, Brotli/zstd (zstd done)
+- [ ] CDN integration (Cloudflare/Bunny) with automatic purge
+- [ ] Per-site slow-request / PHP error insights
+
+## Phase 4 — Email
+- [ ] Stalwart mail server (SMTP/IMAP/JMAP) as an optional stack component
+- [ ] Mailboxes and aliases per domain, webmail (SnappyMail)
+- [ ] Automatic DKIM keys, SPF/DMARC record guidance and verification
+- [ ] Outbound relay for `wp_mail` (per-site SMTP credentials, rate limits)
+- Note: many clouds block outbound port 25 — relay-through-provider (SES, Postmark, …) must be a
+  first-class option.
+
+## Phase 5 — Scale
+- [ ] `wpgenie agent` + mTLS control channel; `runtime.RemoteAgent`
+- [ ] Node placement, site migration between nodes
+- [ ] Postgres store for multi-node control plane
+- [ ] Prometheus metrics, alerting (uptime, cert expiry, disk)
+- [ ] Bandwidth quotas and billing hooks (WHMCS/Stripe), reseller accounts
