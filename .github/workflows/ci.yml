@@ -38,17 +38,25 @@ jobs:
       - run: docker build -t wpgenie/php:8.3 images/php
       - name: smoke test (hardened flags)
         run: |
-          mkdir -p /tmp/s1/public && chmod -R 777 /tmp/s1
+          # Same layout site.prepareFiles creates: dir root:82 0750, docroot
+          # 82:82. The image entrypoint's tar must own the docroot (it chmods
+          # it), so a runner-owned 777 dir makes the container exit at once.
+          sudo mkdir -p /tmp/s1/public
+          sudo chown 0:82 /tmp/s1 && sudo chmod 0750 /tmp/s1
+          sudo chown 82:82 /tmp/s1/public && sudo chmod 0755 /tmp/s1/public
           docker run -d --name php --user 82:82 --cap-drop ALL --security-opt no-new-privileges \
             --read-only --tmpfs /tmp:rw,noexec,nosuid --tmpfs /var/www/html:ro,noexec,nosuid,size=64k \
             -v /tmp/s1:/tmp/s1 -w /tmp/s1/public -e WPG_ROOT=/tmp/s1 -e WPG_MAX_CHILDREN=7 wpgenie/php:8.3 php-fpm
           # The entrypoint copies WordPress, then execs PHP-FPM: "ready" means both are done.
           for i in $(seq 1 60); do docker logs php 2>&1 | grep -q "ready to handle connections" && break; sleep 1; done
           docker logs php 2>&1 | grep -q "ready to handle connections"
-          test -f /tmp/s1/public/wp-includes/version.php
+          docker exec php test -f /tmp/s1/public/wp-includes/version.php
           docker exec php wp --version
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php
           # WPG_MAX_CHILDREN reaches the pool; the cron jail applies open_basedir.
           docker exec php php-fpm -tt 2>&1 | grep -q "pm.max_children = 7"
           docker exec -e PHP_INI_SCAN_DIR=:/usr/local/etc/php/jail.d php php -r 'exit(ini_get("open_basedir") === "/tmp/s1:/tmp:/usr/src/wordpress:/usr/local/share/wpgenie" ? 0 : 1);'
+      - name: container logs
+        if: failure()
+        run: docker ps -a --filter name=php && docker logs php 2>&1 | tail -50
