@@ -26,6 +26,8 @@ type Ingester struct {
 	// a large backlog (e.g. after downtime).
 	MaxBytesPerTick int64
 	Logger          *slog.Logger
+	// Recent, if set, receives every PHP response time once committed.
+	Recent *Recent
 }
 
 func (in *Ingester) defaults() {
@@ -85,8 +87,14 @@ func (in *Ingester) tick(ctx context.Context, st store.IngestState, agg *aggrega
 	if next == st {
 		return st, nil
 	}
-	if err := in.Store.ApplyTraffic(ctx, agg.batch(next)); err != nil {
+	b, obs := agg.batch(next)
+	if err := in.Store.ApplyTraffic(ctx, b); err != nil {
 		return st, err
+	}
+	if in.Recent != nil {
+		for _, o := range obs {
+			in.Recent.Observe(o.site, o.at, o.ms)
+		}
 	}
 	return next, nil
 }

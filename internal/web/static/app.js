@@ -138,6 +138,7 @@ function renderSite(site) {
   renderPerf(el, site);
   renderAutoscale(el, site);
   renderCDN(el, site);
+  renderInsights(el, site);
   renderSecurity(el, site);
   renderPlugins(el, site);
   renderUpdates(el, site);
@@ -193,18 +194,38 @@ function renderPerf(el, site) {
     } catch (e) { showError(e); apply.disabled = false; apply.textContent = 'Apply'; }
   });
 
-  const page = $('.page-cache', el), object = $('.object-cache', el);
+  const page = $('.page-cache', el), object = $('.object-cache', el), mobile = $('.cache-mobile', el);
   page.checked = site.page_cache;
   object.checked = site.object_cache;
+  mobile.checked = site.cache_mobile;
+  mobile.disabled = mobile.disabled || !site.page_cache;
   const saveCache = async () => {
-    page.disabled = object.disabled = true;
+    page.disabled = object.disabled = mobile.disabled = true;
     try {
-      await api('PUT', `/sites/${site.id}/cache`, { page_cache: page.checked, object_cache: object.checked });
+      await api('PUT', `/sites/${site.id}/cache`, { page_cache: page.checked, object_cache: object.checked, mobile: mobile.checked });
       await load();
     } catch (e) { showError(e); await load(); }
   };
   page.addEventListener('change', saveCache);
   object.addEventListener('change', saveCache);
+  mobile.addEventListener('change', saveCache);
+
+  const images = $('.images', el), convert = $('.images-convert', el);
+  images.value = (site.image_formats || []).join(',');
+  convert.hidden = !images.value;
+  if (images.value) $('.shape', el).textContent += ' · ' + images.value.toUpperCase().replace(',', '/');
+  images.addEventListener('change', async () => {
+    images.disabled = true;
+    try {
+      const res = await api('PUT', `/sites/${site.id}/images`, { formats: images.value ? images.value.split(',') : [] });
+      if (res.job_id) followJob(res.job_id, () => load());
+      await load();
+    } catch (e) { showError(e); await load(); }
+  });
+  convert.addEventListener('click', async () => {
+    convert.disabled = true;
+    try { await startJob('POST', `/sites/${site.id}/images/convert`); } catch (e) { showError(e); convert.disabled = false; }
+  });
 
   const purge = $('.purge', el);
   purge.addEventListener('click', async () => {
@@ -215,42 +236,77 @@ function renderPerf(el, site) {
   });
 }
 
+const CDN_NAMES = { cloudflare: 'Cloudflare', bunny: 'bunny.net', generic: 'pull zone' };
+
 function renderCDN(el, site) {
-  const details = $('.cdn', el), box = $('.cdn-status', el), token = $('.cdn-token', el);
-  const save = $('.cdn-save', el), purge = $('.cdn-purge', el), off = $('.cdn-off', el);
+  const f = (c) => $('.' + c, el);
+  const details = f('cdn'), box = f('cdn-status'), provider = f('cdn-provider'), token = f('cdn-token');
+  const zone = f('cdn-zone'), host = f('cdn-host'), edge = f('cdn-edge');
+  const save = f('cdn-save'), purge = f('cdn-purge'), off = f('cdn-off');
   const active = site.status === 'active';
-  [token, save, purge, off].forEach((c) => { c.disabled = !active; });
+  [provider, token, zone, host, edge, save, purge, off].forEach((c) => { c.disabled = !active; });
+  f('cdn-origin').textContent = 'https://' + site.primary_domain;
+  f('cdn-example').textContent = 'cdn.' + site.primary_domain;
+  let current = { provider: '' };
+  // Only the fields the chosen provider uses.
+  const layout = () => {
+    const p = provider.value, cf = p === 'cloudflare', same = p === current.provider;
+    f('cdn-help-cloudflare').hidden = !cf;
+    f('cdn-help-pull').hidden = cf;
+    f('cdn-bunny-only').hidden = p !== 'bunny';
+    f('cdn-token-label').hidden = p === 'generic';
+    f('cdn-token-label').firstChild.textContent = p === 'bunny' ? 'API key' : 'API token';
+    f('cdn-zone-label').hidden = p !== 'bunny';
+    f('cdn-host-label').hidden = cf;
+    f('cdn-edge-label').hidden = f('cdn-edge-note').hidden = !cf;
+    token.placeholder = same ? 'unchanged if empty' : p === 'bunny' ? 'paste the bunny.net API key' : 'paste a Cloudflare API token';
+  };
+  provider.addEventListener('change', layout);
   const show = (st) => {
-    const on = st.provider === 'cloudflare';
-    $('.cdn-summary', el).textContent = on ? '· Cloudflare, purging on' : '· Cloudflare (free plan)';
-    purge.hidden = off.hidden = !on;
-    token.placeholder = on ? 'unchanged if empty' : 'paste a Cloudflare API token';
+    current = st;
+    const on = !!st.provider;
+    if (on) provider.value = st.provider;
+    host.value = st.asset_host || '';
+    zone.value = st.pull_zone || '';
+    edge.checked = !!st.edge_html;
+    layout();
+    f('cdn-summary').textContent = !on ? '· off' : st.provider === 'cloudflare'
+      ? `· Cloudflare, purging on${st.edge_html ? ', pages at the edge' : ''}` : `· ${CDN_NAMES[st.provider]} at ${st.asset_host}`;
+    purge.hidden = !on || st.provider === 'generic';
+    off.hidden = !on;
     const proxied = { yes: 'ok', no: 'failed', partly: 'failed', unknown: 'unknown' };
     const ssl = { strict: 'ok', full: 'warning', flexible: 'failed', off: 'failed' };
-    box.replaceChildren(
-      table(['Domain', 'Through Cloudflare', 'SSL/TLS mode'], st.domains.map((d) => [
+    // fill() skips the nulls replaceChildren would print. The Cloudflare
+    // table is about the whole site: not what a pull zone is.
+    const pull = st.provider === 'bunny' || st.provider === 'generic';
+    fill(box,
+      pull ? null : table(['Domain', 'Through Cloudflare', 'SSL/TLS mode'], st.domains.map((d) => [
         d.domain,
         h('td', { title: d.addrs.join(', ') }, h('span', { class: 'st-' + proxied[d.proxied] }, d.proxied)),
         d.ssl_mode ? h('td', {}, h('span', { class: 'st-' + (ssl[d.ssl_mode] || 'unknown') }, d.ssl_mode)) : '–',
       ])),
-      on ? h('p', { class: 'muted small' }, st.purged_at ? `Last purged ${fmtTime(st.purged_at)}.` : 'Not purged yet.') : null,
+      on && st.provider !== 'generic' ? h('p', { class: 'muted small' }, st.purged_at ? `Last purged ${fmtTime(st.purged_at)}.` : 'Not purged yet.') : null,
       st.last_error ? h('p', { class: 'st-failed small' }, 'Last purge failed: ' + st.last_error) : null,
       ...st.warnings.map((w) => h('p', { class: 'small st-warning' }, '⚠ ' + w)),
     );
   };
   const refresh = async () => {
-    box.replaceChildren(h('p', { class: 'muted small' }, 'Checking DNS and Cloudflare…'));
+    box.replaceChildren(h('p', { class: 'muted small' }, 'Checking DNS and the CDN…'));
     try { show(await api('GET', `/sites/${site.id}/cdn`)); } catch (e) { box.replaceChildren(); showError(e); }
   };
   details.addEventListener('toggle', () => { if (details.open && active) refresh(); });
+  layout();
   save.addEventListener('click', async () => {
     save.disabled = true;
-    save.textContent = 'Checking token…';
+    save.textContent = 'Checking…';
     try {
-      show(await api('PUT', `/sites/${site.id}/cdn`, { provider: 'cloudflare', api_token: token.value.trim() }));
+      show(await api('PUT', `/sites/${site.id}/cdn`, {
+        provider: provider.value, api_token: token.value.trim(), asset_host: host.value.trim(),
+        pull_zone: zone.value.trim(), edge_html: provider.value === 'cloudflare' && edge.checked,
+      }));
       token.value = '';
     } catch (e) { showError(e); }
-    finally { save.disabled = false; save.textContent = 'Save token'; }
+    finally { save.disabled = false; save.textContent = 'Save'; }
   });
   purge.addEventListener('click', async () => {
     purge.disabled = true;
@@ -259,7 +315,10 @@ function renderCDN(el, site) {
     finally { setTimeout(() => { purge.disabled = false; purge.textContent = 'Purge CDN'; }, 1500); }
   });
   off.addEventListener('click', async () => {
-    if (!confirm('Stop purging Cloudflare\'s cache for this site? The stored API token is deleted. Cloudflare keeps serving the site.')) return;
+    const msg = current.provider === 'cloudflare'
+      ? 'Stop purging Cloudflare\'s cache for this site? The stored API token is deleted (and the edge cache rule removed). Cloudflare keeps serving the site.'
+      : 'Stop using the CDN? Static files are served from this server again; stored keys are deleted.';
+    if (!confirm(msg)) return;
     try { show(await api('PUT', `/sites/${site.id}/cdn`, { provider: '' })); } catch (e) { showError(e); }
   });
 }
@@ -284,16 +343,21 @@ async function loadCPU(site) {
     const m = await api('GET', `/sites/${site.id}/metrics`);
     const el = document.querySelector(`[data-id="${site.id}"]`);
     if (!el) return;
-    $('[data-k="cpu"]', el).textContent = m.cpu ? `${m.cpu.percent}%` : '–';
-    $('.cpu-line', el).textContent = m.cpu
-      ? `CPU: ${m.cpu.percent}% of each replica's allowance across ${m.cpu.replicas} replica(s), sampled ${fmtTime(m.cpu.at)}.`
-      : '';
+    const c = m.cpu;
+    $('[data-k="cpu"]', el).textContent = c ? `${c.percent}%` : '–';
+    const parts = c ? [`CPU ${c.percent}% of each replica's allowance across ${c.replicas} replica(s)`] : [];
+    if (c && c.workers_percent != null) parts.push(`PHP workers ${c.workers_percent}% busy` + (c.queued ? `, ${c.queued} request(s) waiting` : ''));
+    if (c && c.p95_ms != null) parts.push(`95% of the last minute's ${c.responses} responses within ${Math.round(c.p95_ms)} ms`);
+    $('.cpu-line', el).textContent = c ? `${parts.join(' · ')}; sampled ${fmtTime(c.at)}.` : '';
   } catch (e) { /* best-effort */ }
 }
 
 function renderAutoscale(el, site) {
   const on = $('.autoscale', el), min = $('.as-min', el), max = $('.as-max', el), target = $('.as-target', el);
+  const workers = $('.as-workers', el), ms = $('.as-ms', el);
   on.checked = site.autoscale;
+  workers.value = site.target_workers || 0;
+  ms.value = site.target_response_ms || 0;
   min.value = site.min_replicas;
   // Suggest room to grow when turning it on; the server enforces its own limit.
   max.value = site.autoscale ? site.max_replicas : Math.max(site.replicas, site.max_replicas, 2);
@@ -308,6 +372,7 @@ function renderAutoscale(el, site) {
     try {
       await api('PUT', `/sites/${site.id}/autoscale`, {
         enabled: on.checked, min_replicas: Number(min.value), max_replicas: Number(max.value), target_cpu: Number(target.value),
+        target_workers: Number(workers.value || 0), target_response_ms: Number(ms.value || 0),
       });
       await load();
     } catch (e) { showError(e); save.disabled = false; }

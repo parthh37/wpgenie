@@ -246,6 +246,11 @@ func (s *Service) push(ctx context.Context, liveID, stagingID string, in PushInp
 		if err := s.pushDB(ctx, stg, live, in.Tables); err != nil {
 			return fail(err)
 		}
+		// Now, not with the purge below: the option update next reads the
+		// cached value, and WordPress skips writing one that looks unchanged.
+		if err := s.flushObjectCache(ctx, liveID); err != nil {
+			return fail(err)
+		}
 		v := strings.TrimSpace(public.String())
 		if v != "0" {
 			v = "1"

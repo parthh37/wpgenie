@@ -12,6 +12,13 @@
  *
  * Any content change purges the whole cache: always correct, and warming it
  * again costs one PHP render per page.
+ *
+ * Pages whose HTML depends on the device (the theme or a plugin asked
+ * wp_is_mobile() while rendering) are stored twice, as index-mobile.html and
+ * index-desktop.html, and Caddy picks one with wp_is_mobile()'s own rule
+ * (WPGENIE_CACHE_MOBILE_UA). Sites whose theme sniffs the User-Agent itself
+ * set WPGENIE_CACHE_MOBILE_ALWAYS (panel: "separate mobile cache") to store
+ * every page that way.
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -30,6 +37,35 @@ const WPGENIE_CACHE_BYPASS_COOKIES = '/^(wordpress_logged_in_|wordpress_sec_|wp-
 // other cookie might personalise the page (recently viewed products, a cart,
 // a session), and a stored page is served to everyone.
 const WPGENIE_CACHE_STORE_COOKIES = '/^(_ga|_gid|_gat|_gcl_|_fbp|_fbc|_hj|_pk_|_clck|_clsk|_uet|__utm|wordpress_test_cookie$|wp_lang$)/';
+// wp_is_mobile()'s User-Agent rule. Mirrored exactly in the Caddy config
+// (proxy.MobileUA), which picks the copy to serve with it.
+const WPGENIE_CACHE_MOBILE_UA = '#Mobile|Android|Silk/|Kindle|BlackBerry|Opera Mini|Opera Mobi#';
+
+/**
+ * Whether Caddy treats this request as mobile: the Sec-CH-UA-Mobile client
+ * hint when it is sent, else the User-Agent. Deliberately not
+ * wp_is_mobile(), which plugins can filter: storing must follow the rule
+ * Caddy serves by.
+ */
+function wpgenie_cache_is_mobile(): bool {
+	$hint = (string) ( $_SERVER['HTTP_SEC_CH_UA_MOBILE'] ?? '' );
+	if ( $hint !== '' ) {
+		return $hint === '?1';
+	}
+	return (bool) preg_match( WPGENIE_CACHE_MOBILE_UA, (string) ( $_SERVER['HTTP_USER_AGENT'] ?? '' ) );
+}
+
+// Set when anything asks wp_is_mobile() during the render: the page may
+// differ between phones and computers.
+$GLOBALS['wpgenie_cache_device'] = false;
+add_filter(
+	'wp_is_mobile',
+	static function ( $is_mobile ) {
+		$GLOBALS['wpgenie_cache_device'] = true;
+		return $is_mobile;
+	},
+	PHP_INT_MAX
+);
 
 /**
  * The URL path this request would be cached under, or null if the request
@@ -99,6 +135,16 @@ function wpgenie_cache_store( string $path, string $html ): void {
 	if ( stripos( $html, '</html>' ) === false ) {
 		return; // fatal error or truncated output
 	}
+	$name = 'index.html';
+	if ( $GLOBALS['wpgenie_cache_device'] || ( defined( 'WPGENIE_CACHE_MOBILE_ALWAYS' ) && WPGENIE_CACHE_MOBILE_ALWAYS ) ) {
+		$mobile = wpgenie_cache_is_mobile();
+		// A filtered wp_is_mobile() that disagrees with the rule Caddy
+		// serves by would put this page in front of the other device type.
+		if ( wp_is_mobile() !== $mobile ) {
+			return;
+		}
+		$name = $mobile ? 'index-mobile.html' : 'index-desktop.html';
+	}
 	// A purge that happened while this page was rendering means the HTML may
 	// already be stale: don't resurrect it.
 	clearstatcache( true, WPGENIE_CACHE_MARKER );
@@ -110,13 +156,28 @@ function wpgenie_cache_store( string $path, string $html ): void {
 	if ( ! wp_mkdir_p( $dir ) ) {
 		return;
 	}
-	// Write-then-rename: Caddy never serves a half-written file.
-	$tmp = $dir . '.index.' . bin2hex( random_bytes( 6 ) ) . '.tmp';
 	$out = $html . "\n<!-- WPGenie page cache: " . gmdate( 'c' ) . " -->\n";
-	if ( @file_put_contents( $tmp, $out ) === strlen( $out ) ) {
-		@rename( $tmp, $dir . 'index.html' );
+	// Compressed copies first: Caddy only looks for them once the page
+	// itself exists, and a copy that can't be made must not be left stale.
+	$copies = [ '.gz' => gzencode( $out, 9 ) ];
+	$copies['.br'] = function_exists( 'brotli_compress' ) ? brotli_compress( $out, 11, BROTLI_TEXT ) : false;
+	foreach ( $copies as $ext => $data ) {
+		if ( ! is_string( $data ) || ! wpgenie_cache_write( $dir . $name . $ext, $data ) ) {
+			@unlink( $dir . $name . $ext );
+		}
 	}
+	if ( wpgenie_cache_write( $dir . $name, $out ) && $name !== 'index.html' ) {
+		// Now device-specific: an older copy for every device must not win.
+		@unlink( $dir . 'index.html' );
+	}
+}
+
+/** Write-then-rename: Caddy never serves a half-written file. */
+function wpgenie_cache_write( string $file, string $data ): bool {
+	$tmp = dirname( $file ) . '/.' . basename( $file ) . '.' . bin2hex( random_bytes( 6 ) ) . '.tmp';
+	$ok  = @file_put_contents( $tmp, $data ) === strlen( $data ) && @rename( $tmp, $file );
 	@unlink( $tmp );
+	return $ok;
 }
 
 function wpgenie_cache_purge(): void {
@@ -169,7 +230,57 @@ if ( wp_doing_cron() && ! wp_next_scheduled( 'wpgenie_cache_prune' ) ) {
 
 // --- Purge triggers -------------------------------------------------------
 // Developers can call do_action( 'wpgenie_purge_cache' ) from their own code.
+// These hooks also fire for WP-CLI: --skip-plugins still loads mu-plugins.
 add_action( 'wpgenie_purge_cache', 'wpgenie_cache_purge' );
+
+// "Purge cache" in the admin bar, for anyone who may edit others' content:
+// for changes no hook sees (a page builder's global block, a plugin's own
+// settings). Purging touches the marker, so the CDN follows (the daemon
+// watches it).
+const WPGENIE_PURGE_CAP = 'edit_others_posts';
+add_action(
+	'admin_bar_menu',
+	static function ( $bar ): void {
+		if ( ! current_user_can( WPGENIE_PURGE_CAP ) ) {
+			return;
+		}
+		$back = ( is_admin() ? '' : home_url( wp_unslash( $_SERVER['REQUEST_URI'] ?? '/' ) ) );
+		$bar->add_node(
+			[
+				'id'    => 'wpgenie-purge',
+				'title' => 'Purge cache',
+				'href'  => wp_nonce_url( add_query_arg( [ 'action' => 'wpgenie_purge', 'back' => rawurlencode( $back ) ], admin_url( 'admin-post.php' ) ), 'wpgenie_purge' ),
+				'meta'  => [ 'title' => 'Empty the page cache, object cache and CDN (WPGenie)' ],
+			]
+		);
+	},
+	100
+);
+add_action(
+	'admin_post_wpgenie_purge',
+	static function (): void {
+		check_admin_referer( 'wpgenie_purge' );
+		if ( ! current_user_can( WPGENIE_PURGE_CAP ) ) {
+			wp_die( 'You are not allowed to purge the cache.', 403 );
+		}
+		wpgenie_cache_purge();
+		if ( wp_using_ext_object_cache() ) {
+			wp_cache_flush(); // this site's keys only (WP_REDIS_SELECTIVE_FLUSH)
+		}
+		// wp_safe_redirect() only goes to this site's own hosts.
+		$back = isset( $_GET['back'] ) ? wp_unslash( (string) $_GET['back'] ) : '';
+		wp_safe_redirect( $back !== '' ? $back : add_query_arg( 'wpgenie-purged', '1', wp_get_referer() ?: admin_url() ) );
+		exit;
+	}
+);
+add_action(
+	'admin_notices',
+	static function (): void {
+		if ( isset( $_GET['wpgenie-purged'] ) && current_user_can( WPGENIE_PURGE_CAP ) ) {
+			echo '<div class="notice notice-success is-dismissible"><p>Cache purged: pages are rendered afresh on their next visit.</p></div>';
+		}
+	}
+);
 
 add_action(
 	'transition_post_status',

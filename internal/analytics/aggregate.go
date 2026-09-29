@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/textproto"
+	"path"
 	"strings"
 	"time"
 
@@ -27,8 +28,10 @@ type entry struct {
 		RemoteIP string              `json:"remote_ip"`
 		Host     string              `json:"host"`
 		Method   string              `json:"method"`
+		URI      string              `json:"uri"`
 		Headers  map[string][]string `json:"headers"`
 	} `json:"request"`
+	Duration    float64             `json:"duration"` // seconds
 	Size        int64               `json:"size"`
 	Status      int                 `json:"status"`
 	RespHeaders map[string][]string `json:"resp_headers"`
@@ -63,6 +66,17 @@ type aggregator struct {
 	secret   []byte
 	hourly   map[store.HourKey]*store.Counters
 	visitors map[store.DayKey]*hyperloglog.Sketch
+	perf     map[store.HourKey]*store.PerfCounters
+	slow     map[store.SlowKey]*store.SlowAgg
+	// recent are this batch's PHP response times, handed to Recent once
+	// the batch is committed (a failed batch is read again).
+	recent []observation
+}
+
+type observation struct {
+	site string
+	at   time.Time
+	ms   float64
 }
 
 func newAggregator(secret []byte) *aggregator {
@@ -74,6 +88,9 @@ func newAggregator(secret []byte) *aggregator {
 func (a *aggregator) reset() {
 	a.hourly = map[store.HourKey]*store.Counters{}
 	a.visitors = map[store.DayKey]*hyperloglog.Sketch{}
+	a.perf = map[store.HourKey]*store.PerfCounters{}
+	a.slow = map[store.SlowKey]*store.SlowAgg{}
+	a.recent = nil
 }
 
 func (a *aggregator) add(siteID string, e *entry) {
@@ -96,6 +113,7 @@ func (a *aggregator) add(siteID string, e *entry) {
 		c.Blocked++
 		return // challenged/blocked requests are neither page views nor visitors
 	}
+	a.addPerf(siteID, hk, ts, e)
 	if class.IsBot() {
 		c.BotHits++
 		return
@@ -136,8 +154,79 @@ func (a *aggregator) visitorID(day int64, ip, ua string) []byte {
 
 func (a *aggregator) empty() bool { return len(a.hourly) == 0 && len(a.visitors) == 0 }
 
-func (a *aggregator) batch(st store.IngestState) *store.TrafficBatch {
-	b := &store.TrafficBatch{Hourly: a.hourly, Visitors: a.visitors, State: st}
+// batch hands over the counters (and the response times for Recent).
+func (a *aggregator) batch(st store.IngestState) (*store.TrafficBatch, []observation) {
+	b := &store.TrafficBatch{Hourly: a.hourly, Visitors: a.visitors, Perf: a.perf, Slow: a.slow, State: st}
+	obs := a.recent
 	a.reset()
-	return b
+	return b, obs
+}
+
+// staticExt are the files Caddy serves from disk without the shield or PHP
+// (the Caddyfile's @wpg_dynamic exceptions).
+var staticExt = map[string]bool{
+	".css": true, ".js": true, ".mjs": true, ".map": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".webp": true, ".avif": true, ".svg": true, ".ico": true, ".woff": true, ".woff2": true, ".ttf": true, ".otf": true,
+	".eot": true, ".mp4": true, ".webm": true, ".mp3": true, ".pdf": true,
+}
+
+// requestKind tells page cache hits and PHP responses apart from everything
+// else Caddy answers itself (static files, its own 404s and redirects,
+// WPGenie's endpoints). PHP always sends a Content-Type; a missing static
+// file falls through to WordPress, whose 404 page is HTML.
+func requestKind(e *entry) (hit, php bool) {
+	switch first(e.RespHeaders, "X-WPGenie-Cache") {
+	case "HIT":
+		return true, false
+	case "MISS", "BYPASS":
+		return false, true
+	}
+	p, _, _ := strings.Cut(e.Request.URI, "?")
+	ct := first(e.RespHeaders, "Content-Type")
+	if ct == "" || strings.HasPrefix(p, "/_shield/") || strings.HasPrefix(p, "/_wpgenie/") {
+		return false, false
+	}
+	if staticExt[strings.ToLower(path.Ext(p))] && !strings.Contains(p, ".php") && !strings.HasPrefix(ct, "text/html") {
+		return false, false
+	}
+	return false, true
+}
+
+func (a *aggregator) addPerf(siteID string, hk store.HourKey, ts time.Time, e *entry) {
+	hit, php := requestKind(e)
+	if !hit && !php {
+		return
+	}
+	p := a.perf[hk]
+	if p == nil {
+		p = &store.PerfCounters{}
+		a.perf[hk] = p
+	}
+	if hit {
+		p.CacheHits++
+		return
+	}
+	if first(e.RespHeaders, "X-WPGenie-Cache") == "MISS" {
+		p.CacheMisses++
+	}
+	ms := int64(e.Duration*1000 + 0.5)
+	p.PHPRequests++
+	p.PHPMS += ms
+	p.Hist[store.LatencyBucket(ms)]++
+	a.recent = append(a.recent, observation{siteID, ts, float64(ms)})
+	if ms < store.SlowMS {
+		return
+	}
+	p.Slow++
+	u, _, _ := strings.Cut(e.Request.URI, "?")
+	if len(u) > 300 {
+		u = u[:300]
+	}
+	k := store.SlowKey{SiteID: siteID, Method: e.Request.Method, Path: strings.ToValidUTF8(u, "?")}
+	sa := a.slow[k]
+	if sa == nil {
+		sa = &store.SlowAgg{}
+		a.slow[k] = sa
+	}
+	sa.Add(ms, e.Status, ts.Unix())
 }

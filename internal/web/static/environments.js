@@ -8,7 +8,7 @@
 const JOB_NAMES = {
   create: 'Creating site', backup: 'Backup', restore: 'Restore', 'restore-new': 'Restore as a new site',
   staging: 'Creating staging site', push: 'Push to live', php: 'PHP change', 'primary-domain': 'Primary domain change',
-  'repo-upkeep': 'Backup upkeep',
+  'repo-upkeep': 'Backup upkeep', images: 'Image conversion',
 };
 const followed = new Map(); // job ID -> callback when it ends
 const finished = []; // jobs that ended while followed, newest first

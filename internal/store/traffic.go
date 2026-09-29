@@ -49,7 +49,10 @@ type IngestState struct {
 type TrafficBatch struct {
 	Hourly   map[HourKey]*Counters
 	Visitors map[DayKey]*hyperloglog.Sketch
-	State    IngestState
+	// Perf and Slow are response times and slow URLs (see insights.go).
+	Perf  map[HourKey]*PerfCounters
+	Slow  map[SlowKey]*SlowAgg
+	State IngestState
 }
 
 func (s *Store) ApplyTraffic(ctx context.Context, b *TrafficBatch) error {
@@ -102,6 +105,10 @@ func (s *Store) ApplyTraffic(ctx context.Context, b *TrafficBatch) error {
 			ON CONFLICT (site_id, day) DO UPDATE SET sketch = excluded.sketch`, k.SiteID, k.Day, out); err != nil {
 			return err
 		}
+	}
+
+	if err := applyPerf(ctx, tx, b.Perf, b.Slow); err != nil {
+		return err
 	}
 
 	if b.State.Name != "" {

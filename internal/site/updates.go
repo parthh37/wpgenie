@@ -573,7 +573,7 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{pageCacheWrapperPath, objectCacheDropIn, smtpWrapperPath} {
+	for _, name := range []string{pageCacheWrapperPath, objectCacheDropIn, smtpWrapperPath, imagesWrapperPath, cdnWrapperPath} {
 		if b, err := root.ReadFile(name); err == nil && bytes.Contains(b, []byte(managedMarker)) {
 			if err := root.Remove(name); err != nil {
 				root.Close()
@@ -585,7 +585,17 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 	if err := s.writeSMTPWrapper(st.ID, st.SMTP); err != nil {
 		return err
 	}
-	return s.writeCacheFiles(st.ID, CacheSettings{PageCache: st.PageCache, ObjectCache: st.ObjectCache})
+	if err := s.writeImagesWrapper(st.ID, st.ImageFormats); err != nil {
+		return err
+	}
+	assetURL, err := s.assetCDNURL(ctx, st.ID)
+	if err != nil {
+		return err
+	}
+	if err := s.writeCDNWrapper(st.ID, assetURL); err != nil {
+		return err
+	}
+	return s.writeCacheFiles(st.ID, st.PageCache, st.ObjectCache, st.CacheMobile)
 }
 
 // pruneSnapshots keeps the newest keepSnapshots of a site.

@@ -828,6 +828,12 @@ func (s *Service) restoreDB(ctx context.Context, st *store.Site, repo *store.Bac
 	if err != nil {
 		return fmt.Errorf("restoring the database: %w", err)
 	}
+	// Before anything reads the site through WordPress again: cached
+	// options would hide the restored ones (and WP-CLI updates matching a
+	// cached value are skipped).
+	if err := s.flushObjectCache(ctx, st.ID); err != nil {
+		return err
+	}
 	if len(tables) == 0 {
 		return nil // an older backup without a table list: keep everything
 	}

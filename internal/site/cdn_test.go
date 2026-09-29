@@ -21,6 +21,52 @@ type fakeCDN struct {
 	purges   []string // "zone:host,host"
 	purgeErr error
 	ssl      string
+	rules    map[string]string // zone -> expression of the WPGenie rule
+	ruleErr  error
+}
+
+func (f *fakeCDN) SetEdgeRule(_ context.Context, _, zone string, r cdn.EdgeRule) error {
+	if f.ruleErr != nil {
+		return f.ruleErr
+	}
+	if f.rules == nil {
+		f.rules = map[string]string{}
+	}
+	f.rules[zone] = r.Expression
+	return nil
+}
+
+func (f *fakeCDN) DeleteEdgeRule(_ context.Context, _, zone, _, _ string) error {
+	if f.ruleErr != nil {
+		return f.ruleErr
+	}
+	delete(f.rules, zone)
+	return nil
+}
+
+const bunnyKey = "0123456789abcdef-0123-4567-89ab"
+
+type fakeBunny struct {
+	purges int
+	origin string
+}
+
+func (b *fakeBunny) PullZone(_ context.Context, key, id string) (cdn.PullZone, error) {
+	if key != bunnyKey {
+		return cdn.PullZone{}, cdn.ErrBunnyAuth
+	}
+	if id != "42" {
+		return cdn.PullZone{}, cdn.ErrNoPullZone
+	}
+	return cdn.PullZone{ID: 42, Hostnames: []string{"site.b-cdn.net", "cdn.a.test"}, OriginURL: b.origin}, nil
+}
+
+func (b *fakeBunny) Purge(_ context.Context, key, id string) error {
+	if key != bunnyKey || id != "42" {
+		return cdn.ErrBunnyAuth
+	}
+	b.purges++
+	return nil
 }
 
 func (f *fakeCDN) FindZone(_ context.Context, token, host string) (cdn.Zone, error) {

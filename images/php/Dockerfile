@@ -10,11 +10,13 @@ ARG WP_CLI_VERSION=2.12.0
 ARG WP_CLI_SHA256=ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c
 ARG REDIS_CACHE_VERSION=3.0.0
 ARG REDIS_CACHE_SHA256=7a03342d3defbe94cac8d0470b42dc1a1c34331b19c47205df20ceccd3c8f54a
+# Brotli (bundled library): the page cache stores .br copies of its pages.
+ARG BROTLI_VERSION=0.21.0
 
 RUN set -eux; \
     apk add --no-cache --virtual .build-deps $PHPIZE_DEPS; \
-    pecl install redis; \
-    docker-php-ext-enable redis; \
+    pecl install redis brotli-${BROTLI_VERSION}; \
+    docker-php-ext-enable redis brotli; \
     apk del .build-deps; \
     rm -rf /tmp/pear
 
@@ -36,6 +38,7 @@ RUN set -eux; \
 COPY page-cache.php /usr/local/share/wpgenie/page-cache.php
 COPY smtp.php /usr/local/share/wpgenie/smtp.php
 COPY profile.php /usr/local/share/wpgenie/profile.php
+COPY images.php image-convert.php convert-images.php cdn.php /usr/local/share/wpgenie/
 
 COPY php.ini  /usr/local/etc/php/conf.d/zz-wpgenie.ini
 COPY pool.conf /usr/local/etc/php-fpm.d/zz-wpgenie.conf

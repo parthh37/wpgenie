@@ -18,15 +18,23 @@ type CDN struct {
 	PurgedAt  time.Time         // zero: never purged
 	LastError string
 	CreatedAt time.Time
+	// AssetHost is a pull-zone CDN's hostname (static files are linked
+	// there); PullZone its ID at the provider (Bunny), for purges.
+	AssetHost string
+	PullZone  string
+	// EdgeHTML: Cloudflare keeps pages from the page cache too (a Cache
+	// Rule per zone).
+	EdgeHTML bool
 }
 
-const cdnCols = `site_id, provider, api_token, zones, purged_at, last_error, created_at`
+const cdnCols = `site_id, provider, api_token, zones, purged_at, last_error, created_at, asset_host, pull_zone, edge_html`
 
 func scanCDN(row interface{ Scan(...any) error }) (*CDN, error) {
 	var c CDN
 	var zones string
 	var purged, created int64
-	err := row.Scan(&c.SiteID, &c.Provider, &c.APIToken, &zones, &purged, &c.LastError, &created)
+	err := row.Scan(&c.SiteID, &c.Provider, &c.APIToken, &zones, &purged, &c.LastError, &created,
+		&c.AssetHost, &c.PullZone, &c.EdgeHTML)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -52,10 +60,12 @@ func (s *Store) SetCDN(ctx context.Context, c *CDN) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO site_cdn (`+cdnCols+`) VALUES (?,?,?,?,?,?,?)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO site_cdn (`+cdnCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT (site_id) DO UPDATE SET provider = excluded.provider, api_token = excluded.api_token,
-		zones = excluded.zones, purged_at = excluded.purged_at, last_error = excluded.last_error`,
-		c.SiteID, c.Provider, c.APIToken, string(zones), unixNano(c.PurgedAt), c.LastError, time.Now().Unix())
+		zones = excluded.zones, purged_at = excluded.purged_at, last_error = excluded.last_error,
+		asset_host = excluded.asset_host, pull_zone = excluded.pull_zone, edge_html = excluded.edge_html`,
+		c.SiteID, c.Provider, c.APIToken, string(zones), unixNano(c.PurgedAt), c.LastError, time.Now().Unix(),
+		c.AssetHost, c.PullZone, c.EdgeHTML)
 	return err
 }
 

@@ -18,6 +18,10 @@ var ErrConflict = errors.New("conflict")
 type CacheSettings struct {
 	PageCache   bool `json:"page_cache"`
 	ObjectCache bool `json:"object_cache"`
+	// Mobile stores separate mobile and desktop copies of every page, for
+	// themes that detect phones themselves (pages that ask wp_is_mobile()
+	// always get them). Omitted: unchanged.
+	Mobile *bool `json:"mobile,omitempty"`
 }
 
 // Paths inside a site's docroot. The page cache layout is shared with
@@ -39,10 +43,19 @@ const pageCacheWrapper = `<?php
  * Plugin Name: WPGenie Page Cache
  * Description: Full-page cache served straight from Caddy. Managed by WPGenie: toggle it in the WPGenie panel; this file is rewritten on changes.
  */
-if ( is_file( '/usr/local/share/wpgenie/page-cache.php' ) ) {
+%sif ( is_file( '/usr/local/share/wpgenie/page-cache.php' ) ) {
 	require_once '/usr/local/share/wpgenie/page-cache.php';
 }
 `
+
+// pageCacheWrapperFor is the wrapper with the site's settings.
+func pageCacheWrapperFor(mobile bool) string {
+	opts := ""
+	if mobile {
+		opts = "define( 'WPGENIE_CACHE_MOBILE_ALWAYS', true );\n"
+	}
+	return fmt.Sprintf(pageCacheWrapper, opts)
+}
 
 const objectCacheWrapper = `<?php
 /**
@@ -87,16 +100,21 @@ func (s *Service) setCacheLocked(ctx context.Context, id string, c CacheSettings
 	if st.Status != store.StatusActive {
 		return nil, fmt.Errorf("%w: site is %s", ErrInvalidInput, st.Status)
 	}
-	if c.PageCache && !st.PageCache {
-		// Pages cached before the cache was last turned off are stale.
+	mobile := st.CacheMobile
+	if c.Mobile != nil {
+		mobile = *c.Mobile
+	}
+	if c.PageCache && (!st.PageCache || mobile != st.CacheMobile) {
+		// Pages cached before the cache was last turned off are stale, and
+		// a change of layout leaves copies the new one doesn't expect.
 		if err := s.purgePageCacheFiles(id); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.writeCacheFiles(id, c); err != nil {
+	if err := s.writeCacheFiles(id, c.PageCache, c.ObjectCache, mobile); err != nil {
 		return nil, err
 	}
-	if err := s.Store.SetCache(ctx, id, c.PageCache, c.ObjectCache); err != nil {
+	if err := s.Store.SetCache(ctx, id, c.PageCache, c.ObjectCache, mobile); err != nil {
 		return nil, err
 	}
 	if err := s.Sync(ctx); err != nil {
@@ -168,15 +186,15 @@ func cachePrefix(id string) string { return id + ":" }
 // to resolve any path outside the directory it was opened on, so every file
 // operation below goes through one.
 
-func (s *Service) writeCacheFiles(id string, c CacheSettings) error {
+func (s *Service) writeCacheFiles(id string, page, object, mobile bool) error {
 	root, err := os.OpenRoot(s.Cfg.SiteRoot(id))
 	if err != nil {
 		return err
 	}
 	defer root.Close()
 	return errors.Join(
-		ensureManaged(root, pageCacheWrapperPath, pageCacheWrapper, c.PageCache),
-		ensureManaged(root, objectCacheDropIn, objectCacheWrapper, c.ObjectCache),
+		ensureManaged(root, pageCacheWrapperPath, pageCacheWrapperFor(mobile), page),
+		ensureManaged(root, objectCacheDropIn, objectCacheWrapper, object),
 	)
 }
 

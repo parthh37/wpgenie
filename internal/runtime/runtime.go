@@ -99,6 +99,18 @@ type Runtime interface {
 	// CPUUsage samples every running site replica's CPU use, keyed by
 	// container name, in percent of one core (200 = two cores busy).
 	CPUUsage(ctx context.Context) (map[string]float64, error)
+	// FPMLoad samples every running site replica's PHP-FPM requests, keyed
+	// by container name.
+	FPMLoad(ctx context.Context) (map[string]FPMLoad, error)
+}
+
+// FPMLoad is what a replica's PHP-FPM is asked to do right now.
+type FPMLoad struct {
+	// Requests are connections to PHP-FPM: being served or waiting.
+	Requests int
+	// Queued are connections no worker has accepted yet (the listen
+	// backlog): every worker is busy.
+	Queued int
 }
 
 func ContainerName(id string, port int) string { return "wpg-" + id + "-" + strconv.Itoa(port) }
@@ -277,6 +289,15 @@ func (d *Docker) fpmSockets(ctx context.Context, name string) (bool, int, error)
 // one is listening (0A), and how many connections a request may still be in
 // flight on (01 ESTABLISHED; 08 CLOSE_WAIT = the client hung up, PHP hasn't).
 func socketStates(procNet []byte, port int) (listening bool, active int) {
+	listening, active, _ = socketLoad(procNet, port)
+	return listening, active
+}
+
+// socketLoad is socketStates plus the listening sockets' accept backlog:
+// for a LISTEN socket the kernel reports it as rx_queue (the part after
+// the colon of the fifth column). Queued connections are ESTABLISHED too,
+// so they are part of active.
+func socketLoad(procNet []byte, port int) (listening bool, active, queued int) {
 	suffix := fmt.Sprintf(":%04X", port)
 	sc := bufio.NewScanner(bytes.NewReader(procNet))
 	for sc.Scan() {
@@ -287,11 +308,18 @@ func socketStates(procNet []byte, port int) (listening bool, active int) {
 		switch f[3] {
 		case "0A":
 			listening = true
+			if len(f) > 4 {
+				if _, rx, ok := strings.Cut(f[4], ":"); ok {
+					if n, err := strconv.ParseUint(rx, 16, 32); err == nil {
+						queued += int(n)
+					}
+				}
+			}
 		case "01", "08":
 			active++
 		}
 	}
-	return listening, active
+	return listening, active, queued
 }
 
 func (d *Docker) StopReplica(ctx context.Context, name string) error {
@@ -445,6 +473,54 @@ func (d *Docker) CPUUsage(ctx context.Context) (map[string]float64, error) {
 		return nil, err
 	}
 	return parseCPUStats(out), nil
+}
+
+// FPMLoad reads each running replica's socket table from the host, through
+// the container's main process (/proc/<pid>/net/tcp is that process's
+// network namespace): one docker call for every replica, no process started
+// in them. Where the host's /proc isn't the containers' (Docker Desktop), it
+// asks each container instead. A replica gone meanwhile is left out.
+func (d *Docker) FPMLoad(ctx context.Context) (map[string]FPMLoad, error) {
+	out, err := d.run(ctx, nil, "ps", "--filter", "label=wpgenie.site", "--filter", "status=running", "--format", "{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	names := strings.Fields(string(out))
+	load := map[string]FPMLoad{}
+	if len(names) == 0 {
+		return load, nil
+	}
+	pids, err := d.run(ctx, nil, append([]string{"inspect", "--format", "{{.Name}}|{{.State.Pid}}"}, names...)...)
+	if err != nil && len(pids) == 0 {
+		return nil, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(pids)), "\n") {
+		name, pid, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "/"), "|")
+		if !ok || !strings.HasPrefix(name, "wpg-") || pid == "0" {
+			continue
+		}
+		procNet, err := readProcNet(pid)
+		if err != nil {
+			if procNet, err = d.run(ctx, nil, "exec", name, "sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; true"); err != nil {
+				continue
+			}
+		}
+		_, active, queued := socketLoad(procNet, 9000)
+		load[name] = FPMLoad{Requests: active, Queued: queued}
+	}
+	return load, nil
+}
+
+func readProcNet(pid string) ([]byte, error) {
+	if _, err := strconv.Atoi(pid); err != nil {
+		return nil, err
+	}
+	v4, err := os.ReadFile("/proc/" + pid + "/net/tcp")
+	if err != nil {
+		return nil, err
+	}
+	v6, _ := os.ReadFile("/proc/" + pid + "/net/tcp6") // absent with ipv6.disable=1
+	return append(v4, v6...), nil
 }
 
 func parseCPUStats(out []byte) map[string]float64 {

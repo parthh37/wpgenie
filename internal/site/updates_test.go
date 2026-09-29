@@ -187,7 +187,7 @@ func (u *updateHarness) runSync(t *testing.T, req UpdateRequest) (string, string
 
 func TestUpdateHappyPath(t *testing.T) {
 	u := newUpdateHarness(t, true)
-	u.svc.Store.SetCache(context.Background(), "s1", false, true)
+	u.svc.Store.SetCache(context.Background(), "s1", false, true, false)
 	status, summary, d := u.runSync(t, UpdateRequest{Plugins: []string{"akismet"}})
 	if status != UpdateUpdated || u.wp.Plugins["akismet"] != "5.4" {
 		t.Fatalf("status %s (%s), akismet %s", status, summary, u.wp.Plugins["akismet"])
@@ -217,10 +217,10 @@ func TestUpdateRollsBackWhenItBreaksTheSite(t *testing.T) {
 	u := newUpdateHarness(t, true)
 	// Cache wrappers exist before the update; the restore must put back
 	// WPGenie's own copies.
-	if err := u.svc.writeCacheFiles("s1", CacheSettings{PageCache: true}); err != nil {
+	if err := u.svc.writeCacheFiles("s1", true, false, false); err != nil {
 		t.Fatal(err)
 	}
-	u.svc.Store.SetCache(context.Background(), "s1", true, false)
+	u.svc.Store.SetCache(context.Background(), "s1", true, false, false)
 	u.rt.exec = func(args []string, stdin io.Reader, stdout io.Writer) error {
 		if len(args) > 3 && args[3] == "plugin" && args[4] == "update" {
 			*u.db = "-- dump v2 (migrated)"
@@ -246,7 +246,7 @@ func TestUpdateRollsBackWhenItBreaksTheSite(t *testing.T) {
 	}
 	root, _ := os.OpenRoot(u.svc.Cfg.SiteRoot("s1"))
 	defer root.Close()
-	if b, err := root.ReadFile(pageCacheWrapperPath); err != nil || string(b) != pageCacheWrapper {
+	if b, err := root.ReadFile(pageCacheWrapperPath); err != nil || string(b) != pageCacheWrapperFor(false) {
 		t.Errorf("page cache wrapper after restore: %v", err)
 	}
 }

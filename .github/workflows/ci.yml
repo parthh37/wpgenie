@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make php-image
-      - name: backups, staging, domains, PHP, SFTP and Adminer against real WordPress, MariaDB and restic
+      - name: backups, staging, domains, PHP, SFTP, Adminer, page cache, images, insights and CDN links against real WordPress, MariaDB, Valkey and restic
         run: make test-e2e
 
   installer:
@@ -63,10 +63,15 @@ jobs:
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
           docker exec php php -l /usr/local/share/wpgenie/smtp.php
           docker exec php php -l /usr/local/share/wpgenie/profile.php
+          for f in images image-convert convert-images cdn; do docker exec php php -l /usr/local/share/wpgenie/$f.php; done
+          # The page cache stores Brotli copies; GD must write both modern formats.
+          docker exec php php -r 'exit(function_exists("brotli_compress") && function_exists("imageavif") && function_exists("imagewebp") ? 0 : 1);'
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php
           # WPG_MAX_CHILDREN reaches the pool; the cron jail applies open_basedir.
           docker exec php php-fpm -tt 2>&1 | grep -q "pm.max_children = 7"
           docker exec -e PHP_INI_SCAN_DIR=:/usr/local/etc/php/jail.d php php -r 'exit(ini_get("open_basedir") === "/tmp/s1:/tmp:/usr/src/wordpress:/usr/local/share/wpgenie" ? 0 : 1);'
+          # PHP errors go to the site's own log (the panel's insights read it).
+          docker exec php php-fpm -tt 2>&1 | grep -q "php_value\[error_log\] = /tmp/s1/logs/php-error.log"
       - name: container logs
         if: failure()
         run: docker ps -a --filter name=php && docker logs php 2>&1 | tail -50

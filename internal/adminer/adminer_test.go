@@ -122,7 +122,12 @@ func TestTokenIsSingleUseAndBoundToItsSite(t *testing.T) {
 	if res := get(s, "s2", Path, cookie); res.StatusCode != http.StatusForbidden {
 		t.Error("a session cookie worked on another site")
 	}
-	if len(acc.list()) != 1 { // the token tried on s2 was spent and its account dropped
+	// The token tried on s2 was spent and its account dropped; drops run in
+	// the background, so wait for it.
+	for i := 0; len(acc.list()) < 1 && i < 200; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(acc.list()) != 1 {
 		t.Errorf("dropped %v", acc.list())
 	}
 }

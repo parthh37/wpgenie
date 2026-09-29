@@ -17,8 +17,9 @@ test:
 test-integration:
 	WPGENIE_TEST_DOCKER=1 go test -race -count=1 ./...
 
-# Phase 2 end to end (backups, restores, staging, pushes, domains, PHP 8.4,
-# SFTP, Adminer) against real WordPress, MariaDB and restic. Runs the tests in
+# Phase 2 and 3 end to end (backups, restores, staging, pushes, domains,
+# PHP 8.4, SFTP, Adminer; page cache, images, PHP errors, CDN links) against
+# real WordPress, MariaDB, Valkey and restic. Runs the tests in
 # a container on a Docker network shared with the database; the temporary
 # directory is mounted at the same path so sibling containers' bind mounts
 # resolve. Needs the PHP images (make php-image, and PHP_VERSION=8.4).

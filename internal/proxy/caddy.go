@@ -49,7 +49,48 @@ type Site struct {
 	CustomCert bool
 	// Staging sites ask search engines not to index them.
 	Staging bool
+	// EdgeHTML lets a CDN keep pages served from the page cache (Cloudflare
+	// Cache Rules that only cache what the origin marks cacheable): those
+	// responses get s-maxage, every other response stays uncacheable.
+	EdgeHTML bool
+	// Images are the formats served instead of a JPEG/PNG upload to browsers
+	// that accept them, when a converted copy (<file>.avif, <file>.webp)
+	// exists: "avif" and/or "webp".
+	Images []string
+	// AssetCDN: a pull-zone CDN fetches the site's static files for its own
+	// hostname. Fonts then need CORS, and formats aren't negotiated: the CDN
+	// would cache one format for every browser.
+	AssetCDN bool
 }
+
+// CacheBypassCookies are the cookies (name prefixes) that mean the visitor
+// may see a personalised page: a stored page is never served to them.
+// images/php/page-cache.php refuses to store pages for them (and for any
+// cookie not known to be harmless); the Cloudflare edge rule reuses them.
+var CacheBypassCookies = []string{
+	"wordpress_logged_in_", "wordpress_sec_", "wp-postpass_", "comment_author_", "woocommerce_items_in_cart",
+	"woocommerce_cart_hash", "wp_woocommerce_session_", "edd_items_in_cart", "PHPSESSID",
+}
+
+// MobileUA is what makes a request "mobile" when it has no Sec-CH-UA-Mobile
+// client hint: WordPress's wp_is_mobile() rule. The page cache keeps
+// separate mobile and desktop copies of pages whose HTML depends on it, and
+// images/php/page-cache.php applies exactly this rule when storing them.
+const MobileUA = "Mobile|Android|Silk/|Kindle|BlackBerry|Opera Mini|Opera Mobi"
+
+// mobileExpr is the same rule as a Caddy CEL expression. The client hint
+// decides whenever it is sent; the User-Agent only without it.
+const mobileExpr = `({header.Sec-CH-UA-Mobile} == "?1" || ({header.Sec-CH-UA-Mobile} == "" && {header.User-Agent}.matches("` +
+	MobileUA + `")))`
+
+// EdgeTTL is how long a CDN may keep a cached page (s-maxage). Pages are at
+// most 10 h old when served from the page cache: with this, no copy anywhere
+// outlives WordPress's 12 h nonce tick.
+const EdgeTTL = 3600
+
+// imageFormats are the formats Caddy can serve instead of an upload, best
+// first.
+var imageFormats = []string{"avif", "webp"}
 
 // WAFMode is a site's request-body inspection: "off", "detect" (matches are
 // logged, nothing is blocked) or "block".
@@ -178,6 +219,11 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 		if strings.ContainsAny(s.ID, " \t\n{}#\"/.") {
 			return nil, fmt.Errorf("unsafe site ID %q", s.ID)
 		}
+		for _, f := range s.Images {
+			if !slices.Contains(imageFormats, f) {
+				return nil, fmt.Errorf("site %s: unknown image format %q", s.ID, f)
+			}
+		}
 	}
 	adminListen := "localhost:2019"
 	if u, err := url.Parse(c.cfg.AdminURL); err == nil && u.Host != "" {
@@ -197,6 +243,14 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 			}
 			return r
 		}, s.Name)
+		// Best format first (the first rewrite that matches wins); none behind
+		// a pull-zone CDN, which caches whatever it fetched first for everyone.
+		sites[i].Images = nil
+		for _, f := range imageFormats {
+			if slices.Contains(s.Images, f) && !s.AssetCDN && s.Proxy == "" {
+				sites[i].Images = append(sites[i].Images, f)
+			}
+		}
 		switch {
 		case s.BodyWAF == "" || s.BodyWAF == WAFOff || s.Proxy != "":
 			sites[i].BodyWAF = WAFOff
@@ -248,6 +302,9 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 		"VerdictHeader":  shield.VerdictHeader,
 		"AccessLog":      c.cfg.AccessLog,
 		"Sites":          sites,
+		"BypassCookies":  strings.Join(CacheBypassCookies, "|"),
+		"MobileExpr":     mobileExpr,
+		"EdgeTTL":        EdgeTTL,
 		"WAF":            useWAF,
 		"WAFDirectives":  directives,
 	})
