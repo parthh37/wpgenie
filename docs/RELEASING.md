@@ -31,3 +31,12 @@ The release workflow builds `wpgenie_<tag>_linux_{amd64,arm64}.tar.gz` (binary, 
 `images/`), writes `checksums.txt`, signs it into `checksums.txt.sig` and verifies the signature
 against the committed `release.pub` before publishing. A release that installs would reject is
 never published.
+
+## Releases that change the host
+
+Self-update swaps the binary, `/opt/wpgenie` and the systemd unit, rebuilds the PHP image and runs
+`docker compose up -d`. It does **not** run the installer's host steps: creating system users,
+installing extra systemd units (such as `var-lib-wpgenie-sites.nosymfollow.mount`) or writing new
+`infra.env` values. A release that needs any of those must say so in its notes and be installed by
+re-running `install.sh`; if it is self-updated anyway, the new compose file fails to start and the
+applier rolls back to the running version.
