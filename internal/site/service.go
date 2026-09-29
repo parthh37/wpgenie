@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/domain"
 	"github.com/parthh37/wpgenie/internal/proxy"
@@ -60,7 +61,12 @@ type Service struct {
 	Mailer  Mailer
 	// Webmail returns the webmail host and upstream to publish, or "".
 	Webmail func() (host, upstream string)
-	Log     *slog.Logger
+	// CDN purges Cloudflare's cache; CDNRanges are its edge networks; DNS
+	// (nil: system resolver) checks whether domains go through it.
+	CDN       CDNProvider
+	CDNRanges *cdn.Ranges
+	DNS       Resolver
+	Log       *slog.Logger
 
 	// opsMu serialises everything that allocates ports or starts/stops
 	// containers (create, scale, cache changes): port allocation is only
@@ -77,6 +83,7 @@ type Service struct {
 	// lastMaint: site ID -> time the maintenance loop last ran for it.
 	lastMaint sync.Map
 	inflight  sync.WaitGroup // running WordPress updates
+	cdn       cdnState
 }
 
 type CreateInput struct {

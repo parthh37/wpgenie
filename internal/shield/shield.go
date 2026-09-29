@@ -411,8 +411,9 @@ func isLoginPath(method, script string) bool {
 }
 
 // clientIP trusts X-Forwarded-For because the shield only listens on
-// loopback behind Caddy, which replaces (not appends to) the header for
-// untrusted clients. The last hop is the one Caddy observed.
+// loopback behind Caddy, which sets it to {client_ip} on every shield call:
+// the peer's address, or CF-Connecting-IP when the peer is Cloudflare's
+// edge. Anything a client sent is replaced. The last hop is taken anyway.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")

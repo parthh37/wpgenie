@@ -4,6 +4,12 @@
 	admin {{.AdminListen}}
 	servers {
 		protocols h1 h2 h3
+		{{- if .TrustedProxies}}
+		# Cloudflare's edge: the visitor's address is in CF-Connecting-IP,
+		# believed only on connections from these networks ({client_ip}).
+		trusted_proxies static {{join .TrustedProxies " "}}
+		client_ip_headers CF-Connecting-IP
+		{{- end}}
 	}
 }
 
@@ -50,11 +56,13 @@
 	route {
 		reverse_proxy /_shield/* {{$.ShieldUpstream}} {
 			header_up {{$.SiteHeader}} {{.ID}}
+			header_up X-Forwarded-For {client_ip}
 		}
 		{{- if .ShieldEnabled}}
 		forward_auth @wpg_dynamic {{$.ShieldUpstream}} {
 			uri /_shield/check
 			header_up {{$.SiteHeader}} {{.ID}}
+			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
 		respond @wpg_dotfiles 404
@@ -86,6 +94,22 @@
 			not path_regexp (?i)\.php
 		}
 	}
+	# Let browsers and a CDN keep static files that exist on disk (never a
+	# PHP-rendered 404 for a missing one). WordPress versions its CSS/JS
+	# URLs (?ver=), so those change URL when they change; uploads are
+	# renamed rather than overwritten.
+	@wpg_static_long {
+		path *.png *.jpg *.jpeg *.gif *.webp *.avif *.svg *.ico *.woff *.woff2 *.ttf *.otf *.eot *.mp4 *.webm *.mp3 *.pdf
+		not path_regexp (?i)\.php
+		file
+	}
+	@wpg_static_short {
+		path *.css *.js *.mjs *.map
+		not path_regexp (?i)\.php
+		file
+	}
+	header @wpg_static_long Cache-Control "public, max-age=2592000"
+	header @wpg_static_short Cache-Control "public, max-age=604800"
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
 	# page (images/php/page-cache.php); the cookie rule here is a stricter
@@ -104,6 +128,7 @@
 	route {
 		reverse_proxy /_shield/* {{$.ShieldUpstream}} {
 			header_up {{$.SiteHeader}} {{.ID}}
+			header_up X-Forwarded-For {client_ip}
 		}
 		{{- if .ShieldEnabled}}
 		# Before the hardening rules below: probes for /.env or
@@ -111,6 +136,7 @@
 		forward_auth @wpg_dynamic {{$.ShieldUpstream}} {
 			uri /_shield/check
 			header_up {{$.SiteHeader}} {{.ID}}
+			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
 		respond @wpg_forbidden 404

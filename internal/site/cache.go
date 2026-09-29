@@ -123,19 +123,40 @@ func (s *Service) setCacheLocked(ctx context.Context, id string, c CacheSettings
 	return retire, nil
 }
 
-// Purge empties the page cache and this site's object cache keys.
+// Purge empties the page cache, this site's object cache keys and, with
+// the CDN integration on, the CDN's copy of its hostnames.
 func (s *Service) Purge(ctx context.Context, id string) error {
 	st, err := s.Store.GetSite(ctx, id)
 	if err != nil {
 		return err
 	}
-	errs := []error{s.purgePageCacheFiles(id)}
+	errs := []error{s.purgeLocal(ctx, st)}
+	// Last: the CDN refetches from the origin, which must already be fresh.
+	if err := s.purgeCDNIfOn(ctx, st); err != nil {
+		errs = append(errs, fmt.Errorf("CDN purge: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// purgeLocal empties the caches on this server: page cache and object cache.
+func (s *Service) purgeLocal(ctx context.Context, st *store.Site) error {
+	errs := []error{s.purgePageCacheFiles(st.ID)}
 	if st.ObjectCache {
-		if err := s.Cache.FlushPrefix(ctx, cachePrefix(id)); err != nil {
+		if err := s.Cache.FlushPrefix(ctx, cachePrefix(st.ID)); err != nil {
 			errs = append(errs, fmt.Errorf("object cache flush: %w", err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (s *Service) purgeCDNIfOn(ctx context.Context, st *store.Site) error {
+	c, err := s.Store.GetCDN(ctx, st.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return s.purgeCDN(ctx, st, c)
 }
 
 // cachePrefix is WP_REDIS_PREFIX from the site's wp-config.php.

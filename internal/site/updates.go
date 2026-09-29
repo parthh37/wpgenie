@@ -547,7 +547,15 @@ func (s *Service) restoreSnapshot(ctx context.Context, st *store.Site, snap *sna
 			return fmt.Errorf("dropping tables created by the update: %w", err)
 		}
 	}
-	return s.Purge(ctx, st.ID)
+	if err := s.purgeLocal(ctx, st); err != nil {
+		return err
+	}
+	// The site is restored whatever the CDN says: an outage there must not
+	// report the rollback as failed. The purge loop retries from the marker.
+	if err := s.purgeCDNIfOn(ctx, st); err != nil {
+		s.Log.Warn("purging the CDN after a rollback", "site", st.ID, "err", err)
+	}
+	return nil
 }
 
 // rewriteManagedFiles removes WPGenie's wrappers (whatever their owner) and

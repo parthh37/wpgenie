@@ -18,7 +18,8 @@ check.
 
 ## Request flow
 
-1. Client connects to Caddy (`network_mode: host`, so it sees real client IPs).
+1. Client connects to Caddy (`network_mode: host`, so it sees real client IPs), directly or through
+   Cloudflare (see *CDN*).
 2. Hardening rules run first: `wp-config.php`, dotfiles, backups, and PHP inside `uploads/` → 404;
    `xmlrpc.php` → 403.
 3. Static assets (`*.css`, images, fonts, …) are served directly from disk by Caddy.
@@ -207,6 +208,42 @@ The cache code lives read-only in the image (`/usr/local/share/wpgenie`); sites 
 wrappers. A compromised plugin can't alter the cache logic, and an image upgrade updates it
 everywhere. The daemon writes those wrappers as root into a directory the site controls, so all
 such file operations go through `os.Root`, which refuses to follow symlinks out of the docroot.
+
+### CDN (Cloudflare)
+
+A site can sit behind Cloudflare's free plan (DNS record proxied). Cloudflare then caches static
+files at its edge, which Caddy marks cacheable only when they exist on disk: images, fonts and media
+for 30 days, CSS/JS for 7 (never a PHP-rendered 404 for a missing file). HTML is not cached at the
+edge. It changes per visitor (cookies, nonces), and the page cache already serves it without PHP.
+
+**Real client IPs, for every site with no setup.** Behind Cloudflare every connection comes from its
+edge, so the shield would rate-limit, challenge and ban Cloudflare instead of the visitor. Caddy's
+`trusted_proxies` lists Cloudflare's edge networks and `client_ip_headers CF-Connecting-IP`
+resolves `{client_ip}`, which Caddy then sends to the shield as `X-Forwarded-For` on every call,
+replacing whatever the client sent. The header is believed only on connections from those networks,
+so nobody else can choose the address that gets banned (`TestShieldSeesVisitorBehindCloudflare`
+runs this in a real Caddy). `CF-Connecting-IP` is used rather than `X-Forwarded-For`, which
+Cloudflare appends to and a client can seed. Analytics use the access log's `client_ip`, so
+visitor counts are right too. The edge list is refreshed daily from Cloudflare's API and persisted.
+A list that isn't plausibly an edge network (private or overly wide ranges) is rejected, since
+trusting it would let its owners impersonate any visitor.
+
+**Automatic purges (optional, per site).** With an API token (Zone: Read, Cache Purge: Purge;
+Zone Settings: Read for the SSL check), WPGenie purges the site's own hostnames (never the whole
+zone, which may serve other hosts) whenever the site's cache is purged: from the panel, after
+WordPress updates, and whenever WordPress purges its page cache. The token never enters the PHP
+container, where a compromised plugin could read it. PHP already touches `wpgenie.purged` on every
+purge, and the daemon purges the CDN when that marker is newer than the start of its last
+successful purge (so a purge during downtime is caught up, and one during an API call isn't lost).
+Purges of a site are spaced a minute apart (Free: 5 purge requests/minute per account) and back
+off 5 minutes after a failure. Enabling checks the token by finding each domain's zone and purging
+it once; a token that can't purge is refused, not stored. A failed CDN purge never fails a
+rollback. The status view checks live whether each domain resolves to Cloudflare and warns
+about the SSL/TLS mode. *Flexible* makes Cloudflare fetch over HTTP, which Caddy redirects to
+HTTPS: an endless redirect.
+
+Certificates keep working behind the proxy: Caddy falls back to the HTTP-01 challenge, which
+Cloudflare forwards.
 
 ### Cron
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,6 +47,11 @@ type Config struct {
 	ShieldUpstream string
 	AccessLog      string
 	CaddyfilePath  string
+	// CloudflareRanges returns the networks whose CF-Connecting-IP header
+	// Caddy believes (nil: none). Behind Cloudflare every connection comes
+	// from its edge; without this the shield would rate-limit and ban
+	// Cloudflare instead of the visitor.
+	CloudflareRanges func() []netip.Prefix
 }
 
 type Caddy struct {
@@ -89,8 +95,15 @@ func (c *Caddy) Render(sites []Site) ([]byte, error) {
 	if email == "" {
 		email = "admin@localhost" // Caddy still works; ACME just won't send expiry notices
 	}
+	var trusted []string
+	if c.cfg.CloudflareRanges != nil {
+		for _, p := range c.cfg.CloudflareRanges() {
+			trusted = append(trusted, p.Masked().String()) // netip output: no Caddyfile syntax
+		}
+	}
 	var buf bytes.Buffer
 	err := tmpl.Execute(&buf, map[string]any{
+		"TrustedProxies": trusted,
 		"ACMEEmail":      email,
 		"AdminListen":    adminListen,
 		"PanelDomain":    c.cfg.PanelDomain,

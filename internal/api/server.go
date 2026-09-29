@@ -61,6 +61,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/sites/{id}/scan", s.auth(s.lastScan))
 
 	mux.Handle("PUT /api/v1/sites/{id}/smtp", s.auth(s.setSiteSMTP))
+	mux.Handle("GET /api/v1/sites/{id}/cdn", s.auth(s.cdnStatus))
+	mux.Handle("PUT /api/v1/sites/{id}/cdn", s.auth(s.setCDN))
+	mux.Handle("POST /api/v1/sites/{id}/cdn/purge", s.auth(s.purgeCDN))
 
 	mux.Handle("GET /api/v1/mail", s.auth(s.mailStatus))
 	mux.Handle("PUT /api/v1/mail", s.auth(s.setMail))
@@ -208,6 +211,35 @@ func (s *Server) setCache(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) purgeCache(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Sites.Purge(r.Context(), r.PathValue("id")); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// cdnStatus checks DNS and the Cloudflare zone live: a second or two.
+func (s *Server) cdnStatus(w http.ResponseWriter, r *http.Request) error {
+	st, err := s.Sites.CDNStatus(r.Context(), r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) setCDN(w http.ResponseWriter, r *http.Request) error {
+	var in site.CDNInput
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.Sites.SetCDN(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) purgeCDN(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Sites.PurgeCDN(r.Context(), r.PathValue("id")); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)

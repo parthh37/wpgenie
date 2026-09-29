@@ -80,7 +80,7 @@ td.wrap { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menl
 td button { padding: .2rem .6rem; font-size: .8rem; }
 .st-ok, .st-running, .st-updated, .st-done { color: var(--ok); }
 .st-missing, .st-mismatch, .st-error, .st-failed, .st-rolled_back { color: var(--bad); }
-.st-pending, .st-waiting_certificate, .st-waiting_mailbox, .st-unknown, .st-running_update { color: var(--warn); }
+.st-warning, .st-pending, .st-waiting_certificate, .st-waiting_mailbox, .st-unknown, .st-running_update { color: var(--warn); }
 .sev-critical, .sev-high { color: var(--bad); font-weight: 600; }
 .sev-medium { color: var(--warn); }
 .events div { font-size: .85rem; padding: .25rem 0; border-bottom: 1px solid var(--line); }
