@@ -4,6 +4,8 @@ const $ = (sel, el = document) => el.querySelector(sel);
 
 // The signed-in user ({username, role, totp_enabled, ...}).
 let ME = null;
+// Sites by ID, as last loaded (staging links, job labels).
+let SITES = new Map();
 const isAdmin = () => ME && ME.role === 'admin';
 
 // The session lives in an HttpOnly cookie the page can't read. The custom
@@ -98,6 +100,7 @@ function openTab(name) {
 async function load() {
   showError(null);
   const sites = await api('GET', '/sites');
+  SITES = new Map(sites.map((x) => [x.id, x]));
   const list = $('#sites');
   // Actions re-render every card: keep the panels that were open, open.
   const open = new Set([...list.querySelectorAll('details[open]')].map((d) => d.closest('[data-id]').dataset.id + '|' + d.className));
@@ -116,6 +119,7 @@ function renderSite(site) {
   a.textContent = site.primary_domain;
   a.href = 'https://' + site.primary_domain;
   $('.id', el).textContent = site.id + ' · PHP ' + site.php_version;
+  if (site.parent_id) $('.id', el).append(h('span', { class: 'badge' }, `staging of ${SITES.get(site.parent_id)?.primary_domain || site.parent_id}`));
   const pill = $('.status', el);
   pill.textContent = site.status;
   pill.classList.add(site.status);
@@ -137,11 +141,13 @@ function renderSite(site) {
   renderSecurity(el, site);
   renderPlugins(el, site);
   renderUpdates(el, site);
+  renderEnvironments(el, site);
   const log = $('.log', el);
   log.addEventListener('toggle', () => { if (log.open) loadEvents(el, site); });
 
   $('.delete', el).addEventListener('click', async () => {
-    const typed = prompt(`This permanently deletes ${site.primary_domain}, its files and database.\nType the domain to confirm:`);
+    const typed = prompt(`This permanently deletes ${site.primary_domain}, its files and database ` +
+      `(its backups stay in their destinations and can be restored as a new site).\nType the domain to confirm:`);
     if (typed !== site.primary_domain) return;
     try { await api('DELETE', `/sites/${site.id}`); await load(); } catch (e) { showError(e); }
   });
@@ -512,20 +518,18 @@ async function loadEvents(el, site) {
   } catch (e) { showError(e); }
 }
 
-function showCredentials(res) {
-  const c = res.credentials, box = $('#creds');
-  box.replaceChildren();
-  const h = document.createElement('h2');
-  h.textContent = `${res.site.primary_domain} is live`;
-  const p = document.createElement('p');
-  p.textContent = 'Save these credentials now — they are shown only once.';
-  const pre = document.createElement('pre');
-  pre.textContent = `Admin URL: ${c.admin_url}\nUsername:  ${c.username}\nPassword:  ${c.password}`;
-  const btn = document.createElement('button');
-  btn.className = 'ghost';
-  btn.textContent = 'Dismiss';
-  btn.onclick = () => { box.hidden = true; };
-  box.append(h, p, pre, btn);
+// showCredentials shows a new site's admin credentials (a job's secret:
+// only in memory on the server, for the user who created the site).
+function showCredentials(site, c, jobID) {
+  const box = $('#creds');
+  const done = h('button', { class: 'ghost' }, 'I saved them');
+  done.addEventListener('click', async () => {
+    box.hidden = true;
+    try { await api('DELETE', `/jobs/${jobID}/secret`); } catch (e) { /* expires anyway */ }
+  });
+  box.replaceChildren(h('h2', {}, `${site.primary_domain} is live`),
+    h('p', {}, 'Save these credentials now — they are shown only once.'),
+    h('pre', {}, `Admin URL: ${c.admin_url}\nUsername:  ${c.username}\nPassword:  ${c.password}`), done);
   box.hidden = false;
 }
 
@@ -567,15 +571,20 @@ function init() {
     const form = e.target, btn = $('button[type=submit]', form);
     const body = Object.fromEntries(new FormData(form));
     btn.disabled = true;
-    btn.textContent = 'Provisioning… (up to a minute)';
     try {
+      // Provisioning runs as a job (progress in the jobs tray); the
+      // credentials come with it when it's done.
       const res = await api('POST', '/sites', body);
       form.reset();
       form.hidden = true;
-      showCredentials(res);
+      followJob(res.job_id, async (v) => {
+        if (v.secret) showCredentials(res.site, v.secret, res.job_id);
+        else if (v.job.status === 'failed') showError(new Error(`Creating ${res.site.primary_domain} failed: ${v.job.error}`));
+        await load();
+      });
       await load();
     } catch (err) { showError(err); }
-    finally { btn.disabled = false; btn.textContent = 'Create site'; }
+    finally { btn.disabled = false; }
   });
   start();
 }
@@ -602,6 +611,7 @@ function signedIn(user, require2fa) {
   if (require2fa && !user.totp_enabled) { openTab('account'); return; }
   openTab('sites');
   if (typeof checkSystem === 'function') checkSystem();
+  if (typeof pollJobs === 'function') pollJobs();
 }
 
 // Live CPU readings refresh with the autoscaler's sampling.

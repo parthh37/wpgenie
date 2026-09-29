@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -69,26 +70,43 @@ type Site struct {
 	// AutoUpdate is the nightly WordPress update policy: off, security or all.
 	AutoUpdate string `json:"auto_update"`
 	// SMTP: WordPress sends its mail through the WPGenie mail server.
-	SMTP      bool      `json:"smtp"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	SMTP bool `json:"smtp"`
+	// RedirectDomains answer with a permanent redirect to PrimaryDomain
+	// (www <-> apex, old names); Domains are served.
+	RedirectDomains []string `json:"redirect_domains"`
+	// ParentID is the live site a staging site was cloned from ("" for
+	// live sites).
+	ParentID string `json:"parent_id"`
+	// PHP holds per-site PHP settings; zero values mean the image defaults.
+	PHP       PHPSettings `json:"php"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, status, shield_mode, block_ai_bots,
 	memory_mb, cpus, replicas, page_cache, object_cache, waf, admin_allow, trusted_ips,
 	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp,
 	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
-	country_mode, countries, country_action, body_waf, created_at, updated_at`
+	country_mode, countries, country_action, body_waf, parent_id, php_settings, created_at, updated_at`
+
+// PHPSettings are per-site PHP limits. Zero means the image default
+// (images/php/php.ini).
+type PHPSettings struct {
+	MemoryLimitMB    int `json:"memory_limit_mb"`
+	UploadMaxMB      int `json:"upload_max_mb"`
+	MaxExecutionTime int `json:"max_execution_time"`
+	MaxInputVars     int `json:"max_input_vars"`
+}
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated int64
-	var adminAllow, trusted, deny, countries string
+	var adminAllow, trusted, deny, countries, php string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
 		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
-		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &created, &updated)
+		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -97,6 +115,9 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	}
 	s.AdminAllow, s.TrustedIPs, s.DenyIPs = splitList(adminAllow), splitList(trusted), splitList(deny)
 	s.Countries = splitList(countries)
+	if err := json.Unmarshal([]byte(php), &s.PHP); err != nil {
+		return nil, err
+	}
 	s.CreatedAt, s.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return &s, nil
 }
@@ -139,7 +160,11 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if site.BodyWAF == "" {
 		site.BodyWAF = "off"
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 35)+`?)`,
+	php, err := json.Marshal(site.PHP)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 37)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
@@ -147,7 +172,7 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 		site.Autoscale, site.MinReplicas, site.MaxReplicas, site.TargetCPU, site.AutoUpdate, site.SMTP,
 		site.XMLRPC, site.RateRPS, site.RateBurst, site.LoginPerMin, site.ChallengeBits,
 		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
-		site.CountryAction, site.BodyWAF, now, now)
+		site.CountryAction, site.BodyWAF, site.ParentID, string(php), now, now)
 	if err != nil {
 		return err
 	}
@@ -171,7 +196,7 @@ func (s *Store) GetSite(ctx context.Context, id string) (*Site, error) {
 	if err != nil {
 		return nil, err
 	}
-	if site.Domains, err = s.siteDomains(ctx, id); err != nil {
+	if site.Domains, site.RedirectDomains, err = s.siteDomains(ctx, id); err != nil {
 		return nil, err
 	}
 	site.Upstreams, err = s.siteUpstreams(ctx, id)
@@ -197,7 +222,7 @@ func (s *Store) ListSites(ctx context.Context) ([]*Site, error) {
 		return nil, err
 	}
 	for _, site := range sites {
-		if site.Domains, err = s.siteDomains(ctx, site.ID); err != nil {
+		if site.Domains, site.RedirectDomains, err = s.siteDomains(ctx, site.ID); err != nil {
 			return nil, err
 		}
 		if site.Upstreams, err = s.siteUpstreams(ctx, site.ID); err != nil {
@@ -207,21 +232,83 @@ func (s *Store) ListSites(ctx context.Context) ([]*Site, error) {
 	return sites, nil
 }
 
-func (s *Store) siteDomains(ctx context.Context, id string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT domain FROM site_domains WHERE site_id = ? ORDER BY domain`, id)
+// siteDomains returns the domains a site serves and those that redirect
+// to its primary domain.
+func (s *Store) siteDomains(ctx context.Context, id string) (serve, redirect []string, err error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT domain, redirect FROM site_domains WHERE site_id = ? ORDER BY domain`, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	var out []string
+	serve, redirect = []string{}, []string{}
 	for rows.Next() {
 		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, err
+		var r bool
+		if err := rows.Scan(&d, &r); err != nil {
+			return nil, nil, err
 		}
-		out = append(out, d)
+		if r {
+			redirect = append(redirect, d)
+		} else {
+			serve = append(serve, d)
+		}
 	}
-	return out, rows.Err()
+	return serve, redirect, rows.Err()
+}
+
+// AddDomain attaches a domain to a site. The domain PRIMARY KEY refuses
+// one already attached anywhere (ErrDomainTaken is the caller's check).
+func (s *Store) AddDomain(ctx context.Context, siteID, domain string, redirect bool) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO site_domains (domain, site_id, redirect) VALUES (?, ?, ?)`,
+		domain, siteID, redirect)
+	return err
+}
+
+// RemoveDomain detaches a domain that isn't the site's primary one.
+func (s *Store) RemoveDomain(ctx context.Context, siteID, domain string) error {
+	return s.exec1(ctx, `DELETE FROM site_domains WHERE site_id = ? AND domain = ?
+		AND domain <> (SELECT primary_domain FROM sites WHERE id = ?)`, siteID, domain, siteID)
+}
+
+// SetPrimaryDomain makes an attached domain the primary (served) one; the
+// old primary stays attached as a redirect to it.
+func (s *Store) SetPrimaryDomain(ctx context.Context, siteID, domain string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var old string
+	if err := tx.QueryRowContext(ctx, `SELECT primary_domain FROM sites WHERE id = ?`, siteID).Scan(&old); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE site_domains SET redirect = 0 WHERE site_id = ? AND domain = ?`, siteID, domain)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if old != domain {
+		if _, err := tx.ExecContext(ctx, `UPDATE site_domains SET redirect = 1 WHERE site_id = ? AND domain = ?`, siteID, old); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sites SET primary_domain = ?, updated_at = ? WHERE id = ?`,
+		domain, time.Now().Unix(), siteID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetDomainRedirect switches an attached, non-primary domain between being
+// served and redirecting to the primary domain.
+func (s *Store) SetDomainRedirect(ctx context.Context, siteID, domain string, redirect bool) error {
+	return s.exec1(ctx, `UPDATE site_domains SET redirect = ? WHERE site_id = ? AND domain = ?
+		AND domain <> (SELECT primary_domain FROM sites WHERE id = ?)`, redirect, siteID, domain, siteID)
 }
 
 func (s *Store) DomainExists(ctx context.Context, domain string) (bool, error) {
@@ -375,6 +462,33 @@ func (s *Store) SetShield(ctx context.Context, id string, c ShieldSettings) erro
 func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU int) error {
 	return s.exec1(ctx, `UPDATE sites SET autoscale = ?, min_replicas = ?, max_replicas = ?, target_cpu = ?,
 		updated_at = ? WHERE id = ?`, on, minR, maxR, targetCPU, time.Now().Unix(), id)
+}
+
+func (s *Store) SetPHP(ctx context.Context, id, version string, settings PHPSettings) error {
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	return s.exec1(ctx, `UPDATE sites SET php_version = ?, php_settings = ?, updated_at = ? WHERE id = ?`,
+		version, string(b), time.Now().Unix(), id)
+}
+
+// StagingOf returns the staging sites cloned from a live site.
+func (s *Store) StagingOf(ctx context.Context, id string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sites WHERE parent_id = ? ORDER BY created_at`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return nil, err
+		}
+		out = append(out, sid)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) SetSMTP(ctx context.Context, id string, on bool) error {

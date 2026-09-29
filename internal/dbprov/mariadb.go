@@ -5,6 +5,7 @@ package dbprov
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -123,4 +124,81 @@ func (m *MariaDB) DropTables(ctx context.Context, db string, tables []string) er
 		}
 	}
 	return nil
+}
+
+// Temporary accounts for database sessions (Adminer): scoped to one site
+// database, few connections, dropped when the session ends. Their names
+// start with TempUserPrefix, so leftovers of a crash are found and dropped.
+const TempUserPrefix = "wpga_"
+
+var tempUserRe = regexp.MustCompile(`^wpga_[a-z0-9]{8,20}$`)
+
+// CreateTempUser creates an account with full rights on one site database.
+func (m *MariaDB) CreateTempUser(ctx context.Context, db, user, password string) error {
+	if !identRe.MatchString(db) || !tempUserRe.MatchString(user) {
+		return fmt.Errorf("invalid temporary account")
+	}
+	if _, err := m.db.ExecContext(ctx, "CREATE USER '"+user+"'@'%' IDENTIFIED BY ? WITH MAX_USER_CONNECTIONS 5", password); err != nil {
+		return err
+	}
+	if _, err := m.db.ExecContext(ctx, "GRANT ALL PRIVILEGES ON `"+db+"`.* TO '"+user+"'@'%'"); err != nil {
+		m.DropTempUser(ctx, user)
+		return err
+	}
+	return nil
+}
+
+// DropTempUser drops a temporary account and ends its connections (a
+// dropped account's open connections would otherwise keep working).
+func (m *MariaDB) DropTempUser(ctx context.Context, user string) error {
+	if !tempUserRe.MatchString(user) {
+		return fmt.Errorf("invalid temporary account")
+	}
+	if _, err := m.db.ExecContext(ctx, "DROP USER IF EXISTS '"+user+"'@'%'"); err != nil {
+		return err
+	}
+	rows, err := m.db.QueryContext(ctx, "SELECT ID FROM information_schema.PROCESSLIST WHERE USER = ?", user)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		m.db.ExecContext(ctx, "KILL CONNECTION "+strconv.FormatInt(id, 10)) // may have ended already
+	}
+	return rows.Err()
+}
+
+// DropTempUsers drops every temporary account (at startup: sessions don't
+// survive a restart).
+func (m *MariaDB) DropTempUsers(ctx context.Context) error {
+	rows, err := m.db.QueryContext(ctx, "SELECT User FROM mysql.user WHERE User LIKE 'wpga\\_%'")
+	if err != nil {
+		return err
+	}
+	var users []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			rows.Close()
+			return err
+		}
+		users = append(users, u)
+	}
+	rows.Close()
+	var errs []error
+	for _, u := range users {
+		if tempUserRe.MatchString(u) {
+			errs = append(errs, m.DropTempUser(ctx, u))
+		}
+	}
+	return errors.Join(errs...)
 }

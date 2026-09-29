@@ -41,6 +41,14 @@ type Site struct {
 	// Proxy, if set, makes this a plain reverse-proxied app (webmail)
 	// instead of a WordPress site: no docroot, PHP or page cache.
 	Proxy string
+	// Redirects answer with a permanent redirect to Domains[0] (the
+	// primary domain), keeping the path.
+	Redirects []string
+	// CustomCert: serve the site's own certificate (Config.CertDir/<ID>/
+	// cert.pem and key.pem) instead of obtaining one.
+	CustomCert bool
+	// Staging sites ask search engines not to index them.
+	Staging bool
 }
 
 // WAFMode is a site's request-body inspection: "off", "detect" (matches are
@@ -80,6 +88,9 @@ type Config struct {
 	// WAFLog is the Coraza audit log, a path valid inside the Caddy
 	// container (default: waf.log next to the access log).
 	WAFLog string
+	// CertDir holds sites' own certificates, a path valid inside the Caddy
+	// container (default: certs next to the Caddyfile, as mounted there).
+	CertDir string
 }
 
 type Caddy struct {
@@ -156,10 +167,16 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 				return nil, fmt.Errorf("site %s: unsafe upstream %q", s.ID, u)
 			}
 		}
-		for _, d := range s.Domains {
+		for _, d := range append(slices.Clone(s.Domains), s.Redirects...) {
 			if strings.ContainsAny(d, " \t\n{}#\"") {
 				return nil, fmt.Errorf("site %s: unsafe domain %q", s.ID, d)
 			}
+		}
+		if len(s.Domains) == 0 {
+			return nil, fmt.Errorf("site %s: no domains", s.ID)
+		}
+		if strings.ContainsAny(s.ID, " \t\n{}#\"/.") {
+			return nil, fmt.Errorf("unsafe site ID %q", s.ID)
 		}
 	}
 	adminListen := "localhost:2019"
@@ -211,8 +228,16 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 			trusted = append(trusted, p.Masked().String()) // netip output: no Caddyfile syntax
 		}
 	}
+	certDir := c.cfg.CertDir
+	if certDir == "" {
+		certDir = "/etc/caddy/certs"
+	}
+	if strings.ContainsAny(certDir, " \t\n{}#\"`") {
+		return nil, fmt.Errorf("unsafe certificate directory %q", certDir)
+	}
 	var buf bytes.Buffer
 	err := tmpl.Execute(&buf, map[string]any{
+		"CertDir":        certDir,
 		"TrustedProxies": trusted,
 		"ACMEEmail":      email,
 		"AdminListen":    adminListen,

@@ -34,15 +34,26 @@ issue candidate once its phase starts.
 - [ ] Follow-ups (not needed for the phase): body-WAF matches towards automatic bans, CrowdSec/AbuseIPDB feeds (need accounts),
       WebAuthn/passkeys, per-user API tokens
 
-## Phase 2 — Backups & environments
-- [ ] Backups with restic (dedup + encryption): files + `mysqldump`, to local/S3/B2/SFTP
-- [ ] Retention policies, one-click restore, download backup
+## Phase 2 — Backups & environments ✅
+- [x] Backups with restic (dedup + encryption): files + `mariadb-dump`, to local/S3/B2/SFTP; restic runs in a
+      throwaway container that only sees the site, secrets on stdin; one repository shared by every site (WordPress
+      deduplicates across them)
+- [x] Retention policies (restic keep rules per site, weekly prune + check), one-click restore (files and/or database,
+      safety backup first), download backup (streamed `.tar.gz`), restore any backup (deleted sites too) as a new site
 - [x] Automatic pre-update snapshots (used by the update manager)
-- [ ] Staging environments: clone, search-replace URLs, push staging → live (files/DB selective)
-- [ ] Per-site SFTP (chrooted), Adminer on demand with short-lived tokens
-- [ ] Domain aliases, www ↔ apex redirects, custom SSL certificates
-- [ ] PHP version switching (8.2 / 8.3 / 8.4), per-site PHP settings
-- [ ] Job queue for long operations (create/backup/restore) with progress in the UI
+- [x] Staging environments: clone, search-replace URLs (regex: plain and JSON-escaped links, never a longer hostname),
+      push staging → live (code / all files / database or chosen tables; exported with links rewritten, live backed
+      up first); staging is `WP_ENVIRONMENT_TYPE=staging`, noindex, no cron, no mail
+- [x] Per-site SFTP (one OpenSSH container, every login chrooted to its site, SFTP only), Adminer on demand on the
+      site's own domain with one-time tokens and temporary database accounts
+- [x] Domain aliases (served or redirecting), www ↔ apex redirects, primary domain change (links rewritten),
+      custom SSL certificates (validated, expiry warnings)
+- [x] PHP version switching (8.2 / 8.3 / 8.4, image built on first use, health-checked with automatic switch back),
+      per-site PHP settings (memory_limit, uploads, max_execution_time, max_input_vars)
+- [x] Job queue for long operations (create/backup/restore/clone/push/PHP) with progress in the UI and CLI
+- [ ] Follow-ups (not needed for the phase): refresh a staging site from live in place, per-table diff before a push,
+      SFTP rate limits beyond OpenSSH's PerSourcePenalties, backup encryption keys per site, restore to a point in
+      time between backups (binary logs)
 
 ## Phase 3 — Performance
 - [x] Full-page cache: WordPress writes static HTML, Caddy serves it; purge on content change

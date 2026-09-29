@@ -31,12 +31,20 @@ type fakeRuntime struct {
 	cpu        map[string]float64
 	// exec simulates commands run with Exec (see fakeWP in updates_test.go).
 	exec func(args []string, stdin io.Reader, stdout io.Writer) error
+	// onStart sees the image of every replica started; lastSpec is the
+	// spec of the last one.
+	onStart  func(image string)
+	lastSpec runtime.SiteSpec
 }
 
 func (f *fakeRuntime) ImageID(context.Context, string) (string, error) { return f.imageID, nil }
 
 func (f *fakeRuntime) StartReplica(_ context.Context, spec runtime.SiteSpec, port int) error {
 	f.starts++
+	f.lastSpec = spec
+	if f.onStart != nil {
+		f.onStart(spec.Image)
+	}
 	name := runtime.ContainerName(spec.ID, port)
 	*f.log = append(*f.log, "start "+name)
 	f.containers[name] = runtime.Replica{Name: name, Port: port, SpecHash: spec.Hash(), Running: true}
@@ -138,6 +146,8 @@ func (d fakeDB) DropTables(_ context.Context, _ string, drop []string) error {
 	*d.tables = slices.DeleteFunc(*d.tables, func(t string) bool { return slices.Contains(drop, t) })
 	return nil
 }
+func (fakeDB) CreateTempUser(context.Context, string, string, string) error { return nil }
+func (fakeDB) DropTempUser(context.Context, string) error                   { return nil }
 func (d fakeDB) SetConnectionLimit(_ context.Context, user string, n int) error {
 	d.limits[user] = n
 	return nil

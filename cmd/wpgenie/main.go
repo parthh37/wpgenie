@@ -23,15 +23,19 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/analytics"
 	"github.com/parthh37/wpgenie/internal/api"
+	"github.com/parthh37/wpgenie/internal/backup"
 	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/dbprov"
 	"github.com/parthh37/wpgenie/internal/iprep"
+	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
+	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -74,6 +78,28 @@ Usage:
                                         Cloudflare cache purging; "cloudflare" reads
                                         the API token from stdin
   wpgenie site events <site-id>         activity log (autoscaling, updates, scans)
+  wpgenie site backup <site-id> [now|ls|restore <repo> <backup> [--files-only|--db-only]
+                          |download <repo> <backup> [file]|rm <repo> <backup>|policy [flags]]
+                                        restic backups: files + database, deduplicated, encrypted
+  wpgenie site staging <site-id> [domain]
+                                        clone into a staging site (default staging.<domain>)
+  wpgenie site push <staging-id> [--files code|all] [--db [--tables t1,t2]]
+                                        push staging to its live site (backed up first)
+  wpgenie site domain <site-id> add <domain> [--redirect] | rm <domain>
+                          | redirect <domain> on|off | primary <domain>
+                                        aliases, www <-> apex redirects, primary domain
+  wpgenie site cert <site-id> [show | set <cert.pem> <key.pem> | rm]
+                                        the site's own TLS certificate
+  wpgenie site php <site-id> [--version 8.2|8.3|8.4] [--memory-limit MB] [--upload-max MB]
+                          [--max-execution-time S] [--max-input-vars N]
+  wpgenie site sftp <site-id> [ls | add [--suffix NAME] [--password] [--key FILE] | rm <login>
+                          | passwd <login> | nopasswd <login> | keys <login> <file>]
+  wpgenie site adminer <site-id>        one-time link to Adminer on the site's database
+  wpgenie jobs [<job-id>] [--site ID] [--active]
+                                        long operations (create, backups, restores, clones)
+  wpgenie backup repos | repo add local|s3|b2|sftp ... | repo check|rm|password <repo>
+  wpgenie backup ls <repo> | restore-new <repo> <backup> <domain>
+                                        backup destinations; restore any backup as a new site
   wpgenie mail enable <hostname> | disable | status
   wpgenie mail domain add|rm|dns <domain>
   wpgenie mail box add <address> [--quota MB] | passwd <address> | rm <address> | ls
@@ -127,6 +153,10 @@ func main() {
 		err = userCmd(cfg, args[1:])
 	case "audit":
 		err = auditCmd(cfg, args[1:])
+	case "jobs":
+		err = jobsCmd(cfg, args[1:])
+	case "backup":
+		err = backupCmd(cfg, args[1:])
 	default:
 		fs.Usage()
 		os.Exit(2)
@@ -175,6 +205,19 @@ func serve(cfg *config.Config) error {
 	} else if n > 0 {
 		log.Warn("marked updates interrupted by the last shutdown as failed", "count", n)
 	}
+	if n, err := st.FailInterruptedJobs(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		log.Warn("marked jobs interrupted by the last shutdown as failed", "count", n)
+	}
+	jobQueue := &jobs.Queue{Store: st, Log: log, Heavy: cfg.JobConcurrency}
+	// restic's cache (and the database dumps being backed up) are root-only.
+	for _, d := range []string{filepath.Join(cfg.DataDir, "backups", "cache"), filepath.Join(cfg.DataDir, "backups", "staging")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	docker := &runtime.Docker{}
 	cfRanges := cdn.NewRanges()
 	svc := &site.Service{
 		Cfg: cfg, Store: st, Runtime: &runtime.Docker{}, DB: db, Log: log,
@@ -186,6 +229,11 @@ func serve(cfg *config.Config) error {
 		Directory: &site.WordPressOrg{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
 		CDN:       &cdn.Cloudflare{},
 		CDNRanges: cfRanges,
+		Jobs:      jobQueue,
+		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
+			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},
+		Images:  docker,
+		Version: version,
 		Proxy: proxy.NewCaddy(proxy.Config{
 			ACMEEmail: cfg.ACMEEmail, AdminURL: cfg.CaddyAdmin, PanelDomain: cfg.PanelDomain,
 			PanelUpstream: cfg.ListenAddr, ShieldUpstream: cfg.ListenAddr,
@@ -209,6 +257,25 @@ func serve(cfg *config.Config) error {
 	}
 	svc.Mailer, svc.Webmail = mailSvc, mailSvc.Webmail
 	go mailSvc.Run(ctx)
+
+	// SFTP (one chrooted OpenSSH server for every site) and Adminer (on
+	// demand, on sites' own domains).
+	sftpSvc := &sftp.Service{Store: st, Docker: docker, Log: log, Cfg: sftp.Config{
+		DataDir: filepath.Join(cfg.DataDir, "sftp"), SitesDir: cfg.SitesDir(), Image: cfg.SFTPImage,
+		ImageDir: filepath.Join(cfg.ImagesDir, "sftp"), Port: cfg.SFTPPort}}
+	go func() {
+		if err := sftpSvc.Reconcile(ctx); err != nil {
+			log.Error("sftp: starting the server", "err", err)
+		}
+	}()
+	adminerSvc := &adminer.Service{Store: st, Docker: docker, Accounts: db, Log: log, Cfg: adminer.Config{
+		Image: cfg.AdminerImage, ImageDir: filepath.Join(cfg.ImagesDir, "adminer"), Port: cfg.AdminerPort,
+		Network: cfg.DockerNetwork, DBHost: cfg.MariaDBHost}}
+	go adminerSvc.Run(ctx)
+	svc.SiteRemoved = func(ctx context.Context, id string) {
+		sftpSvc.SiteRemoved(ctx, id)
+		adminerSvc.SiteRemoved(ctx, id)
+	}
 
 	// IP reputation: blocklists (saved, so a restart without network keeps
 	// them) and the country database, downloaded once a site uses it.
@@ -275,6 +342,7 @@ func serve(cfg *config.Config) error {
 	go svc.RunMaintenance(ctx)
 	go svc.RunCDN(ctx)
 	go svc.RunCDNRanges(ctx)
+	go svc.RunBackups(ctx)
 
 	upd := &updater.Updater{Current: version, Repo: cfg.UpdateRepo, StateDir: filepath.Join(cfg.DataDir, "updates")}
 	go upd.Run(ctx, 12*time.Hour)
@@ -285,9 +353,11 @@ func serve(cfg *config.Config) error {
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: (&api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
-			Updater: upd, Mail: mailSvc, Lists: lists, Countries: countries, Log: log}).Handler(),
+			Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, Adminer: adminerSvc,
+			Lists: lists, Countries: countries, Log: log}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		// Site creation and scaling run synchronously and can take minutes.
+		// Scaling runs synchronously and can take minutes (long operations
+		// are jobs; backup downloads extend their own deadline).
 		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  2 * time.Minute,
 	}
@@ -307,6 +377,9 @@ func serve(cfg *config.Config) error {
 	if !svc.WaitUpdates(time.Minute) {
 		log.Warn("stopping with a WordPress update still running; it will be marked interrupted")
 	}
+	if !jobQueue.Wait(20 * time.Second) {
+		log.Warn("stopping with jobs still running; they will be marked interrupted")
+	}
 	return err
 }
 
@@ -314,7 +387,8 @@ func serve(cfg *config.Config) error {
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|plugins|smtp|cdn|events")
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|" +
+			"plugins|smtp|cdn|events|backup|staging|push|domain|cert|php|sftp|adminer")
 	}
 	switch args[0] {
 	case "ls":
@@ -330,20 +404,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		}
 		return w.Flush()
 	case "create":
-		if len(args) != 3 {
-			return errors.New("usage: wpgenie site create <domain> <admin-email>")
-		}
-		var out struct {
-			Site        store.Site       `json:"site"`
-			Credentials site.Credentials `json:"credentials"`
-		}
-		if err := call(cfg, "POST", "/sites", site.CreateInput{Domain: args[1], AdminEmail: args[2]}, &out); err != nil {
-			return err
-		}
-		c := out.Credentials
-		fmt.Printf("Site %s created (%s)\n\n  Admin URL: %s\n  Username:  %s\n  Password:  %s\n\nSave the password now; it is not stored.\n",
-			out.Site.ID, c.URL, c.AdminURL, c.Username, c.Password)
-		return nil
+		return createSiteCmd(cfg, args[1:])
 	case "rm":
 		if len(args) != 2 {
 			return errors.New("usage: wpgenie site rm <site-id>")
@@ -359,6 +420,29 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return shieldCmd(cfg, args[1:])
 	case "updates", "update", "auto-update", "scan", "plugins", "smtp", "events", "cdn":
 		return siteOpsCmd(cfg, args[0], args[1:])
+	case "php":
+		return phpCmd(cfg, args[1:])
+	case "backup", "staging", "push", "domain", "cert", "sftp", "adminer":
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fmt.Errorf("usage: wpgenie site %s <site-id> ...", args[0])
+		}
+		id, rest := args[1], args[2:]
+		switch args[0] {
+		case "backup":
+			return siteBackupCmd(cfg, id, rest)
+		case "staging":
+			return stagingCmd(cfg, id, rest)
+		case "push":
+			return pushCmd(cfg, id, rest)
+		case "domain":
+			return domainCmd(cfg, id, rest)
+		case "cert":
+			return certCmd(cfg, id, rest)
+		case "sftp":
+			return sftpCmd(cfg, id, rest)
+		default:
+			return adminerCmd(cfg, id)
+		}
 	case "purge":
 		if len(args) != 2 {
 			return errors.New("usage: wpgenie site purge <site-id>")

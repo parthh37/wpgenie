@@ -161,6 +161,11 @@ func TestRenderIsValidCaddyfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapt(t, out)
+}
+
+func adapt(t *testing.T, out []byte) {
+	t.Helper()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "Caddyfile"), out, 0o644)
 
@@ -176,4 +181,50 @@ func TestRenderIsValidCaddyfile(t *testing.T) {
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("caddy rejected rendered config: %v\n%s\n--- Caddyfile ---\n%s", err, b, out)
 	}
+}
+
+var phase2Sites = []Site{
+	{ID: "sabc1234", Name: "Blog", Domains: []string{"example.com", "blog.example.com"},
+		Redirects: []string{"www.example.com", "old-name.test"}, CustomCert: true,
+		Root: "/var/lib/wpgenie/sites/sabc1234/public", Upstreams: []string{"127.0.0.1:19000"}, ShieldEnabled: true,
+		BodyWAF: WAFOff},
+	{ID: "sstg0001", Name: "Staging: Blog", Domains: []string{"staging.example.com"}, Staging: true,
+		Root: "/var/lib/wpgenie/sites/sstg0001/public", Upstreams: []string{"127.0.0.1:19001"}, ShieldEnabled: true},
+}
+
+func TestRenderDomainsCertsStaging(t *testing.T) {
+	out, err := testCaddy().Render(phase2Sites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	blog := s[strings.Index(s, "example.com, blog.example.com {"):strings.Index(s, "www.example.com, old-name.test {")]
+	redirects := s[strings.Index(s, "www.example.com, old-name.test {"):strings.Index(s, "staging.example.com {")]
+	staging := s[strings.Index(s, "staging.example.com {"):]
+	if !strings.Contains(blog, "tls /etc/caddy/certs/sabc1234/cert.pem /etc/caddy/certs/sabc1234/key.pem") {
+		t.Error("own certificate not used")
+	}
+	if !strings.Contains(redirects, "redir https://example.com{uri} permanent") || strings.Contains(redirects, "php_fastcgi") {
+		t.Errorf("redirect block:\n%s", redirects)
+	}
+	if strings.Contains(blog, "X-Robots-Tag") || !strings.Contains(staging, `X-Robots-Tag "noindex, nofollow"`) {
+		t.Error("noindex must be on staging sites only")
+	}
+	if strings.Contains(staging, "tls /etc") {
+		t.Error("a site without its own certificate must use automatic TLS")
+	}
+	for _, block := range []string{blog, staging} {
+		tools := strings.Index(block, "reverse_proxy /_wpgenie/*")
+		if tools < 0 || tools > strings.Index(block, "forward_auth") {
+			t.Error("WPGenie tools must be routed before the shield and the WAF")
+		}
+		if !strings.Contains(block[tools:tools+200], "header_up X-WPGenie-Site") {
+			t.Error("tools route must name the site (Caddy sets it, overriding the client)")
+		}
+	}
+	bad := []Site{{ID: "x", Domains: []string{"a.test"}, Redirects: []string{"b.test {\n}"}, Upstreams: []string{"127.0.0.1:1"}}}
+	if _, err := testCaddy().Render(bad); err == nil {
+		t.Error("a redirect domain with Caddyfile syntax rendered")
+	}
+	adapt(t, out)
 }

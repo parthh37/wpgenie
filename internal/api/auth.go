@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/auth"
+	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/store"
 )
@@ -47,6 +48,15 @@ type Principal struct {
 	Role      string
 	SessionID string // "" for the API token
 	TOTP      bool   // the user has two-factor authentication on
+}
+
+// owner is the stable identity job secrets are bound to: the user ID (a
+// name can be deleted and taken again), or the API token.
+func (p *Principal) owner() string {
+	if p.UserID == 0 {
+		return "api-token"
+	}
+	return "user:" + strconv.FormatInt(p.UserID, 10)
 }
 
 type ctxKey struct{}
@@ -136,7 +146,9 @@ func (s *Server) route(mux *http.ServeMux, pattern, role string, h handlerFunc) 
 			deny(errForbidden)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, p))
+		// Jobs a request starts are attributed to its principal.
+		ctx := jobs.WithActor(context.WithValue(r.Context(), ctxKey{}, p), p.Name)
+		r = r.WithContext(jobs.WithOwner(ctx, p.owner()))
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		err = h(rec, r)
 		if err != nil {

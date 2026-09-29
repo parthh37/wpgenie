@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/domain"
+	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/shield"
@@ -38,6 +40,9 @@ type DBProvisioner interface {
 	SetConnectionLimit(ctx context.Context, user string, n int) error
 	Tables(ctx context.Context, db string) ([]string, error)
 	DropTables(ctx context.Context, db string, tables []string) error
+	// Temporary accounts with rights on one database (see dbprov).
+	CreateTempUser(ctx context.Context, db, user, password string) error
+	DropTempUser(ctx context.Context, user string) error
 }
 
 // ObjectCache clears keys from the shared object cache. Flushing must never
@@ -71,6 +76,17 @@ type Service struct {
 	CDNRanges *cdn.Ranges
 	DNS       Resolver
 	Log       *slog.Logger
+	// Jobs runs long operations (create, backups, restores, clones) in the
+	// background; Backups is restic (see internal/backup); Images builds
+	// the PHP image of a version the first time a site switches to it.
+	Jobs    *jobs.Queue
+	Backups BackupEngine
+	Images  ImageBuilder
+	// Version is WPGenie's version, recorded in backups.
+	Version string
+	// SiteRemoved is told about deleted sites (SFTP logins, Adminer
+	// sessions).
+	SiteRemoved func(ctx context.Context, id string)
 
 	// opsMu serialises everything that allocates ports or starts/stops
 	// containers (create, scale, cache changes): port allocation is only
@@ -88,6 +104,13 @@ type Service struct {
 	lastMaint sync.Map
 	inflight  sync.WaitGroup // running WordPress updates
 	cdn       cdnState
+	// builds: PHP version -> *sync.Mutex, so one image builds at a time.
+	builds sync.Map
+	// repoMu serialises repository maintenance (prune, check) per repo.
+	repoMu sync.Map
+	// certWarnDay: the day expiring certificates were last reported (the
+	// backup scheduler's goroutine only).
+	certWarnDay string
 }
 
 type CreateInput struct {
@@ -111,138 +134,250 @@ var (
 
 func NormalizeDomain(d string) (string, error) { return domain.Normalize(d) }
 
-// Create provisions a site end to end. Every completed step registers an
-// undo; if a later step fails, the undos run in reverse so a failed create
-// leaves nothing behind and the domain can be retried.
-func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ *Credentials, err error) {
+// Progress reports how far a long operation is (see jobs.Task.Progress).
+type Progress func(pct int, step string)
+
+func noProgress(int, string) {}
+
+// siteBuild provisions a new site step by step. Every completed step
+// registers an undo; if a later step fails, rollback runs them in reverse,
+// so a failed create (or clone, or restore into a new site) leaves nothing
+// behind and the domain can be retried.
+type siteBuild struct {
+	s              *Service
+	st             *store.Site
+	dbUser, dbPass string
+	undo           []func()
+}
+
+func bgCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), time.Minute)
+}
+
+func (b *siteBuild) rollback(cause error) {
+	b.s.Log.Error("site provisioning failed, rolling back", "site", b.st.ID, "err", cause)
+	// Fresh contexts: the job's own context may be what failed.
+	for i := len(b.undo) - 1; i >= 0; i-- {
+		b.undo[i]()
+	}
+	b.undo = nil
+}
+
+// newSite is a site record with WPGenie's defaults for new sites.
+func newSite(domain, name string) *store.Site {
+	return &store.Site{
+		Name: name, PrimaryDomain: domain, PHPVersion: "8.3",
+		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
+		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
+		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
+		PageCache: true, ObjectCache: true,
+	}
+}
+
+// validName: the name ends up in generated config comments, so no line
+// breaks or other control characters.
+func validName(name string) error {
+	if utf8.RuneCountInString(name) > 100 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%w: name must be up to 100 characters on one line", ErrInvalidInput)
+	}
+	return nil
+}
+
+// reserve records a new site (status provisioning) with its primary domain
+// and first port. opsMu makes the domain check and the port allocation
+// atomic with the insert.
+func (s *Service) reserve(ctx context.Context, st *store.Site) (*siteBuild, error) {
+	s.opsMu.Lock()
+	defer s.opsMu.Unlock()
+	if err := s.domainFree(ctx, st.PrimaryDomain); err != nil {
+		return nil, err
+	}
+	ports, err := s.Store.AllocatePorts(ctx, s.Cfg.SitePortBase, 1)
+	if err != nil {
+		return nil, err
+	}
+	id := "s" + randString(7, lowerAlnum)
+	st.ID, st.FPMPort, st.Upstreams = id, ports[0], []int{ports[0]}
+	st.DBName, st.Status = "wp_"+id, store.StatusProvisioning
+	if err := s.Store.CreateSite(ctx, st); err != nil {
+		return nil, err
+	}
+	st.Domains = []string{st.PrimaryDomain}
+	b := &siteBuild{s: s, st: st, dbUser: "u_" + id, dbPass: randString(32, passAlphabet)}
+	b.undo = append(b.undo, func() { c, cancel := bgCtx(); defer cancel(); s.Store.DeleteSite(c, id) })
+	return b, nil
+}
+
+// domainFree checks a domain can be attached to a site. Caller holds opsMu.
+func (s *Service) domainFree(ctx context.Context, domain string) error {
+	if s.Webmail != nil {
+		if host, _ := s.Webmail(); host == domain {
+			return fmt.Errorf("%w: it is the mail server's hostname", ErrDomainTaken)
+		}
+	}
+	if domain == s.Cfg.PanelDomain {
+		return fmt.Errorf("%w: it is the panel's hostname", ErrDomainTaken)
+	}
+	if taken, err := s.Store.DomainExists(ctx, domain); err != nil {
+		return err
+	} else if taken {
+		return ErrDomainTaken
+	}
+	return nil
+}
+
+// start creates the site's database and directory (wp-config.php with the
+// given table prefix, random when "") and runs its first replica.
+func (b *siteBuild) start(ctx context.Context, prefix, environment string, report Progress) error {
+	s, st := b.s, b.st
+	report(5, "Creating the database")
+	if err := s.DB.CreateSiteDB(ctx, st.DBName, b.dbUser, b.dbPass); err != nil {
+		return err
+	}
+	b.undo = append(b.undo, func() { c, cancel := bgCtx(); defer cancel(); s.DB.DropSiteDB(c, st.DBName, b.dbUser) })
+
+	dir, docroot := s.Cfg.SiteDir(st.ID), s.Cfg.SiteRoot(st.ID)
+	if err := s.prepareFiles(st.ID, dir, docroot, b.dbUser, b.dbPass, prefix, environment); err != nil {
+		return err
+	}
+	b.undo = append(b.undo, func() { os.RemoveAll(dir) })
+
+	report(10, "Starting PHP")
+	spec, err := s.specFor(ctx, st)
+	if err != nil {
+		return err
+	}
+	// Registered before starting: a failed `docker run` can still leave a
+	// created container behind.
+	b.undo = append(b.undo, func() { c, cancel := bgCtx(); defer cancel(); s.Runtime.RemoveSite(c, st.ID) })
+	if err := s.Runtime.StartReplica(ctx, spec, st.FPMPort); err != nil {
+		return err
+	}
+	// The image entrypoint copies WordPress core into the empty docroot on
+	// first start and only then execs PHP-FPM, so "FPM is listening" means
+	// the copy is complete. (Waiting for one file to appear raced the copy.)
+	return s.waitReady(ctx, []string{runtime.ContainerName(st.ID, st.FPMPort)}, 90*time.Second)
+}
+
+// finish writes WPGenie's wrappers, limits the site's database connections
+// and puts it live.
+func (b *siteBuild) finish(ctx context.Context, report Progress) error {
+	s, st := b.s, b.st
+	report(90, "Going live")
+	if err := s.rewriteManagedFiles(ctx, st.ID); err != nil {
+		return err
+	}
+	if err := s.DB.SetConnectionLimit(ctx, b.dbUser, dbConnLimit(st.Replicas, runtime.FPMMaxChildren(st.MemoryMB))); err != nil {
+		return err
+	}
+	if err := s.Store.SetSiteStatus(ctx, st.ID, store.StatusActive); err != nil {
+		return err
+	}
+	if err := s.Sync(ctx); err != nil {
+		return err
+	}
+	st.Status = store.StatusActive
+	b.undo = nil
+	s.defaultBackupPolicy(ctx, st)
+	return nil
+}
+
+// prepareCreate validates a create request and reserves the site.
+func (s *Service) prepareCreate(ctx context.Context, in *CreateInput) (*siteBuild, error) {
 	domain, err := NormalizeDomain(in.Domain)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if !emailRe.MatchString(in.AdminEmail) {
-		return nil, nil, fmt.Errorf("%w: admin_email", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: admin_email", ErrInvalidInput)
 	}
 	if in.AdminUser == "" {
 		in.AdminUser = "wpg_" + randString(6, lowerAlnum) // never the guessable "admin"
 	}
 	if !userRe.MatchString(in.AdminUser) {
-		return nil, nil, fmt.Errorf("%w: admin_user", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: admin_user", ErrInvalidInput)
 	}
 	if in.Name == "" {
 		in.Name = domain
 	}
-	// The name ends up in generated config comments: no line breaks or
-	// other control characters.
-	if utf8.RuneCountInString(in.Name) > 100 || strings.IndexFunc(in.Name, unicode.IsControl) >= 0 {
-		return nil, nil, fmt.Errorf("%w: name must be up to 100 characters on one line", ErrInvalidInput)
+	if err := validName(in.Name); err != nil {
+		return nil, err
 	}
+	return s.reserve(ctx, newSite(domain, in.Name))
+}
 
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-
-	if s.Webmail != nil {
-		if host, _ := s.Webmail(); host == domain {
-			return nil, nil, fmt.Errorf("%w: it is the mail server's hostname", ErrDomainTaken)
-		}
-	}
-	if taken, err := s.Store.DomainExists(ctx, domain); err != nil {
-		return nil, nil, err
-	} else if taken {
-		return nil, nil, ErrDomainTaken
-	}
-	ports, err := s.Store.AllocatePorts(ctx, s.Cfg.SitePortBase, 1)
-	if err != nil {
-		return nil, nil, err
-	}
-	port := ports[0]
-
-	id := "s" + randString(7, lowerAlnum)
-	st := &store.Site{
-		ID: id, Name: in.Name, PrimaryDomain: domain, PHPVersion: "8.3", FPMPort: port,
-		DBName: "wp_" + id, Status: store.StatusProvisioning,
-		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
-		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
-		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
-		PageCache: true, ObjectCache: true, Upstreams: []int{port},
-	}
-	dbUser, dbPass := "u_"+id, randString(32, passAlphabet)
-	dir, docroot := s.Cfg.SiteDir(id), s.Cfg.SiteRoot(id)
-
-	var undo []func()
+// install provisions a reserved site with a fresh WordPress.
+func (s *Service) install(ctx context.Context, b *siteBuild, in CreateInput, report Progress) (_ *Credentials, err error) {
 	defer func() {
-		if err == nil {
-			return
-		}
-		s.Log.Error("site create failed, rolling back", "site", id, "err", err)
-		// Use a fresh context: the request context may be what failed.
-		for i := len(undo) - 1; i >= 0; i-- {
-			undo[i]()
+		if err != nil {
+			b.rollback(err)
 		}
 	}()
-	bg := func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.Background(), time.Minute)
+	st := b.st
+	if err := b.start(ctx, "", "", report); err != nil {
+		return nil, err
 	}
-
-	if err = s.Store.CreateSite(ctx, st); err != nil {
-		return nil, nil, err
-	}
-	undo = append(undo, func() { c, cancel := bg(); defer cancel(); s.Store.DeleteSite(c, id) })
-
-	if err = s.DB.CreateSiteDB(ctx, st.DBName, dbUser, dbPass); err != nil {
-		return nil, nil, err
-	}
-	undo = append(undo, func() { c, cancel := bg(); defer cancel(); s.DB.DropSiteDB(c, st.DBName, dbUser) })
-
-	if err = s.prepareFiles(id, dir, docroot, dbUser, dbPass); err != nil {
-		return nil, nil, err
-	}
-	undo = append(undo, func() { os.RemoveAll(dir) })
-
-	spec, err := s.specFor(ctx, st)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Registered before starting: a failed `docker run` can still leave a
-	// created container behind.
-	undo = append(undo, func() { c, cancel := bg(); defer cancel(); s.Runtime.RemoveSite(c, id) })
-	if err = s.Runtime.StartReplica(ctx, spec, port); err != nil {
-		return nil, nil, err
-	}
-
-	// The image entrypoint copies WordPress core into the empty docroot on
-	// first start and only then execs PHP-FPM, so "FPM is listening" means
-	// the copy is complete. (Waiting for one file to appear raced the copy.)
-	if err = s.waitReady(ctx, []string{runtime.ContainerName(id, port)}, 90*time.Second); err != nil {
-		return nil, nil, err
-	}
-
+	report(70, "Installing WordPress")
 	creds := &Credentials{
-		URL: "https://" + domain, AdminURL: "https://" + domain + "/wp-admin/",
+		URL: "https://" + st.PrimaryDomain, AdminURL: "https://" + st.PrimaryDomain + "/wp-admin/",
 		Username: in.AdminUser, Password: randString(20, passAlphabet),
 	}
-	_, err = s.Runtime.WP(ctx, id, strings.NewReader(creds.Password+"\n"),
+	if _, err := s.Runtime.WP(ctx, st.ID, strings.NewReader(creds.Password+"\n"),
 		"core", "install", "--url="+creds.URL, "--title="+in.Name,
 		"--admin_user="+in.AdminUser, "--admin_email="+in.AdminEmail,
-		"--prompt=admin_password", "--skip-email")
+		"--prompt=admin_password", "--skip-email"); err != nil {
+		return nil, err
+	}
+	if err := b.finish(ctx, report); err != nil {
+		return nil, err
+	}
+	return creds, nil
+}
+
+// Create provisions a site end to end and returns its admin credentials
+// (never stored). StartCreate does the same as a job.
+func (s *Service) Create(ctx context.Context, in CreateInput) (*store.Site, *Credentials, error) {
+	b, err := s.prepareCreate(ctx, &in)
 	if err != nil {
 		return nil, nil, err
 	}
+	creds, err := s.install(ctx, b, in, noProgress)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b.st, creds, nil
+}
 
-	if err = s.writeCacheFiles(id, CacheSettings{PageCache: st.PageCache, ObjectCache: st.ObjectCache}); err != nil {
-		return nil, nil, err
+// StartCreate validates the request and reserves the domain right away
+// (so "domain taken" is an immediate error), then provisions the site as a
+// job. The admin credentials are the job's secret, for whoever started it.
+func (s *Service) StartCreate(ctx context.Context, in CreateInput) (*store.Site, int64, error) {
+	b, err := s.prepareCreate(ctx, &in)
+	if err != nil {
+		return nil, 0, err
 	}
-	if err = s.DB.SetConnectionLimit(ctx, dbUser, dbConnLimit(st.Replicas, spec.MaxChildren)); err != nil {
-		return nil, nil, err
+	st := *b.st
+	owner := jobs.OwnerFrom(ctx)
+	id, err := s.Jobs.Submit(ctx, s.siteJob(st.ID, "create", false), func(ctx context.Context, t *jobs.Task) error {
+		creds, err := s.install(ctx, b, in, t.Progress)
+		if err != nil {
+			return err
+		}
+		t.SetSecret(creds, owner)
+		t.SetResult(map[string]string{"site_id": st.ID, "url": creds.URL})
+		return nil
+	})
+	if err != nil {
+		b.rollback(err)
+		return nil, 0, err
 	}
-	if err = s.Store.SetSiteStatus(ctx, id, store.StatusActive); err != nil {
-		return nil, nil, err
-	}
-	if err = s.Sync(ctx); err != nil {
-		return nil, nil, err
-	}
-	st.Status = store.StatusActive
-	st.Domains = []string{domain}
-	return st, creds, nil
+	return &st, id, nil
+}
+
+// siteJob is a job that holds the site's maintenance lock while it runs,
+// so it never overlaps an update, a scan or another job on the same site.
+func (s *Service) siteJob(siteID, kind string, heavy bool) jobs.Spec {
+	return jobs.Spec{SiteID: siteID, Kind: kind, Heavy: heavy, Lock: jobs.LockFunc(s.maintLock(siteID))}
 }
 
 // prepareFiles lays out the site directory:
@@ -255,14 +390,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 // compromised plugin can neither leak it over HTTP nor rewrite it. Caddy runs
 // as its own user outside group 82, so it reaches public/ but can never read
 // wp-config.php, even through a symlink a site plants in its docroot.
-func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass string) error {
+func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass, prefix, environment string) error {
 	if err := os.MkdirAll(docroot, 0o755); err != nil {
 		return err
+	}
+	if prefix == "" {
+		prefix = "wp_" + randString(4, lowerAlnum) + "_"
 	}
 	cfg, err := renderWPConfig(wpConfigData{
 		SiteID: id, DBName: "wp_" + id, DBUser: dbUser, DBPassword: dbPass,
 		DBHost: s.Cfg.MariaDBHost, RedisHost: s.Cfg.RedisHost,
-		TablePrefix: "wp_" + randString(4, lowerAlnum) + "_",
+		TablePrefix: prefix, Environment: environment,
 	})
 	if err != nil {
 		return err
@@ -313,10 +451,20 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if staging, err := s.Store.StagingOf(ctx, id); err != nil {
+		return err
+	} else if len(staging) > 0 {
+		return fmt.Errorf("%w: delete its staging site (%s) first", ErrConflict, strings.Join(staging, ", "))
+	}
 	if err := s.Store.DeleteSite(ctx, id); err != nil {
 		return err
 	}
 	var errs []error
+	// SFTP logins and database sessions go with the site (the store
+	// dropped their records; the services still have to hear about it).
+	if s.SiteRemoved != nil {
+		s.SiteRemoved(ctx, id)
+	}
 	if s.Mailer != nil {
 		// Unconditionally: a half-finished SetSMTP can leave the sender
 		// mailbox behind with smtp still off. A no-op if there is none.
@@ -327,7 +475,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	errs = append(errs, s.DB.DropSiteDB(ctx, st.DBName, "u_"+id))
 	errs = append(errs, os.RemoveAll(s.Cfg.SiteDir(id)))
 	// Snapshots hold full database dumps: a deleted site's data must go too.
+	// (Backups in restic repositories stay: restoring a deleted site is
+	// what they are for. Delete them from the backups view.)
 	errs = append(errs, os.RemoveAll(s.snapshotRoot(id)))
+	errs = append(errs, os.RemoveAll(s.certDir(id)))
 	return errors.Join(errs...)
 }
 
@@ -344,6 +495,10 @@ func (s *Service) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	certs, err := s.Store.SiteCerts(ctx)
+	if err != nil {
+		return err
+	}
 	var ps []proxy.Site
 	settings := make(map[string]shield.SiteSettings, len(sites))
 	for _, st := range sites {
@@ -352,10 +507,14 @@ func (s *Service) Sync(ctx context.Context) error {
 		}
 		mode := shield.Mode(st.ShieldMode)
 		settings[st.ID] = shieldSettings(st)
+		// The primary domain first: redirects go to Domains[0].
+		domains := append([]string{st.PrimaryDomain}, slices.DeleteFunc(slices.Clone(st.Domains),
+			func(d string) bool { return d == st.PrimaryDomain })...)
 		ps = append(ps, proxy.Site{
-			ID: st.ID, Name: st.Name, Domains: st.Domains, Root: s.Cfg.SiteRoot(st.ID),
+			ID: st.ID, Name: st.Name, Domains: domains, Redirects: st.RedirectDomains, Root: s.Cfg.SiteRoot(st.ID),
 			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: !st.XMLRPC,
 			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
+			CustomCert: certs[st.ID] != nil, Staging: st.ParentID != "",
 		})
 	}
 	if s.Webmail != nil {

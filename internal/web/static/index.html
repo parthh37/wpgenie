@@ -7,12 +7,14 @@
 <link rel="stylesheet" href="/style.css">
 <script src="/app.js" defer></script>
 <script src="/panels.js" defer></script>
+<script src="/environments.js" defer></script>
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="logo">◆</span> WPGenie</div>
   <nav id="tabs" hidden>
     <button class="tab active" data-tab="sites">Sites</button>
+    <button class="tab" data-tab="backups">Backups</button>
     <button class="tab" data-tab="mail">Mail</button>
     <button class="tab" data-tab="security">Security</button>
     <button class="tab admin-only" data-tab="users">Users</button>
@@ -52,6 +54,7 @@
 
   <div id="error" class="card error" hidden></div>
   <div id="creds" class="card notice" hidden></div>
+  <div id="jobs" class="card jobs" hidden></div>
 
   <section id="app" class="panel" data-panel="sites" hidden>
     <div class="bar">
@@ -76,6 +79,49 @@
 
     <div id="sites" class="sites"></div>
     <p id="empty" class="muted center" hidden>No sites yet. Create your first one.</p>
+  </section>
+
+  <section class="panel" data-panel="backups" hidden>
+    <div class="bar"><h1>Backups</h1></div>
+    <div class="card">
+      <h2>Destinations</h2>
+      <p class="muted small">Backups are restic snapshots: deduplicated (WordPress, themes and plugins are stored once for all sites) and
+        encrypted with the destination's password. <strong>This server</strong> protects against a broken site or a bad update;
+        add an off-server destination to survive losing the server, and keep its password somewhere else.</p>
+      <div id="repos"></div>
+    </div>
+    <div class="card admin-only">
+      <h2>Add a destination</h2>
+      <form id="repo-form" class="grid">
+        <label>Name<input name="name" placeholder="Offsite (Backblaze)" required></label>
+        <label>Type
+          <select name="kind">
+            <option value="s3">S3-compatible (AWS, Wasabi, R2, MinIO…)</option>
+            <option value="b2">Backblaze B2</option>
+            <option value="sftp">SFTP server</option>
+            <option value="local">Directory on this server</option>
+          </select>
+        </label>
+        <label data-kinds="s3">Endpoint <span class="muted">(empty = AWS)</span><input name="endpoint" placeholder="s3.eu-central-003.backblazeb2.com"></label>
+        <label data-kinds="s3 b2">Bucket<input name="bucket"></label>
+        <label data-kinds="s3 b2">Prefix <span class="muted">(optional)</span><input name="prefix" placeholder="wpgenie"></label>
+        <label data-kinds="s3">Region <span class="muted">(optional)</span><input name="region" placeholder="us-east-1"></label>
+        <label data-kinds="s3 b2">Key ID<input name="key_id" autocomplete="off"></label>
+        <label data-kinds="s3 b2">Secret key<input name="secret" type="password" autocomplete="new-password"></label>
+        <label data-kinds="sftp">Host<input name="host" placeholder="backup.example.net"></label>
+        <label data-kinds="sftp">Port<input name="port" type="number" placeholder="22"></label>
+        <label data-kinds="sftp">User<input name="user"></label>
+        <label data-kinds="sftp local">Directory<input name="path" placeholder="/srv/backups/wpgenie"></label>
+        <label>Existing repository password <span class="muted">(only to attach backups made elsewhere)</span><input name="password" type="password" autocomplete="new-password"></label>
+        <div class="actions"><button type="submit">Add destination</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <div class="site-head"><h2>Browse a destination</h2>
+        <form id="browse-form" class="inline"><select name="repo"></select><button class="ghost" type="submit">List backups</button></form></div>
+      <p class="muted small">Every WPGenie backup in the destination, including deleted sites'. Any of them can become a new site on another domain.</p>
+      <div id="browse"></div>
+    </div>
   </section>
 
   <section class="panel" data-panel="mail" hidden>
@@ -356,6 +402,26 @@
       <p class="muted small">Every update takes a snapshot first; if the site stops working afterwards it is restored automatically.</p>
       <div class="upd-list"></div>
       <div class="upd-history"></div>
+    </details>
+    <details class="perf bk">
+      <summary>Backups <span class="muted small bk-summary"></span></summary>
+      <div class="bk-body"></div>
+    </details>
+    <details class="perf env">
+      <summary>Staging <span class="muted small env-summary"></span></summary>
+      <div class="env-body"></div>
+    </details>
+    <details class="perf dom">
+      <summary>Domains &amp; SSL <span class="muted small dom-summary"></span></summary>
+      <div class="dom-body"></div>
+    </details>
+    <details class="perf php">
+      <summary>PHP <span class="muted small php-summary"></span></summary>
+      <div class="php-body"></div>
+    </details>
+    <details class="perf acc">
+      <summary>SFTP &amp; database</summary>
+      <div class="acc-body"></div>
     </details>
     <details class="perf log">
       <summary>Activity</summary>

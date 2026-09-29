@@ -31,7 +31,9 @@ func (s *Service) RunCron(ctx context.Context) {
 			continue
 		}
 		for _, st := range sites {
-			if st.Status != store.StatusActive {
+			// Staging sites get no cron: a copy of a shop must not charge
+			// renewals or e-mail customers.
+			if st.Status != store.StatusActive || st.ParentID != "" {
 				continue
 			}
 			// A slow run is never stacked with the next minute's run.

@@ -24,6 +24,14 @@ jobs:
           WPGENIE_TEST_DOCKER: "1"
       - run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/wpgenie
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make php-image
+      - name: backups, staging, domains, PHP, SFTP and Adminer against real WordPress, MariaDB and restic
+        run: make test-e2e
+
   installer:
     runs-on: ubuntu-latest
     steps:

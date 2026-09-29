@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # WPGenie PHP runtime: official WordPress FPM image + Redis extension,
-# WP-CLI and a hardened FPM pool. Rebuilt by CI; PHP_VERSION selects the line.
+# WP-CLI and a hardened FPM pool. Rebuilt by CI; PHP_VERSION selects the line
+# (8.2, 8.3, 8.4: tagged wpgenie/php:<version>; the daemon builds the ones
+# other than the default when a site first switches to them).
 ARG PHP_VERSION=8.3
 FROM wordpress:php${PHP_VERSION}-fpm-alpine
 
@@ -46,6 +48,12 @@ RUN chmod -R a+rX,go-w /usr/local/share/wpgenie /usr/local/etc/php/jail.d
 ENV WP_CLI_CACHE_DIR=/tmp/wp-cli-cache \
     WP_CLI_PACKAGES_DIR=/tmp/wp-cli-packages \
     HOME=/tmp \
-    WPG_MAX_CHILDREN=4
+    WPG_MAX_CHILDREN=4 \
+    WPG_MEMORY_LIMIT=256M \
+    WPG_MAX_EXECUTION_TIME=60 \
+    WPG_REQUEST_TIMEOUT=120s \
+    WPG_UPLOAD_MAX=64M \
+    WPG_POST_MAX=64M \
+    WPG_MAX_INPUT_VARS=5000
 
 USER 82:82

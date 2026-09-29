@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/axiomhq/hyperloglog v0.3.0
 	github.com/go-sql-driver/mysql v1.10.1
+	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.60.0
 	rsc.io/qr v0.2.0
 )

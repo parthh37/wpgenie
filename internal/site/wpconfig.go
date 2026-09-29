@@ -32,6 +32,9 @@ define( 'WP_REDIS_HOST', '{{.RedisHost}}' );
 define( 'WP_REDIS_PREFIX', '{{.SiteID}}:' );
 define( 'WP_CACHE_KEY_SALT', '{{.SiteID}}:' );
 define( 'DISABLE_WP_CRON', true );         // WPGenie runs cron every minute instead of on page views
+{{- if .Environment}}
+define( 'WP_ENVIRONMENT_TYPE', '{{.Environment}}' ); // plugins (Jetpack, WooCommerce, …) act accordingly
+{{- end}}
 // --- end WPGenie ---
 
 if ( ! defined( 'WP_DEBUG' ) ) {
@@ -45,7 +48,10 @@ require_once ABSPATH . 'wp-settings.php';
 
 type wpConfigData struct {
 	SiteID, DBName, DBUser, DBPassword, DBHost, RedisHost, TablePrefix string
-	Salts                                                              []salt
+	// Environment is WP_ENVIRONMENT_TYPE ("" = WordPress's default,
+	// production): "staging" for staging sites.
+	Environment string
+	Salts       []salt
 }
 
 type salt struct{ Name, Value string }
