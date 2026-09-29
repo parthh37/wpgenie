@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-linux test test-integration test-e2e lint php-image caddy-image release-key clean
+.PHONY: build build-linux test test-integration test-postgres test-e2e lint php-image caddy-image release-key clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/wpgenie ./cmd/wpgenie
@@ -17,9 +17,20 @@ test:
 test-integration:
 	WPGENIE_TEST_DOCKER=1 go test -race -count=1 ./...
 
+# Every store-backed test (the store suite, API, jobs, analytics, ...) on
+# PostgreSQL, in a throwaway postgres:17-alpine container. (test-integration
+# already runs the store package's own tests on both databases.)
+PG_TEST_PORT ?= 55439
+test-postgres:
+	docker rm -f wpgenie-test-postgres >/dev/null 2>&1 || true
+	docker run -d --rm --name wpgenie-test-postgres -e POSTGRES_PASSWORD=wpgenie-test \
+	  -p 127.0.0.1:$(PG_TEST_PORT):5432 postgres:17-alpine >/dev/null
+	WPGENIE_TEST_POSTGRES='postgres://postgres:wpgenie-test@127.0.0.1:$(PG_TEST_PORT)/postgres?sslmode=disable' \
+	  go test -race -count=1 ./...; status=$$?; docker rm -f wpgenie-test-postgres >/dev/null; exit $$status
+
 # Phase 2 and 3 end to end (backups, restores, staging, pushes, domains,
-# PHP 8.4, SFTP, Adminer; page cache, images, PHP errors, CDN links) against
-# real WordPress, MariaDB, Valkey and restic. Runs the tests in
+# PHP 8.4, SFTP, Adminer; page cache, images, PHP errors, CDN links; uploads
+# offload) against real WordPress, MariaDB, Valkey, restic, rclone and MinIO. Runs the tests in
 # a container on a Docker network shared with the database; the temporary
 # directory is mounted at the same path so sibling containers' bind mounts
 # resolve. Needs the PHP images (make php-image, and PHP_VERSION=8.4).

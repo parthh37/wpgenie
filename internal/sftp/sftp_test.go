@@ -18,6 +18,7 @@ import (
 
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 func TestUsername(t *testing.T) {
@@ -104,11 +105,7 @@ func TestSFTPServer(t *testing.T) {
 	os.WriteFile(filepath.Join(site, "wp-config.php"), []byte("<?php // db password"), 0o640)
 	os.Chown(filepath.Join(site, "wp-config.php"), 0, 82)
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	st := storetest.Open(t)
 	st.CreateSite(ctx, &store.Site{ID: "sabc1234", Name: "x", PrimaryDomain: "a.test", PHPVersion: "8.3", FPMPort: 19000,
 		DBName: "wp_sabc1234", Status: store.StatusActive, ShieldMode: "standard", MemoryMB: 512, CPUs: 1, Replicas: 1})
 	svc := &Service{Store: st, Docker: &runtime.Docker{}, Log: slog.New(slog.DiscardHandler),

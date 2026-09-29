@@ -32,7 +32,7 @@ issue candidate once its phase starts.
 - [x] Per-site WAF toggle, wp-admin IP allowlist, trusted IPs
 - [x] Shield settings per site: xmlrpc toggle, custom rate limits, challenge difficulty
 - [ ] Follow-ups (not needed for the phase): body-WAF matches towards automatic bans, CrowdSec/AbuseIPDB feeds (need accounts),
-      WebAuthn/passkeys, per-user API tokens
+      WebAuthn/passkeys (per-user API tokens: done with Phase 5's accounts)
 
 ## Phase 2 — Backups & environments ✅
 - [x] Backups with restic (dedup + encryption): files + `mariadb-dump`, to local/S3/B2/SFTP; restic runs in a
@@ -94,10 +94,31 @@ issue candidate once its phase starts.
 ## Platform
 - [x] One-click self-update from signed releases with automatic rollback
 
-## Phase 5 — Multi-server
-- [ ] `wpgenie agent` + mTLS control channel; `runtime.RemoteAgent`
-- [ ] Uploads offload to S3-compatible storage (prerequisite for replicas across nodes)
-- [ ] Node placement, site migration between nodes
-- [ ] Postgres store for multi-node control plane
-- [ ] Prometheus metrics, alerting (uptime, cert expiry, disk)
-- [ ] Bandwidth quotas and billing hooks (WHMCS/Stripe), reseller accounts
+## Phase 5 — Multi-server ✅
+- [x] `wpgenie agent` + mTLS control channel: every server a full data plane run by the same daemon; key-pinned
+      one-time pairing, a private CA on the panel, identities checked by name; the panel forwards site operations as
+      the signed-in user; HTTP/2 tunnels for everything that crosses servers (nothing published)
+- [x] Uploads offload to S3-compatible storage (prerequisite for replicas across nodes): rclone in a throwaway
+      container (keys on stdin; it only sees files the daemon copied out through `os.Root`), new uploads within a
+      minute and a nightly full comparison, WordPress deletes propagated through a locked queue, missing uploads
+      served by Caddy from the bucket's public URL (also for staging clones), local copies optionally removed after
+      N days once the bucket is confirmed to hold them (and copied back on demand)
+- [x] Node placement (memory promised vs. capacity, disk, draining), site migration between nodes (two-pass copy,
+      seconds of maintenance, visitors and ACME challenges forwarded from the old server with their addresses until
+      DNS moves), drain; replicas spread over several servers (writes stay home, code pushed on change, database and
+      cache through mTLS links)
+- [x] Postgres store for multi-node control plane (`database_url`; SQLite stays the default; `wpgenie store migrate-to-postgres`)
+- [x] Prometheus metrics, alerting (uptime, cert expiry, disk)
+- [x] Bandwidth quotas and billing hooks (WHMCS/Stripe), reseller accounts: customer and reseller accounts on
+      plans (sites, disk, monthly bandwidth, per-site resources, features) enforced on every tenant route (default
+      deny, ownership checked centrally), usage metering (bandwidth from the rollups, disk nightly and on demand),
+      80/100% notifications and overage suspension, suspension as a static 503 with PHP stopped, per-user API
+      tokens, provisioning API with idempotent creation and one-time sign-on links, WHMCS module, Stripe
+      webhooks and metered bandwidth, signed outgoing webhooks with a retry queue
+- [x] Object cache isolation: a Valkey ACL user per site, limited to its own keys (tenants' PHP can't touch
+      another site's cache), default user off
+- [ ] Follow-ups (not needed for the phase): DNS ownership checks for domains tenants add, backups in the disk quota,
+      tenant-managed mailboxes within a plan, usage history beyond the current month, per-account audit log;
+      several panel processes behind one database (leader election for the startup sweeps and the loops); a
+      shared rate limiter across servers; spreading a site's staging copy with it; incremental (rsync-style) copies
+      for moves and spread pushes

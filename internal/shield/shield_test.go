@@ -225,3 +225,21 @@ func TestCheckUnknownSiteFailsOpen(t *testing.T) {
 		t.Fatalf("unknown site = %d, want 200", rec.Code)
 	}
 }
+
+func TestDecisionsCounted(t *testing.T) {
+	s := New(Options{Secret: []byte("k"), Sites: func(id string) (SiteSettings, bool) {
+		return SiteSettings{ID: id, Mode: ModeStandard}, true
+	}})
+	for _, ua := range []string{"Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0", "sqlmap/1.8"} {
+		req := httptest.NewRequest("GET", "/_shield/check", nil)
+		req.Header.Set(SiteHeader, "s1")
+		req.Header.Set("User-Agent", ua)
+		req.Header.Set("X-Forwarded-Uri", "/")
+		req.Header.Set("X-Forwarded-Method", "GET")
+		s.CheckHandler().ServeHTTP(httptest.NewRecorder(), req)
+	}
+	d := s.Decisions()
+	if d["allow"] != 1 || d["block"] != 1 || d["challenge"] != 0 || len(d) != 4 {
+		t.Errorf("decisions %v", d)
+	}
+}

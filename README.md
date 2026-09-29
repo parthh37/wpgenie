@@ -48,7 +48,10 @@ with one command.
 | 🔬 | **Performance insights**: response time percentiles, cache hit rate, slowest URLs, PHP errors by plugin/theme | ✅ |
 | ✉️ | **Mail**: mailboxes & aliases (docker-mailserver: Postfix, Dovecot, Rspamd), Roundcube webmail, automatic DKIM, DNS checks, WordPress mail via SMTP, outbound relay | ✅ |
 | 🌍 | **CDN**: Cloudflare (real visitor IPs, automatic purges, optional edge caching of pages, SSL/DNS checks) or a bunny.net / any pull zone for static files | ✅ |
-| 🌐 | Multi-server clusters | 🚧 Phase 5 |
+| 🚨 | **Monitoring**: Prometheus metrics, alerts for sites down, certificates expiring or invalid, disks filling up and failing backups, by e-mail or signed webhooks (Slack, Discord, Mattermost) | ✅ |
+| 🪣 | **Uploads offload**: the media library copied to S3-compatible storage (S3, R2, B2, MinIO), served from there when missing locally; optional removal of old local copies | ✅ |
+| 🌐 | **Several servers**: `install.sh --agent` on another VPS, pair it with a one-time code; new sites placed by free memory and disk, moved between servers with seconds of downtime (visitors forwarded until DNS follows), servers drained, a busy site's replicas spread over servers; mutual TLS between servers, nothing else exposed | ✅ |
+| 🏢 | **Accounts & billing**: customer and reseller accounts on plans (sites, disk, monthly bandwidth, per-site resources, features), usage metering, suspension (static 503, PHP stopped, nothing deleted), per-user API tokens, provisioning API with single sign-on, **WHMCS** module, **Stripe** subscriptions and metered bandwidth, signed outgoing webhooks | ✅ |
 
 ## Install
 
@@ -90,6 +93,9 @@ Make it lighter and see where time goes:
 wpgenie site images <site-id> avif,webp        # AVIF/WebP copies of uploads, same URLs
 wpgenie site insights <site-id>                # response times, cache hit rate, slow URLs, PHP errors
 wpgenie site cdn <site-id> bunny 12345 cdn.example.com   # static files from a pull zone (API key on stdin)
+echo "$SECRET_KEY" | wpgenie site offload <site-id> on --endpoint https://s3.eu-central-1.amazonaws.com \
+  --region eu-central-1 --bucket my-media --access-key-id AKIA… \
+  --public-url https://my-media.s3.eu-central-1.amazonaws.com/<site-id>/uploads --local-days 30
 ```
 
 Keep WordPress patched. Every update takes a snapshot first and is rolled back automatically if the
@@ -122,6 +128,19 @@ wpgenie user require-2fa on
 wpgenie audit                                       # who changed what, from where
 ```
 
+Host other people's sites: plans, customer and reseller accounts (each sees only its own sites), usage,
+and billing through WHMCS ([integrations/whmcs](integrations/whmcs)) or Stripe (dashboard → Billing):
+
+```bash
+wpgenie plan create starter --name Starter --sites 3 --disk 10240 --bandwidth 100 --replicas 2 --memory 1024 \
+  --features backups,staging,sftp --backup-repos local --overage notify
+wpgenie account create "Acme Ltd" --plan starter --user acme     # prints the user's password
+wpgenie account assign <site-id> <account-id>                    # give an existing site to an account
+wpgenie account usage <account-id> --measure                     # disk and this month's bandwidth vs the plan
+wpgenie account suspend <account-id>                             # sites answer 503; nothing is deleted
+wpgenie token create --user whmcs --name WHMCS                   # an API token for a billing system
+```
+
 Mail (point `mail.example.com`'s A record here and open ports 25, 465, 587, 993 first):
 
 ```bash
@@ -144,6 +163,19 @@ wpgenie site domain <site-id> add www.example.com --redirect
 wpgenie site php <site-id> --version 8.4 --memory-limit 512
 wpgenie site sftp <site-id> add --password              # sftp -P 2222 <site-id>@example.com
 wpgenie site adminer <site-id>                          # one-time link to the database
+```
+
+Several servers (on a new VPS, `install.sh --agent` prints the address and a one-time pairing code; port
+7443 open between the servers):
+
+```bash
+wpgenie node add web-2 203.0.113.7 wpg1-…              # on the panel; or Servers in the dashboard
+wpgenie site create shop.example.com you@example.com   # placed on the server with the most room
+wpgenie site move <site-id> web-2                      # seconds of maintenance; the old server forwards visitors
+wpgenie site move --finish <site-id>                   # once DNS points at the new server
+wpgenie site offload <site-id> on …                    # uploads to object storage, then:
+wpgenie site spread <site-id> web-2                    # some of its replicas on web-2 too
+wpgenie node drain web-2                               # move every site off a server
 ```
 
 Webmail is at `https://mail.example.com/`. Update WPGenie itself from the dashboard (System tab) or
@@ -177,7 +209,8 @@ Requirements: Go 1.26+, Docker (for the integration tests and PHP image).
 
 ```bash
 make test               # unit tests
-make test-integration   # + validates generated Caddy config with real Caddy
+make test-integration   # + validates generated Caddy config with real Caddy, store tests on PostgreSQL too
+make test-postgres      # every store-backed test with the panel database on PostgreSQL
 make test-e2e           # backups, staging, SFTP, Adminer against real WordPress/MariaDB/restic
 make php-image          # build the hardened PHP runtime image
 make caddy-image        # build Caddy with the Coraza WAF
@@ -196,13 +229,17 @@ internal/site/      site lifecycle (with rollback), autoscaling, WordPress updat
                     backups, staging, domains and certificates, PHP versions
 internal/jobs/      background jobs with progress (create, backup, restore, clone, push)
 internal/backup/    restic in throwaway containers (local, S3, B2, SFTP repositories)
+internal/offload/   rclone in throwaway containers: uploads offload to S3-compatible storage
 internal/sftp/      the chrooted SFTP server's accounts (SHA-512 crypt, authorized_keys)
 internal/adminer/   Adminer sessions: one-time tokens, temporary DB accounts, proxy
 internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
 internal/updater/   WPGenie self-update (signed releases, applier with rollback)
+internal/monitor/   Prometheus metrics, alerts (uptime, certificates, disk, backups), e-mail and webhooks
+internal/billing/   accounts, plans, quotas, usage, suspension, Stripe, outgoing webhooks
 internal/proxy/     Caddyfile rendering + live reload, Coraza WAF rules and audit log
 internal/runtime/   container runtime (the seam for multi-node)
-internal/store/     panel state (SQLite)
+internal/store/     panel state (SQLite, or PostgreSQL)
+internal/cluster/   servers of a cluster: CA, pairing, mutual TLS, tunnels, registry
 internal/web/       embedded dashboard
 images/php/         hardened PHP-FPM + WP-CLI image (page cache, SMTP, plugin profiler)
 images/caddy/       Caddy with the Coraza WAF module

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/parthh37/wpgenie/internal/cdn"
+	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/domain"
 	"github.com/parthh37/wpgenie/internal/jobs"
@@ -77,6 +79,8 @@ type Service struct {
 	DNS       Resolver
 	// Bunny is bunny.net's API (pull zones).
 	Bunny PullZoneAPI
+	// Offload copies uploads to object storage (offload.Rclone); nil: off.
+	Offload OffloadEngine
 	// Latency reports sites' recent PHP response times (the analytics
 	// ingester), for autoscaling on them; nil: CPU and workers only.
 	Latency LatencySource
@@ -92,6 +96,37 @@ type Service struct {
 	// SiteRemoved is told about deleted sites (SFTP logins, Adminer
 	// sessions).
 	SiteRemoved func(ctx context.Context, id string)
+	// AccessChanged is told when SFTP logins changed other than through the
+	// SFTP service (a site moved here with its logins).
+	AccessChanged func(ctx context.Context)
+
+	// Cluster is the control plane's registry of other servers (nil on a
+	// node, and on the panel until one is added). ClusterClient dials other
+	// servers as this one (nil until it is part of a cluster). DomainTaken,
+	// if set, also checks domains used on other servers.
+	Cluster       *cluster.Controller
+	ClusterClient func() *cluster.Client
+	DomainTaken   func(ctx context.Context, domain, exceptSite string) (bool, error)
+	// NodeID is this server's node ID once paired (nil on the panel:
+	// "local"). Links runs the containers through which this node's
+	// replicas of other nodes' sites reach their database.
+	NodeID func() (string, bool)
+	// HealthToken is this daemon's shield health token (the panel probes a
+	// node's sites with it). ContainerIP finds a container's address on the
+	// Docker network (Valkey, for tunnels).
+	HealthToken string
+	ContainerIP func(ctx context.Context, name string) (string, error)
+	Links       LinkManager
+	// CacheACL reloads Valkey's users (nil: no per-site cache users).
+	CacheACL ValkeyACL
+	cacheKey cacheKeyState
+	// remoteMu: site ID -> *sync.Mutex (one spread sync at a time);
+	// remoteErr: site ID -> the last one's error.
+	remoteMu, remoteErr sync.Map
+	tun                 tunnels
+	// SiteSuspended is told when a site is suspended or back (SFTP logins
+	// and Adminer sessions end while it is suspended).
+	SiteSuspended func(ctx context.Context, id string, suspended bool)
 
 	// opsMu serialises everything that allocates ports or starts/stops
 	// containers (create, scale, cache changes): port allocation is only
@@ -109,6 +144,7 @@ type Service struct {
 	lastMaint sync.Map
 	inflight  sync.WaitGroup // running WordPress updates
 	cdn       cdnState
+	offload   offloadState
 	// builds: PHP version -> *sync.Mutex, so one image builds at a time.
 	builds sync.Map
 	// repoMu serialises repository maintenance (prune, check) per repo.
@@ -215,8 +251,26 @@ func (s *Service) reserve(ctx context.Context, st *store.Site) (*siteBuild, erro
 	return b, nil
 }
 
+// DomainFree checks a domain can be attached to a site on another server:
+// the panel and mail hostnames, this server's sites and the registry.
+func (s *Service) DomainFree(ctx context.Context, name string) error {
+	domain, err := NormalizeDomain(name)
+	if err != nil {
+		return err
+	}
+	s.opsMu.Lock()
+	defer s.opsMu.Unlock()
+	return s.domainFree(ctx, domain)
+}
+
 // domainFree checks a domain can be attached to a site. Caller holds opsMu.
 func (s *Service) domainFree(ctx context.Context, domain string) error {
+	return s.domainFreeExcept(ctx, domain, "")
+}
+
+// domainFreeExcept is domainFree for a site that may already hold the
+// domain on another server (moving here).
+func (s *Service) domainFreeExcept(ctx context.Context, domain, except string) error {
 	if s.Webmail != nil {
 		if host, _ := s.Webmail(); host == domain {
 			return fmt.Errorf("%w: it is the mail server's hostname", ErrDomainTaken)
@@ -229,6 +283,13 @@ func (s *Service) domainFree(ctx context.Context, domain string) error {
 		return err
 	} else if taken {
 		return ErrDomainTaken
+	}
+	if s.DomainTaken != nil {
+		if taken, err := s.DomainTaken(ctx, domain, except); err != nil {
+			return err
+		} else if taken {
+			return fmt.Errorf("%w (by a site on another server)", ErrDomainTaken)
+		}
 	}
 	return nil
 }
@@ -248,6 +309,11 @@ func (b *siteBuild) start(ctx context.Context, prefix, environment string, repor
 		return err
 	}
 	b.undo = append(b.undo, func() { os.RemoveAll(dir) })
+	// Its cache user before WordPress first connects (without it the site
+	// just runs uncached: never a reason to fail).
+	if err := s.SyncCacheUsers(ctx); err != nil {
+		s.Log.Warn("object cache users", "site", st.ID, "err", err)
+	}
 
 	report(10, "Starting PHP")
 	spec, err := s.specFor(ctx, st)
@@ -403,25 +469,40 @@ func (s *Service) siteJob(siteID, kind string, heavy bool) jobs.Spec {
 // as its own user outside group 82, so it reaches public/ but can never read
 // wp-config.php, even through a symlink a site plants in its docroot.
 func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass, prefix, environment string) error {
+	if prefix == "" {
+		prefix = "wp_" + randString(4, lowerAlnum) + "_"
+	}
+	cacheUser, cachePass, err := s.cacheCredentials(id)
+	if err != nil {
+		return err
+	}
+	cfg, err := renderWPConfig(wpConfigData{
+		SiteID: id, DBName: "wp_" + id, DBUser: dbUser, DBPassword: dbPass,
+		DBHost: s.Cfg.MariaDBHost, RedisHost: s.Cfg.RedisHost, RedisUser: cacheUser, RedisPassword: cachePass,
+		TablePrefix: prefix, Environment: environment,
+	})
+	if err != nil {
+		return err
+	}
+	return layoutSite(dir, docroot, cfg)
+}
+
+// layoutSite creates a site directory (see prepareFiles) with the given
+// wp-config.php: a new site's, or on another node the copy of a spread
+// site's (same salts, so a login works on every replica).
+func layoutSite(dir, docroot string, cfg []byte) error {
 	if err := os.MkdirAll(docroot, 0o755); err != nil {
 		return err
 	}
 	if err := ensureLogDir(dir); err != nil {
 		return err
 	}
-	if prefix == "" {
-		prefix = "wp_" + randString(4, lowerAlnum) + "_"
-	}
-	cfg, err := renderWPConfig(wpConfigData{
-		SiteID: id, DBName: "wp_" + id, DBUser: dbUser, DBPassword: dbPass,
-		DBHost: s.Cfg.MariaDBHost, RedisHost: s.Cfg.RedisHost,
-		TablePrefix: prefix, Environment: environment,
-	})
-	if err != nil {
+	cfgPath := filepath.Join(dir, "wp-config.php")
+	tmp := cfgPath + ".tmp"
+	if err := os.WriteFile(tmp, cfg, 0o640); err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(dir, "wp-config.php")
-	if err := os.WriteFile(cfgPath, cfg, 0o640); err != nil {
+	if err := os.Rename(tmp, cfgPath); err != nil {
 		return err
 	}
 	if os.Geteuid() != 0 {
@@ -451,6 +532,13 @@ func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass, prefix, environ
 // database and files. It keeps going on errors so a half-broken site can
 // always be cleaned up, and reports everything that failed.
 func (s *Service) Delete(ctx context.Context, id string) error {
+	return s.deleteLocal(ctx, id, true)
+}
+
+// deleteLocal deletes a site from this server. removeSender is false for
+// the old copy of a site that moved to another server: its mail sender
+// (on the panel's mail server) moved with it.
+func (s *Service) deleteLocal(ctx context.Context, id string, removeSender bool) error {
 	// Never delete under a running update or scan: it would keep writing
 	// snapshots and files for a site that no longer exists.
 	lock := s.maintLock(id)
@@ -474,13 +562,17 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err := s.Store.DeleteSite(ctx, id); err != nil {
 		return err
 	}
+	if len(st.SpreadNodes) > 0 || len(st.RemoteUpstreams) > 0 {
+		// Other servers: not under opsMu (bounded calls, in the background).
+		go s.removeGuests(context.WithoutCancel(ctx), st)
+	}
 	var errs []error
 	// SFTP logins and database sessions go with the site (the store
 	// dropped their records; the services still have to hear about it).
 	if s.SiteRemoved != nil {
 		s.SiteRemoved(ctx, id)
 	}
-	if s.Mailer != nil {
+	if s.Mailer != nil && removeSender {
 		// Unconditionally: a half-finished SetSMTP can leave the sender
 		// mailbox behind with smtp still off. A no-op if there is none.
 		errs = append(errs, s.Mailer.RemoveSender(ctx, id, st.PrimaryDomain))
@@ -494,6 +586,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	// what they are for. Delete them from the backups view.)
 	errs = append(errs, os.RemoveAll(s.snapshotRoot(id)))
 	errs = append(errs, os.RemoveAll(s.certDir(id)))
+	errs = append(errs, s.Store.DeleteSiteForward(ctx, id))
+	// Offloaded uploads stay in the bucket (the operator's); the copy
+	// running for the site, if any, stops with its scratch files.
+	s.stopOffloadPass(id)
+	errs = append(errs, os.RemoveAll(s.offloadWorkDir(id)))
+	if err := s.SyncCacheUsers(context.WithoutCancel(ctx)); err != nil {
+		s.Log.Warn("object cache users", "site", id, "err", err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -522,9 +622,20 @@ func (s *Service) Sync(ctx context.Context) error {
 	for _, c := range cdns {
 		cdnOf[c.SiteID] = c
 	}
+	offloadOf, err := s.offloadURLs(ctx, sites)
+	if err != nil {
+		return err
+	}
 	var ps []proxy.Site
 	settings := make(map[string]shield.SiteSettings, len(sites))
+	// A site that moved here is also served to visitors its old server
+	// passes on while DNS catches up (that site only).
+	ingress := s.ingress(ctx)
 	for _, st := range sites {
+		if st.Status == store.StatusSuspended {
+			ps = append(ps, suspendedProxySite(st, certs[st.ID] != nil))
+			continue
+		}
 		if st.Status != store.StatusActive {
 			continue
 		}
@@ -538,12 +649,30 @@ func (s *Service) Sync(ctx context.Context) error {
 			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: !st.XMLRPC,
 			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
 			CustomCert: certs[st.ID] != nil, Staging: st.ParentID != "",
-			Images: st.ImageFormats,
+			Images: st.ImageFormats, Forwarded: ingress[st.ID].From != "", Offload: offloadOf[st.ID],
 		})
+		if len(st.RemoteUpstreams) > 0 {
+			// Spread: every replica serves page views; writes stay home.
+			p := &ps[len(ps)-1]
+			p.HomeUpstreams = p.Upstreams
+			p.Upstreams = slices.Clone(p.Upstreams)
+			for _, u := range st.RemoteUpstreams {
+				p.Upstreams = append(p.Upstreams, "127.0.0.1:"+strconv.Itoa(u.Port))
+			}
+		}
 		if c := cdnOf[st.ID]; c != nil {
 			ps[len(ps)-1].AssetCDN = c.AssetHost != ""
 			ps[len(ps)-1].EdgeHTML = c.Provider == cdnCloudflare && c.EdgeHTML
 		}
+	}
+	// Sites that moved away: their domains are passed on to the new server.
+	fwds, err := s.Store.SiteForwards(ctx)
+	if err != nil {
+		return err
+	}
+	for _, f := range fwds {
+		ps = append(ps, proxy.Site{ID: f.SiteID, Name: "moved to " + f.NodeID, Domains: f.Domains,
+			Forward: "127.0.0.1:" + strconv.Itoa(f.Port), ForwardHTTP: "127.0.0.1:" + strconv.Itoa(f.HTTPPort)})
 	}
 	if s.Webmail != nil {
 		if host, up := s.Webmail(); host != "" {

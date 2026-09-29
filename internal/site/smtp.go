@@ -46,6 +46,24 @@ if ( is_file( '/usr/local/share/wpgenie/smtp.php' ) ) {
 // anyway before being put in PHP single-quoted strings.
 var phpSafe = regexp.MustCompile(`^[A-Za-z0-9@._+-]+$`)
 
+var smtpDefineRe = regexp.MustCompile(`define\( 'WPGENIE_SMTP_(HOST|USER|PASS)', '([A-Za-z0-9@._+-]+)' \);`)
+
+// parseSMTPCreds reads back a credentials file smtpCreds wrote.
+func parseSMTPCreds(b []byte) (SMTPCreds, bool) {
+	c := SMTPCreds{On: true}
+	for _, m := range smtpDefineRe.FindAllSubmatch(b, -1) {
+		switch string(m[1]) {
+		case "HOST":
+			c.Host = string(m[2])
+		case "USER":
+			c.Address = string(m[2])
+		case "PASS":
+			c.Password = string(m[2])
+		}
+	}
+	return c, c.Host != "" && c.Address != "" && c.Password != ""
+}
+
 func smtpCreds(host, user, pass string) ([]byte, error) {
 	for _, v := range []string{host, user, pass} {
 		if !phpSafe.MatchString(v) {
@@ -80,7 +98,7 @@ func (s *Service) SetSMTP(ctx context.Context, id string, on bool) (*store.Site,
 		if err != nil {
 			return nil, err
 		}
-		if err := s.installSMTP(ctx, id, addr, pw); err != nil {
+		if err := s.installSMTP(ctx, id, s.Mailer.SMTPHost(), addr, pw); err != nil {
 			// Don't leave a mailbox behind for a site that isn't using it.
 			c, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			defer cancel()
@@ -90,18 +108,10 @@ func (s *Service) SetSMTP(ctx context.Context, id string, on bool) (*store.Site,
 			return nil, err
 		}
 	} else {
-		if err := s.writeSMTPWrapper(id, false); err != nil {
-			return nil, err
-		}
-		if err := os.Remove(filepath.Join(s.Cfg.SiteDir(id), smtpCredsFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeSMTP(ctx, id); err != nil {
 			return nil, err
 		}
 		if err := s.Mailer.RemoveSender(ctx, id, st.PrimaryDomain); err != nil {
-			return nil, err
-		}
-	}
-	if !on {
-		if err := s.Store.SetSMTP(ctx, id, false); err != nil {
 			return nil, err
 		}
 	}
@@ -113,8 +123,8 @@ func (s *Service) SetSMTP(ctx context.Context, id string, on bool) (*store.Site,
 	return s.Store.GetSite(ctx, id)
 }
 
-func (s *Service) installSMTP(ctx context.Context, id, addr, pw string) error {
-	creds, err := smtpCreds(s.Mailer.SMTPHost(), addr, pw)
+func (s *Service) installSMTP(ctx context.Context, id, host, addr, pw string) error {
+	creds, err := smtpCreds(host, addr, pw)
 	if err != nil {
 		return err
 	}
@@ -125,6 +135,17 @@ func (s *Service) installSMTP(ctx context.Context, id, addr, pw string) error {
 		return err
 	}
 	return s.Store.SetSMTP(ctx, id, true)
+}
+
+// removeSMTP takes the site's mail credentials and wrapper away.
+func (s *Service) removeSMTP(ctx context.Context, id string) error {
+	if err := s.writeSMTPWrapper(id, false); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(s.Cfg.SiteDir(id), smtpCredsFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return s.Store.SetSMTP(ctx, id, false)
 }
 
 func (s *Service) writeSMTPWrapper(id string, on bool) error {

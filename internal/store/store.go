@@ -1,5 +1,10 @@
-// Package store is the panel's own state (sites, traffic rollups), kept in
-// SQLite. It is deliberately small: WordPress data lives in MariaDB.
+// Package store is the panel's own state (sites, users, traffic rollups).
+// It runs on SQLite by default (one file, nothing to operate) or on
+// PostgreSQL, which several control-plane nodes can share. It is
+// deliberately small: WordPress data lives in MariaDB.
+//
+// Queries and migrations are written once, in the SQL both understand;
+// dialect.go and translate.go hold the rules and what gets rewritten.
 package store
 
 import (
@@ -12,9 +17,11 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db *DB
 }
 
+// Open opens (creating it if needed) the SQLite database at path and
+// brings its schema up to date.
 func Open(path string) (*Store, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -22,8 +29,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// SQLite allows one writer; a single connection avoids SQLITE_BUSY churn.
+	// It also runs one transaction at a time, which stands in for the row
+	// and table locks the store takes on PostgreSQL.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: &DB{sql: db}}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -37,8 +46,39 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+// OpenURL opens the PostgreSQL database named by a postgres:// URL (the
+// database_url setting) and brings its schema up to date. PostgresConfig
+// has the TLS rules.
+func OpenURL(ctx context.Context, databaseURL string) (*Store, error) {
+	db, err := openPostgres(ctx, databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := migratePostgres(ctx, db, len(migrations)); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: &DB{sql: db, postgres: true}}, nil
+}
 
+func (s *Store) Close() error { return s.db.sql.Close() }
+
+// Postgres reports whether the store runs on PostgreSQL.
+func (s *Store) Postgres() bool { return s.db.postgres }
+
+// migrations are SQLite DDL, only ever appended to: a database records how
+// many it has run (schema_version). On PostgreSQL each one is translated
+// (translate.go) unless postgresMigrations overrides its version. The
+// store tests run them all on both backends and compare the tables and
+// columns they produce. For both to work, a new migration uses:
+//
+//   - CREATE TABLE / CREATE [UNIQUE] INDEX / ALTER TABLE ADD COLUMN, RENAME,
+//     DROP COLUMN / DROP TABLE|INDEX, and plain INSERT/UPDATE/DELETE;
+//   - types INTEGER (also for booleans and unix times), REAL, TEXT (COLLATE
+//     NOCASE for case-insensitive names) and BLOB; INTEGER PRIMARY KEY
+//     AUTOINCREMENT for generated ids;
+//   - literal DEFAULTs (no CURRENT_TIMESTAMP), and NOT NULL columns added
+//     with a DEFAULT.
 var migrations = []string{
 	`CREATE TABLE sites (
 		id             TEXT PRIMARY KEY,
@@ -332,18 +372,272 @@ var migrations = []string{
 		PRIMARY KEY (site_id, fingerprint)
 	);
 	CREATE INDEX php_errors_by_time ON php_errors (site_id, last_seen);`,
+	// Cluster: servers running `wpgenie agent` (on the control plane), the
+	// registry of sites living on them (the node keeps the full record;
+	// data is the control plane's copy for listings and access checks),
+	// sites whose replicas also run on other nodes (site_upstreams rows
+	// with a node_id are local tunnel ports to a replica there), replicas
+	// a node runs for another node's sites, and sites that moved away from
+	// this server whose domains are forwarded until DNS follows.
+	`CREATE TABLE nodes (
+		id             TEXT PRIMARY KEY,
+		num            INTEGER NOT NULL UNIQUE,
+		name           TEXT NOT NULL,
+		address        TEXT NOT NULL,
+		public_ip      TEXT NOT NULL DEFAULT '',
+		status         TEXT NOT NULL DEFAULT 'active',
+		info           TEXT NOT NULL DEFAULT '{}',
+		cert_not_after INTEGER NOT NULL DEFAULT 0,
+		last_seen      INTEGER NOT NULL DEFAULT 0,
+		last_error     TEXT NOT NULL DEFAULT '',
+		key_hash       TEXT NOT NULL DEFAULT '',
+		created_at     INTEGER NOT NULL
+	);
+	CREATE TABLE cluster_sites (
+		site_id        TEXT PRIMARY KEY,
+		node_id        TEXT NOT NULL REFERENCES nodes(id),
+		primary_domain TEXT NOT NULL,
+		data           TEXT NOT NULL DEFAULT '{}',
+		updated_at     INTEGER NOT NULL
+	);
+	CREATE INDEX cluster_sites_by_node ON cluster_sites (node_id);
+	ALTER TABLE sites ADD COLUMN spread_nodes TEXT NOT NULL DEFAULT '';
+	ALTER TABLE site_upstreams ADD COLUMN node_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE site_upstreams ADD COLUMN remote_port INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE guest_replicas (
+		port       INTEGER PRIMARY KEY,
+		site_id    TEXT NOT NULL,
+		home_node  TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE site_forwards (
+		site_id    TEXT PRIMARY KEY,
+		node_id    TEXT NOT NULL,
+		address    TEXT NOT NULL,
+		domains    TEXT NOT NULL,
+		port       INTEGER NOT NULL,
+		http_port  INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
+	// Monitoring: alert state, one row per watched target (a site's
+	// uptime, a domain's certificate, a filesystem, a site's backups) once
+	// it has been judged, firing or resolved; and a bounded history of
+	// transitions. No foreign keys: an alert about a site outlives it long
+	// enough to be resolved and notified.
+	`CREATE TABLE alerts (
+		alert_key   TEXT PRIMARY KEY,
+		kind        TEXT NOT NULL,
+		site_id     TEXT NOT NULL DEFAULT '',
+		target      TEXT NOT NULL,
+		severity    TEXT NOT NULL DEFAULT '',
+		state       TEXT NOT NULL,
+		message     TEXT NOT NULL DEFAULT '',
+		since       INTEGER NOT NULL,
+		updated_at  INTEGER NOT NULL,
+		notified_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE alert_history (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		alert_key   TEXT NOT NULL,
+		kind        TEXT NOT NULL,
+		site_id     TEXT NOT NULL DEFAULT '',
+		target      TEXT NOT NULL,
+		severity    TEXT NOT NULL DEFAULT '',
+		state       TEXT NOT NULL,
+		message     TEXT NOT NULL DEFAULT '',
+		happened_at INTEGER NOT NULL
+	);`,
+	// Uploads offload: a site's uploads copied to S3-compatible storage and
+	// served from its public URL when missing on disk. Its own table so the
+	// secret key never rides along with the site record the API returns.
+	// incremental_at / full_at: start of the last successful sync of each
+	// kind (unix seconds; an incremental covers files changed since the
+	// previous one started). offload_deletes: objects to delete (uploads
+	// WordPress deleted), kept until the bucket confirms.
+	`CREATE TABLE site_offload (
+		site_id        TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		endpoint       TEXT NOT NULL,
+		region         TEXT NOT NULL DEFAULT '',
+		bucket         TEXT NOT NULL,
+		key_prefix     TEXT NOT NULL,
+		access_key_id  TEXT NOT NULL,
+		secret_key     TEXT NOT NULL,
+		public_url     TEXT NOT NULL,
+		object_acl     TEXT NOT NULL DEFAULT '',
+		local_days     INTEGER NOT NULL DEFAULT 0,
+		incremental_at INTEGER NOT NULL DEFAULT 0,
+		full_at        INTEGER NOT NULL DEFAULT 0,
+		attempt_at     INTEGER NOT NULL DEFAULT 0,
+		failures       INTEGER NOT NULL DEFAULT 0,
+		last_error     TEXT NOT NULL DEFAULT '',
+		last_objects   INTEGER NOT NULL DEFAULT 0,
+		last_bytes     INTEGER NOT NULL DEFAULT 0,
+		total_objects  INTEGER NOT NULL DEFAULT 0,
+		total_bytes    INTEGER NOT NULL DEFAULT 0,
+		total_deleted  INTEGER NOT NULL DEFAULT 0,
+		removed_local  INTEGER NOT NULL DEFAULT 0,
+		removed_bytes  INTEGER NOT NULL DEFAULT 0,
+		cleaned_at     INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL
+	);
+	CREATE TABLE offload_deletes (
+		site_id     TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		object_path TEXT NOT NULL,
+		queued_at   INTEGER NOT NULL,
+		PRIMARY KEY (site_id, object_path)
+	);`,
+	// Accounts, plans and billing: tenant accounts (customers and resellers)
+	// on admin-defined plans, users belonging to an account (account_id 0:
+	// staff), per-user API tokens (SHA-256 only) and one-time sign-on tokens.
+	// Site ownership is its own table without a foreign key to sites: a site
+	// may live on another node. A WHMCS service ID is unique per billing
+	// owner (parent_id: 0 is the panel's own WHMCS, else the reseller's). site_usage holds the last disk measurement
+	// per site, account_usage the month's totals and which thresholds were
+	// notified (month_start: unix time of the UTC month). Stripe event IDs
+	// make webhook processing idempotent; outgoing webhooks are a persistent
+	// delivery queue. jobs.owner lets a tenant follow the jobs they started.
+	`CREATE TABLE plans (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		max_sites    INTEGER NOT NULL DEFAULT 0,
+		disk_mb      INTEGER NOT NULL DEFAULT 0,
+		bandwidth_gb INTEGER NOT NULL DEFAULT 0,
+		max_replicas INTEGER NOT NULL DEFAULT 0,
+		max_memory_mb INTEGER NOT NULL DEFAULT 0,
+		max_cpus     REAL NOT NULL DEFAULT 0,
+		max_domains  INTEGER NOT NULL DEFAULT 0,
+		features     TEXT NOT NULL DEFAULT '',
+		backup_repos TEXT NOT NULL DEFAULT '',
+		overage      TEXT NOT NULL DEFAULT 'notify',
+		resellable   INTEGER NOT NULL DEFAULT 0,
+		created_at   INTEGER NOT NULL,
+		updated_at   INTEGER NOT NULL
+	);
+	CREATE TABLE accounts (
+		id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+		name                   TEXT NOT NULL,
+		kind                   TEXT NOT NULL,
+		status                 TEXT NOT NULL DEFAULT 'active',
+		suspend_reason         TEXT NOT NULL DEFAULT '',
+		plan_id                TEXT NOT NULL REFERENCES plans(id),
+		parent_id              INTEGER NOT NULL DEFAULT 0,
+		email                  TEXT NOT NULL DEFAULT '',
+		whmcs_service_id       TEXT NOT NULL DEFAULT '',
+		stripe_customer_id     TEXT NOT NULL DEFAULT '',
+		stripe_subscription_id TEXT NOT NULL DEFAULT '',
+		idempotency_key        TEXT UNIQUE,
+		created_at             INTEGER NOT NULL,
+		updated_at             INTEGER NOT NULL,
+		suspended_at           INTEGER NOT NULL DEFAULT 0,
+		stripe_event_at        INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX accounts_by_parent ON accounts (parent_id);
+	CREATE INDEX accounts_by_stripe ON accounts (stripe_customer_id);
+	CREATE UNIQUE INDEX accounts_by_whmcs ON accounts (parent_id, whmcs_service_id) WHERE whmcs_service_id <> '';
+	ALTER TABLE users ADD COLUMN account_id INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX users_by_account ON users (account_id);
+	CREATE TABLE site_accounts (
+		site_id    TEXT PRIMARY KEY,
+		account_id INTEGER NOT NULL REFERENCES accounts(id),
+		suspended  INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX site_accounts_by_account ON site_accounts (account_id);
+	CREATE TABLE account_events (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL,
+		at         INTEGER NOT NULL,
+		kind       TEXT NOT NULL,
+		message    TEXT NOT NULL
+	);
+	CREATE INDEX account_events_by_account ON account_events (account_id, id);
+	CREATE TABLE api_tokens (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name         TEXT NOT NULL,
+		token_hash   TEXT NOT NULL UNIQUE,
+		hint         TEXT NOT NULL,
+		created_at   INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL DEFAULT 0,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		last_used_ip TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX api_tokens_by_user ON api_tokens (user_id);
+	CREATE TABLE sso_tokens (
+		token_hash TEXT PRIMARY KEY,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
+	CREATE TABLE site_usage (
+		site_id     TEXT PRIMARY KEY,
+		files_bytes INTEGER NOT NULL DEFAULT 0,
+		db_bytes    INTEGER NOT NULL DEFAULT 0,
+		measured_at INTEGER NOT NULL
+	);
+	CREATE TABLE account_usage (
+		account_id      INTEGER NOT NULL,
+		month_start     INTEGER NOT NULL,
+		bandwidth_bytes INTEGER NOT NULL DEFAULT 0,
+		disk_bytes      INTEGER NOT NULL DEFAULT 0,
+		bw_notified     INTEGER NOT NULL DEFAULT 0,
+		disk_notified   INTEGER NOT NULL DEFAULT 0,
+		reported_mb     INTEGER NOT NULL DEFAULT 0,
+		updated_at      INTEGER NOT NULL,
+		PRIMARY KEY (account_id, month_start)
+	);
+	CREATE TABLE stripe_events (
+		id          TEXT PRIMARY KEY,
+		kind        TEXT NOT NULL,
+		received_at INTEGER NOT NULL
+	);
+	CREATE TABLE webhook_endpoints (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		url        TEXT NOT NULL,
+		secret     TEXT NOT NULL,
+		events     TEXT NOT NULL DEFAULT '',
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE webhook_deliveries (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		endpoint_id     INTEGER NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
+		event_id        TEXT NOT NULL,
+		event           TEXT NOT NULL,
+		payload         TEXT NOT NULL,
+		status          TEXT NOT NULL,
+		attempts        INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL,
+		last_status     INTEGER NOT NULL DEFAULT 0,
+		last_error      TEXT NOT NULL DEFAULT '',
+		created_at      INTEGER NOT NULL,
+		delivered_at    INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX webhook_deliveries_due ON webhook_deliveries (status, next_attempt_at);
+	ALTER TABLE jobs ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
 }
 
+// postgresMigrations holds PostgreSQL versions of the migrations the
+// translator can't express, by version (1 is migrations[0]). Their
+// statements run as written, one at a time.
+var postgresMigrations = map[int]string{}
+
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (v INTEGER NOT NULL)`); err != nil {
+	if s.db.postgres {
+		return migratePostgres(ctx, s.db.sql, len(migrations))
+	}
+	// Migration scripts hold several statements: straight to the driver.
+	db := s.db.sql
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (v INTEGER NOT NULL)`); err != nil {
 		return err
 	}
 	var v int
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
 		return err
 	}
 	for i := v; i < len(migrations); i++ {
-		tx, err := s.db.BeginTx(ctx, nil)
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}

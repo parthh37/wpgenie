@@ -49,11 +49,10 @@ func TestMigrateFromV1(t *testing.T) {
 }
 
 func TestAllocatePortsSkipsUsedAndReserved(t *testing.T) {
-	st, err := Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	forEachBackend(t, testAllocatePorts)
+}
+
+func testAllocatePorts(t *testing.T, st *Store) {
 	ctx := context.Background()
 	// Reserved 19000, but currently served on 19002 only.
 	if err := st.CreateSite(ctx, &Site{ID: "a", Name: "a", PrimaryDomain: "a.test", PHPVersion: "8.3",

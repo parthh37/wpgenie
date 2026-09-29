@@ -210,6 +210,13 @@ func (s *Server) setSiteSMTP(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
+	if s.Cluster != nil {
+		if node, remote, err := s.Cluster.SiteNode(r.Context(), r.PathValue("id")); err != nil {
+			return err
+		} else if remote {
+			return s.setRemoteSMTP(w, r, node, in.Enabled)
+		}
+	}
 	st, err := s.Sites.SetSMTP(r.Context(), r.PathValue("id"), in.Enabled)
 	if err != nil {
 		return err

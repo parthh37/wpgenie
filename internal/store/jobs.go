@@ -40,13 +40,9 @@ func (s *Store) CreateJob(ctx context.Context, siteID, kind, actor string) (int6
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `INSERT INTO jobs (site_id, kind, status, actor, created_at) VALUES (?, ?, ?, ?, ?)`,
-		siteID, kind, JobQueued, actor, time.Now().Unix())
-	if err != nil {
-		return 0, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
+	var id int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO jobs (site_id, kind, status, actor, created_at) VALUES (?, ?, ?, ?, ?)
+		RETURNING id`, siteID, kind, JobQueued, actor, time.Now().Unix()).Scan(&id); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE status IN (?, ?) AND id <=

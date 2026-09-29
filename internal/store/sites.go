@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 )
@@ -17,6 +18,11 @@ const (
 	StatusProvisioning SiteStatus = "provisioning"
 	StatusActive       SiteStatus = "active"
 	StatusFailed       SiteStatus = "failed"
+	// StatusSuspended: the site's account is suspended (billing, overage,
+	// an administrator). Caddy answers 503 for its domains, its PHP
+	// containers are stopped, and cron, backups and updates skip it; its
+	// files and database are kept.
+	StatusSuspended SiteStatus = "suspended"
 )
 
 type Site struct {
@@ -42,6 +48,14 @@ type Site struct {
 	// wp_is_mobile() get them.
 	CacheMobile bool  `json:"cache_mobile"`
 	Upstreams   []int `json:"upstream_ports"`
+	// RemoteUpstreams are replicas on other nodes (spread sites), each
+	// reached through a local tunnel port; SpreadNodes are the nodes the
+	// site's replicas may also run on.
+	RemoteUpstreams []RemoteUpstream `json:"remote_upstreams,omitempty"`
+	SpreadNodes     []string         `json:"spread_nodes"`
+	// Node is where the site lives, set by the control plane in listings
+	// ("" or "local": the panel's own server).
+	Node string `json:"node,omitempty"`
 	// ImageFormats are the formats uploads are converted to and served in
 	// ("avif", "webp"); empty: off.
 	ImageFormats []string `json:"image_formats"`
@@ -215,12 +229,11 @@ func (s *Store) GetSite(ctx context.Context, id string) (*Site, error) {
 	if site.Domains, site.RedirectDomains, err = s.siteDomains(ctx, id); err != nil {
 		return nil, err
 	}
-	site.Upstreams, err = s.siteUpstreams(ctx, id)
-	return site, err
+	return site, s.siteCluster(ctx, site)
 }
 
 func (s *Store) ListSites(ctx context.Context) ([]*Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+siteCols+` FROM sites ORDER BY created_at`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+siteCols+` FROM sites ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +254,7 @@ func (s *Store) ListSites(ctx context.Context) ([]*Site, error) {
 		if site.Domains, site.RedirectDomains, err = s.siteDomains(ctx, site.ID); err != nil {
 			return nil, err
 		}
-		if site.Upstreams, err = s.siteUpstreams(ctx, site.ID); err != nil {
+		if err := s.siteCluster(ctx, site); err != nil {
 			return nil, err
 		}
 	}
@@ -294,8 +307,10 @@ func (s *Store) SetPrimaryDomain(ctx context.Context, siteID, domain string) err
 		return err
 	}
 	defer tx.Rollback()
+	// Locked: two concurrent changes must not both demote the same old
+	// primary (PostgreSQL; SQLite runs one transaction at a time).
 	var old string
-	if err := tx.QueryRowContext(ctx, `SELECT primary_domain FROM sites WHERE id = ?`, siteID).Scan(&old); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT primary_domain FROM sites WHERE id = ? FOR UPDATE`, siteID).Scan(&old); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -352,7 +367,7 @@ func (s *Store) DomainIndex(ctx context.Context) (map[string]string, error) {
 }
 
 func (s *Store) siteUpstreams(ctx context.Context, id string) ([]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT port FROM site_upstreams WHERE site_id = ? ORDER BY port`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT port FROM site_upstreams WHERE site_id = ? AND node_id = '' ORDER BY port`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -371,9 +386,14 @@ func (s *Store) siteUpstreams(ctx context.Context, id string) ([]int, error) {
 // AllocatePorts returns the n lowest ports >= base that no site is using or
 // has reserved, skipping exclude. The caller must serialise allocation with
 // recording the ports (SetUpstreams / CreateSite), or two operations could
-// get the same port.
+// get the same port: internal/site does so with a process-wide mutex. Two
+// control-plane processes sharing a PostgreSQL store aren't covered by it,
+// but the PRIMARY KEY on site_upstreams.port and the UNIQUE fpm_port make
+// the second one's insert fail rather than share a port.
 func (s *Store) AllocatePorts(ctx context.Context, base, n int, exclude ...int) ([]int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT port FROM site_upstreams UNION SELECT fpm_port FROM sites`)
+	rows, err := s.db.QueryContext(ctx, `SELECT port FROM site_upstreams UNION SELECT fpm_port FROM sites
+		UNION SELECT port FROM guest_replicas UNION SELECT port FROM site_forwards
+		UNION SELECT http_port FROM site_forwards`)
 	if err != nil {
 		return nil, err
 	}
@@ -405,14 +425,22 @@ func (s *Store) AllocatePorts(ctx context.Context, base, n int, exclude ...int) 
 	return out, nil
 }
 
-// SetUpstreams replaces the set of ports a site is served on.
+// SetUpstreams replaces the set of local ports a site is served on.
 func (s *Store) SetUpstreams(ctx context.Context, id string, ports []int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM site_upstreams WHERE site_id = ?`, id); err != nil {
+	// Only the local replicas: replicas on other nodes are SetRemoteUpstreams'.
+	// The site's row lock orders concurrent replacements (PostgreSQL):
+	// otherwise the second DELETE misses the rows the first one inserts and
+	// the site ends up with both sets.
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM sites WHERE id = ? FOR UPDATE`, id).Scan(new(string)); err != nil &&
+		!errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM site_upstreams WHERE site_id = ? AND node_id = ''`, id); err != nil {
 		return err
 	}
 	for _, p := range ports {
@@ -497,7 +525,7 @@ func (s *Store) SetPHP(ctx context.Context, id, version string, settings PHPSett
 
 // StagingOf returns the staging sites cloned from a live site.
 func (s *Store) StagingOf(ctx context.Context, id string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sites WHERE parent_id = ? ORDER BY created_at`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sites WHERE parent_id = ? ORDER BY created_at, id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -521,8 +549,97 @@ func (s *Store) SetAutoUpdate(ctx context.Context, id, policy string) error {
 	return s.exec1(ctx, `UPDATE sites SET auto_update = ?, updated_at = ? WHERE id = ?`, policy, time.Now().Unix(), id)
 }
 
+// DeleteSite removes a site's record. Its account ownership and usage go
+// in the same transaction (those tables have no foreign key to sites: the
+// site may live on another node), so a deleted site never leaves an owner
+// behind for a later site to inherit.
 func (s *Store) DeleteSite(ctx context.Context, id string) error {
-	return s.exec1(ctx, `DELETE FROM sites WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM sites WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err := deleteSiteOwnership(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SuspendedSiteIDs returns the sites whose logins are off: suspended,
+// arriving from or gone to another server, or frozen for the final copy of
+// a move (FreezeSite).
+func (s *Store) SuspendedSiteIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sites WHERE status IN (?, ?, ?)`,
+		StatusSuspended, StatusImporting, StatusMoved)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	frozen, err := s.frozenSites(ctx)
+	for id := range frozen {
+		out[id] = true
+	}
+	return out, err
+}
+
+// Site statuses of a move between servers (see site/migrate.go).
+const (
+	StatusImporting SiteStatus = "importing"
+	StatusMoved     SiteStatus = "moved"
+)
+
+const settingFrozen = "sites_frozen"
+
+func (s *Store) frozenSites(ctx context.Context) (map[string]bool, error) {
+	out := map[string]bool{}
+	v, err := s.Setting(ctx, settingFrozen)
+	if err != nil || v == "" {
+		return out, err
+	}
+	for _, id := range strings.Split(v, ",") {
+		if id != "" {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
+// FreezeSite keeps a site's logins (SFTP) off while its files are copied
+// for the last time; false lets them back.
+func (s *Store) FreezeSite(ctx context.Context, id string, frozen bool) error {
+	m, err := s.frozenSites(ctx)
+	if err != nil {
+		return err
+	}
+	if frozen {
+		m[id] = true
+	} else {
+		delete(m, id)
+	}
+	ids := make([]string, 0, len(m))
+	for k := range m {
+		ids = append(ids, k)
+	}
+	slices.Sort(ids)
+	return s.SetSetting(ctx, settingFrozen, strings.Join(ids, ","))
 }
 
 func (s *Store) exec1(ctx context.Context, q string, args ...any) error {

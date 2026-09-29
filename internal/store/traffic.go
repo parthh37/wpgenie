@@ -1,9 +1,13 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/axiomhq/hyperloglog"
@@ -55,14 +59,17 @@ type TrafficBatch struct {
 	State IngestState
 }
 
+// ApplyTraffic applies a batch. Rows are written in key order, so two
+// batches touching the same rows at once (nodes shipping rollups to one
+// PostgreSQL store) take their row locks in the same order and can't
+// deadlock; a transaction that loses a conflict anyway is retried.
 func (s *Store) ApplyTraffic(ctx context.Context, b *TrafficBatch) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return s.db.inTx(ctx, func(tx *Tx) error { return applyTraffic(ctx, tx, b) })
+}
 
-	for k, c := range b.Hourly {
+func applyTraffic(ctx context.Context, tx *Tx, b *TrafficBatch) error {
+	for _, k := range sortedHourKeys(b.Hourly) {
+		c := b.Hourly[k]
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO traffic_hourly (site_id, hour, requests, page_views, bytes_out, bot_hits, blocked, errors_5xx)
 			VALUES (?,?,?,?,?,?,?,?)
@@ -79,30 +86,11 @@ func (s *Store) ApplyTraffic(ctx context.Context, b *TrafficBatch) error {
 		}
 	}
 
-	for k, sk := range b.Visitors {
-		merged := sk
-		var blob []byte
-		err := tx.QueryRowContext(ctx, `SELECT sketch FROM visitors_daily WHERE site_id = ? AND day = ?`, k.SiteID, k.Day).Scan(&blob)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-		case err != nil:
-			return err
-		default:
-			existing := hyperloglog.New16()
-			if err := existing.UnmarshalBinary(blob); err != nil {
-				return err
-			}
-			if err := existing.Merge(sk); err != nil {
-				return err
-			}
-			merged = existing
-		}
-		out, err := merged.MarshalBinary()
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO visitors_daily (site_id, day, sketch) VALUES (?,?,?)
-			ON CONFLICT (site_id, day) DO UPDATE SET sketch = excluded.sketch`, k.SiteID, k.Day, out); err != nil {
+	days := slices.SortedFunc(maps.Keys(b.Visitors), func(x, y DayKey) int {
+		return cmp.Or(strings.Compare(x.SiteID, y.SiteID), cmp.Compare(x.Day, y.Day))
+	})
+	for _, k := range days {
+		if err := mergeVisitors(ctx, tx, k, b.Visitors[k]); err != nil {
 			return err
 		}
 	}
@@ -112,19 +100,70 @@ func (s *Store) ApplyTraffic(ctx context.Context, b *TrafficBatch) error {
 	}
 
 	if b.State.Name != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ingest_state (name, inode, offset) VALUES (?,?,?)
-			ON CONFLICT (name) DO UPDATE SET inode = excluded.inode, offset = excluded.offset`,
+		// "offset" is quoted: PostgreSQL reserves the word.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ingest_state (name, inode, "offset") VALUES (?,?,?)
+			ON CONFLICT (name) DO UPDATE SET inode = excluded.inode, "offset" = excluded."offset"`,
 			b.State.Name, int64(b.State.Inode), b.State.Offset); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// mergeVisitors merges a day's sketch into the stored one. The stored
+// sketch is read locked (FOR UPDATE), so a concurrent batch can't merge
+// into the same old value and overwrite this one's visitors; when there is
+// none yet, the insert doesn't overwrite one a concurrent batch has just
+// added (DO NOTHING) and the merge starts over from that one.
+func mergeVisitors(ctx context.Context, tx *Tx, k DayKey, sk *hyperloglog.Sketch) error {
+	for {
+		var blob []byte
+		err := tx.QueryRowContext(ctx, `SELECT sketch FROM visitors_daily WHERE site_id = ? AND day = ? FOR UPDATE`,
+			k.SiteID, k.Day).Scan(&blob)
+		if errors.Is(err, sql.ErrNoRows) {
+			out, err := sk.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			res, err := tx.ExecContext(ctx, `INSERT INTO visitors_daily (site_id, day, sketch) VALUES (?,?,?)
+				ON CONFLICT (site_id, day) DO NOTHING`, k.SiteID, k.Day, out)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				return nil
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		merged := hyperloglog.New16()
+		if err := merged.UnmarshalBinary(blob); err != nil {
+			return err
+		}
+		if err := merged.Merge(sk); err != nil {
+			return err
+		}
+		out, err := merged.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE visitors_daily SET sketch = ? WHERE site_id = ? AND day = ?`, out, k.SiteID, k.Day)
+		return err
+	}
+}
+
+func sortedHourKeys[V any](m map[HourKey]V) []HourKey {
+	return slices.SortedFunc(maps.Keys(m), func(x, y HourKey) int {
+		return cmp.Or(strings.Compare(x.SiteID, y.SiteID), cmp.Compare(x.Hour, y.Hour))
+	})
 }
 
 func (s *Store) IngestState(ctx context.Context, name string) (IngestState, error) {
 	st := IngestState{Name: name}
 	var inode int64
-	err := s.db.QueryRowContext(ctx, `SELECT inode, offset FROM ingest_state WHERE name = ?`, name).Scan(&inode, &st.Offset)
+	err := s.db.QueryRowContext(ctx, `SELECT inode, "offset" FROM ingest_state WHERE name = ?`, name).Scan(&inode, &st.Offset)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, nil
 	}

@@ -24,6 +24,16 @@ jobs:
           WPGENIE_TEST_DOCKER: "1"
       - run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/wpgenie
 
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: every store-backed test with the panel store on PostgreSQL
+        run: make test-postgres
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -63,7 +73,7 @@ jobs:
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
           docker exec php php -l /usr/local/share/wpgenie/smtp.php
           docker exec php php -l /usr/local/share/wpgenie/profile.php
-          for f in images image-convert convert-images cdn; do docker exec php php -l /usr/local/share/wpgenie/$f.php; done
+          for f in images image-convert convert-images cdn offload; do docker exec php php -l /usr/local/share/wpgenie/$f.php; done
           # The page cache stores Brotli copies; GD must write both modern formats.
           docker exec php php -r 'exit(function_exists("brotli_compress") && function_exists("imageavif") && function_exists("imagewebp") ? 0 : 1);'
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php

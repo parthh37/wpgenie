@@ -88,7 +88,7 @@ function renderEnvironments(el, site) {
   };
   const active = site.status === 'active';
   // Operators may delete staging sites (live ones need an admin).
-  if (site.parent_id) $('.delete', el).classList.remove('admin-only');
+  if (site.parent_id) $('.delete', el).classList.remove('admin-only', 'can-create');
   $('.php-summary', el).textContent = `· ${site.php_version}`;
   const aliases = site.domains.length - 1 + site.redirect_domains.length;
   $('.dom-summary', el).textContent = aliases ? `· ${aliases} more domain(s)` : '';
@@ -113,7 +113,7 @@ const INTERVALS = [[0, 'Manual only'], [1, 'Every hour'], [2, 'Every 2 hours'], 
 async function showBackups(el, site) {
   const body = $('.bk-body', el);
   fill(body, h('p', { class: 'muted small' }, 'Loading backups…'));
-  const [info, repos] = await Promise.all([api('GET', `/sites/${site.id}/backups`), api('GET', '/backups/repos')]);
+  const [info, repos] = await Promise.all([api('GET', `/sites/${site.id}/backups`), api('GET', `/sites/${site.id}/backups/destinations`)]);
   const p = info.policy || { repo_id: '', interval_hours: 24, keep_last: 0, keep_daily: 7, keep_weekly: 4, keep_monthly: 6 };
   const repoName = (id) => (repos.find((r) => r.id === id) || { name: id }).name;
   $('.bk-summary', el).textContent = info.policy

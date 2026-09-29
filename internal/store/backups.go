@@ -79,12 +79,26 @@ func (s *Store) CreateRepo(ctx context.Context, r *BackupRepo) error {
 	return err
 }
 
+// PutRepo creates or updates a repository copied from the panel (on a
+// node): same ID, password and secrets as where it was added.
+func (s *Store) PutRepo(ctx context.Context, r *BackupRepo) error {
+	b, err := json.Marshal(r.Secrets)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO backup_repos (id, name, kind, location, password, secrets, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, kind = excluded.kind,
+		location = excluded.location, password = excluded.password, secrets = excluded.secrets`,
+		r.ID, r.Name, r.Kind, r.Location, r.Password, string(b), time.Now().Unix())
+	return err
+}
+
 func (s *Store) GetRepo(ctx context.Context, id string) (*BackupRepo, error) {
 	return scanRepo(s.db.QueryRowContext(ctx, `SELECT `+repoCols+` FROM backup_repos r WHERE r.id = ?`, id))
 }
 
 func (s *Store) Repos(ctx context.Context) ([]*BackupRepo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+repoCols+` FROM backup_repos r ORDER BY r.created_at`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+repoCols+` FROM backup_repos r ORDER BY r.created_at, r.id`)
 	if err != nil {
 		return nil, err
 	}

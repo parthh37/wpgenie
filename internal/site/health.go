@@ -45,6 +45,9 @@ var fatalMarkers = []string{
 type HTTPProber struct {
 	Addr  string // Caddy's HTTPS listener, default 127.0.0.1:443
 	Token string // shield.Options.HealthToken
+	// Dial, if set, reaches Caddy instead of Addr (a site on another node:
+	// the cluster tunnel to that node's Caddy, with that node's Token).
+	Dial func(ctx context.Context) (net.Conn, error)
 }
 
 func (p *HTTPProber) Probe(ctx context.Context, domain string) Health {
@@ -56,6 +59,9 @@ func (p *HTTPProber) Probe(ctx context.Context, domain string) Health {
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				if p.Dial != nil {
+					return p.Dial(ctx)
+				}
 				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
 			},
 			// Full verification: Caddy serves the site's real (ACME)

@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,6 +90,26 @@ func Username(siteID, suffix string) (string, error) {
 	}
 	return siteID + "-" + suffix, nil
 }
+
+// ValidLogin reports whether username is a login name Username could have
+// made for siteID (a login arriving from elsewhere, a moved site's, is
+// checked like one made here: it becomes a file name and a passwd entry).
+func ValidLogin(siteID, username string) bool {
+	if !siteIDRe.MatchString(siteID) {
+		return false
+	}
+	if username == siteID {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(username, siteID+"-")
+	return ok && suffixRe.MatchString(suffix)
+}
+
+var cryptRe = regexp.MustCompile(`^\$6\$(rounds=[0-9]{4,9}\$)?[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$`)
+
+// ValidPasswordHash reports whether h is "" (keys only) or a SHA-512 crypt
+// hash, the only kind this server stores.
+func ValidPasswordHash(h string) bool { return h == "" || cryptRe.MatchString(h) }
 
 // NormalizeKeys validates authorized_keys lines: public keys only, no
 // options (command=, from=, … would change what a login may do), RSA of
@@ -330,8 +351,17 @@ func (s *Service) reconcileLocked(ctx context.Context, kick []string) error {
 	if err != nil {
 		return err
 	}
+	// Logins of suspended sites (their account is suspended) are left out
+	// until the site is back; the records stay.
+	suspended, err := s.Store.SuspendedSiteIDs(ctx)
+	if err != nil {
+		return err
+	}
+	users = slices.DeleteFunc(users, func(u *store.SFTPUser) bool { return suspended[u.SiteID] })
 	for _, u := range users {
-		if !siteIDRe.MatchString(u.SiteID) || strings.ContainsAny(u.Username+u.Password, ":\n") {
+		// Each login becomes a file name and a passwd entry: only names this
+		// server would have made.
+		if !ValidLogin(u.SiteID, u.Username) || strings.ContainsAny(u.Username+u.Password, ":\n") {
 			return fmt.Errorf("refusing to render SFTP login %q", u.Username)
 		}
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 type okProber struct{}
@@ -202,14 +203,21 @@ type e2e struct {
 // container is started with E2E_NET).
 func newE2E(t *testing.T) *e2e {
 	t.Helper()
+	return newE2ENamed(t, t.Name(), 29000)
+}
+
+// newE2ENamed is a second environment in the same test (another server of
+// a cluster): its own database and cache containers, directory and ports.
+func newE2ENamed(t *testing.T, name string, portBase int) *e2e {
+	t.Helper()
 	net := os.Getenv("E2E_NET")
 	if os.Getenv("WPGENIE_TEST_E2E") != "1" || net == "" || os.Geteuid() != 0 {
 		t.Skip("set WPGENIE_TEST_E2E=1 and E2E_NET, run as root in a container on that network")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	t.Cleanup(cancel)
-	dbName, dbPass := "wpgt-db-"+strings.ToLower(t.Name()), "e2e-root-pw"
-	docker := &runtime.Docker{}
+	dbName, dbPass := "wpgt-db-"+strings.ToLower(name), "e2e-root-pw"
+	docker := &runtime.Docker{Scope: strings.ToLower(name)}
 	docker.Run(ctx, nil, "rm", "-f", dbName)
 	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", dbName, "--network", net,
 		"-e", "MARIADB_ROOT_PASSWORD="+dbPass, "mariadb:11.4"); err != nil {
@@ -234,37 +242,54 @@ func newE2E(t *testing.T) *e2e {
 	// The object cache, as on a server: without it WordPress's cron runs one
 	// event per pass (it re-reads its lock from the cache, skipping the
 	// in-request copy).
-	valkey := "wpgt-valkey-" + strings.ToLower(t.Name())
+	// As deploy/docker-compose.yml runs it: per-site users once the daemon
+	// has written their ACL file.
+	valkey := "wpgt-valkey-" + strings.ToLower(name)
+	dataDir := t.TempDir()
+	os.Chmod(dataDir, 0o755)
+	aclDir := filepath.Join(dataDir, "valkey")
+	os.MkdirAll(aclDir, 0o755)
 	docker.Run(ctx, nil, "rm", "-f", valkey)
-	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", valkey, "--network", net, "valkey/valkey:8-alpine",
-		"valkey-server", "--save", "", "--appendonly", "no"); err != nil {
+	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", valkey, "--network", net, "-v", aclDir+":/etc/valkey:ro",
+		"valkey/valkey:8-alpine", "sh", "-c",
+		`exec valkey-server --save "" --appendonly no $([ -f /etc/valkey/users.acl ] && echo --aclfile /etc/valkey/users.acl)`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { docker.Run(context.Background(), nil, "rm", "-f", valkey) })
 
 	cfg := config.Default()
 	cfg.RedisHost = valkey
-	cfg.DataDir = t.TempDir()
-	os.Chmod(cfg.DataDir, 0o755)
-	cfg.DockerNetwork, cfg.MariaDBHost, cfg.SitePortBase = net, dbName, 29000
+	cfg.DataDir = dataDir
+	cfg.ValkeyACLDir, cfg.ValkeyKey = aclDir, filepath.Join(dataDir, "valkey.key")
+	cfg.DockerNetwork, cfg.MariaDBHost, cfg.SitePortBase = net, dbName, portBase
 	cfg.CaddyfilePath = filepath.Join(cfg.DataDir, "caddy", "Caddyfile")
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	log := slog.New(slog.DiscardHandler)
 	if testing.Verbose() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
+	cache := &runtime.Valkey{Docker: *docker, Container: valkey}
 	svc := &Service{Cfg: cfg, Store: st, Runtime: docker, DB: db, Log: log,
 		Dumper: &runtime.MariaDB{Container: dbName, Password: dbPass},
-		Proxy:  &fakeProxy{log: &[]string{}}, Cache: &runtime.Valkey{Container: valkey}, Prober: okProber{},
+		Proxy:  &fakeProxy{log: &[]string{}}, Cache: cache, CacheACL: cache, Prober: okProber{},
 		Jobs: &jobs.Queue{Store: st, Log: log},
 		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
 			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},
 		Images: docker, Version: "test"}
 	os.MkdirAll(filepath.Join(cfg.DataDir, "backups", "cache"), 0o700)
+	cache.AdminPassword = svc.CacheAdminPassword
+	if err := svc.UpgradeCacheUsers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; ; i++ { // restarted with the ACL file
+		if out, _ := docker.Run(ctx, nil, "exec", valkey, "valkey-cli", "PING"); strings.Contains(string(out), "NOAUTH") {
+			break
+		}
+		if i > 50 {
+			t.Fatal("Valkey didn't come back with its users")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	t.Cleanup(func() {
 		sites, _ := st.ListSites(context.Background())
 		for _, s := range sites {

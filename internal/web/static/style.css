@@ -126,3 +126,21 @@ progress { width: 100%; height: .5rem; accent-color: var(--accent); }
 .insights h3 { margin: 1rem 0 0; color: var(--muted); font-weight: 550; }
 /* Viewers may still look at other periods. */
 .readonly .insights .insights-hours, .readonly .insights .insights-refresh { pointer-events: auto; opacity: 1; }
+
+/* Monitoring */
+.sev-warning { color: var(--warn); font-weight: 600; }
+.dot.bad { background: var(--bad); }
+#mon-settings h3 { font-size: .9rem; margin: 1.25rem 0 .25rem; }
+#mon-webhooks .grid { border-top: 1px solid var(--line); padding-top: .75rem; }
+/* Tenants (customer and reseller accounts) see their sites and account only;
+   the server enforces the same regardless. */
+body.is-tenant .staff-only { display: none !important; }
+body:not(.is-tenant) .tenant-only { display: none !important; }
+body:not(.is-admin):not(.is-tenant) .can-create { display: none !important; }
+body:not(.is-staff):not(.is-reseller) .accounts-tab { display: none !important; }
+body:not(.is-admin):not(.is-reseller) .accounts-create { display: none !important; }
+meter { width: 100%; height: .8rem; }
+.usage-row { display: grid; grid-template-columns: 9rem 1fr 12rem; gap: .75rem; align-items: center; margin: .35rem 0; }
+.suspended { color: var(--bad); }
+.pill.suspended { border-color: var(--bad); }
+textarea { width: 100%; padding: .55rem .7rem; margin-top: .3rem; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; }

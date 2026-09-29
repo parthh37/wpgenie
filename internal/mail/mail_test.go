@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 // fakeDocker simulates the docker CLI for the two mail containers and the
@@ -76,11 +77,7 @@ func (f *fakeDocker) setup(args []string) ([]byte, error) {
 
 func newService(t *testing.T) (*Service, *fakeDocker) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	dir := t.TempDir()
 	cfg := Config{DataDir: filepath.Join(dir, "mail"), CaddyDataDir: filepath.Join(dir, "caddy"), Network: "wpgenie",
 		MailImage: "dms:16", WebmailImage: "roundcube:1.7", WebmailPort: 8089}

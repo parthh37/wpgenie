@@ -14,10 +14,12 @@ check.
 | PHP-FPM container per site | Runs WordPress | Isolation boundary between customers; per-site resource limits |
 | MariaDB 11.4 LTS | WordPress databases | One DB + one user per site, grants limited to that schema |
 | Valkey 8 | Object cache | BSD-licensed Redis fork; LRU cache, no persistence |
-| SQLite (panel) | Sites, traffic rollups | Zero-ops; WAL mode; a single writer is plenty for panel state |
+| Panel store: SQLite, or PostgreSQL | Sites, users, sessions, jobs, traffic rollups | SQLite by default: zero-ops, WAL mode, a single writer is plenty for one node. PostgreSQL (`database_url`) for a managed or replicated panel database; see *Panel database* |
 | restic (container per command) | Backups | Deduplicated, compressed, encrypted; local, S3, B2, SFTP; verifiable |
+| rclone (container per command) | Uploads offload to S3-compatible storage | Every S3 dialect; statistics as JSON; no daemon to keep running |
 | OpenSSH (optional container) | SFTP for site files | Chroot and SFTP-only logins built in; nothing custom exposed to the internet |
 | Adminer (on demand) | Database access | One PHP file; runs only while someone uses it, behind WPGenie's tokens |
+| `wpgenie agent` (other servers) | A node of a cluster: the same data plane for the sites placed on it | The same binary and code paths as a single server; the panel drives it over mutual TLS (see *Several servers*) |
 
 ## Request flow
 
@@ -184,11 +186,22 @@ The installer's API token is the server owner's key: the CLI uses it, and the da
 once, to create the first administrator (`POST /auth/setup` only works while there are no accounts,
 and creates the first one atomically). After that people sign in with their own accounts.
 
-- **Roles**: *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
+- **Roles**: staff are *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
   plugin analysis, CDN, mailboxes, bans, backups and restores, staging and pushes, domains and
   certificates, PHP, SFTP logins, Adminer), *admin* (also creates and deletes sites, users, backup
-  destinations and backups, server-wide security lists and mail settings, self-update). Every route
-  declares the role it needs.
+  destinations and backups, server-wide security lists and mail settings, accounts, plans and billing,
+  self-update). Every route declares the staff role it needs. Tenants are *customer* and *reseller*
+  users: they belong to an account and reach only their own sites and account (see *Accounts, plans
+  and billing*); their role always follows their account's kind and has no staff level at all.
+- **API tokens**: besides the installer's token, every user can create named API tokens (for scripts and
+  billing systems). A token acts as its user, with the user's current role and account, never more;
+  only its SHA-256 is stored, it is shown once, may expire, shows when and from where it was last used,
+  and is revoked by the user or an administrator. Tokens are created from a signed-in session (or by an
+  administrator), never with another token, so a leaked token can't mint successors that outlive its
+  revocation. A request with a token needs no code (a script can't type one), but while the panel
+  requires two-factor authentication only users who have it can make or use tokens: otherwise a password
+  alone would buy a credential past the requirement. Resetting a user's password or second factor (an
+  administrator's answer to a compromised account) revokes their tokens.
 - **Passwords**: PBKDF2-HMAC-SHA256, 600 000 iterations (standard library), 12+ characters. Unknown
   user names take as long as wrong passwords. 10 failures per account or 20 per address (IPv6: per
   /64) in 15 minutes lock sign-in for the rest of the window (the CLI still gets in with the token).
@@ -212,6 +225,135 @@ and creates the first one atomically). After that people sign in with their own 
   ones, and every sign-in, failure, lockout and recovery-code use, with the client address (Caddy
   passes `{client_ip}`). The newest 20 000 entries are kept. The CLI appears as `api-token`.
 - An admin can't demote, disable or delete the last active admin, or delete themselves.
+
+## Accounts, plans and billing
+
+WPGenie can host other people's sites: **accounts** (organisations) of kind *customer* or *reseller*, each on
+an admin-defined **plan**, with their own users. It is a security boundary, built default-deny
+(`internal/billing` for the rules, `internal/api/tenancy.go` for access).
+
+**Model.** An account has a name, a kind, a status (*active*, *suspended* with the reason, *terminated*), a
+plan, an optional reseller (customers only: resellers are top-level, one level deep) and external billing
+IDs (WHMCS service, Stripe customer and subscription). Users with `account_id` 0 are staff and keep
+exactly their old behaviour. **Site ownership** is its own table (`site_accounts`, no foreign key to
+`sites`): a site may live on another node; deleting a site removes its ownership in the same
+transaction, and sites nobody owns are staff-only. A staging copy belongs to its live site's account.
+
+**Access.** Tenant roles have no staff level, so every existing and future route is refused to them unless
+`tenantRoutes` opens it: default deny by construction. For every tenant route, the wrapper checks
+centrally, before any handler runs:
+
+- a route whose path has a site (`/sites/{id}`), an account (`/accounts/{id}`) or a job (`/jobs/{id}`)
+  is served only when the tenant owns it (their account's, or for a reseller also their customers');
+  otherwise 404, as if it didn't exist. Sub-resources (`{user}`, `{domain}`, `{repo}`, `{backup}`) are
+  looked up within that site or account by the handlers. A tenant route with a path value of unknown
+  ownership stops the server at startup;
+- routes marked reseller-only, and "customers only" ones (suspend, terminate, change the plan of a
+  customer, never the reseller's own account);
+- the site's plan features (staging, backups, SFTP, Adminer, own certificates, CDN, SMTP);
+- a suspended account (or one whose reseller is suspended) can sign in and read, and look after its own
+  user, but change nothing; a suspended customer's sites are frozen for their reseller too.
+
+Tenants can't attach a domain whose mail this server hosts (the mail server treats every address on it as
+local: a site there would get a sender mailbox on someone else's mail domain, DKIM-signed as theirs).
+Usernames that the audit log uses for non-users (`api-token`, `system`, `scheduler`, `sso`, `stripe`)
+are reserved.
+
+Lists (sites, jobs, security events, accounts, usage, plans) are filtered to the tenant's scope. Tenants
+get their sites' day-to-day operations: shield settings, caches, updates, scans and plugin analysis,
+backups and restores of their own sites to the plan's destinations, staging, domains, certificates, PHP
+version and settings, SFTP logins, Adminer, CDN, images, insights, SMTP. Resource changes (replicas,
+memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
+infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
+destinations and deleting backups, restoring a backup as a new site, users outside their accounts,
+plans' definitions, billing settings, audit log, self-update. `TestEveryRouteIsClosedToOtherTenants`
+walks the whole route table as a customer and a reseller (tokens and sessions): every staff-only route
+answers 403 and every route on another account's site, account or job 404.
+
+**Plans.** Per account: sites (staging copies included), disk (site files plus databases) and bandwidth per
+UTC calendar month; per site: replicas, memory and CPUs per replica, domains; features; the backup
+destinations tenants may choose; and what happens past the bandwidth: *notify* (default) or *suspend*.
+0 means unlimited (the server's own limits still apply). New sites and staging copies are refused past
+the site count or the disk space; resizing past the per-site limits is refused, with a message naming the
+limit. Resellers assign administrator plans marked *resellable* that fit their own plan limit by limit
+(features and destinations included): simpler and sounder than sub-plans, which would let a reseller
+define limits nobody reviewed. A reseller's plan is also an allocation: its totals count every customer's
+sites, and a customer's per-site limits and features are narrowed to the reseller's. Lowering a plan
+doesn't shrink running sites; their next change is checked.
+
+**Usage.** Bandwidth is the response bytes Caddy served (the traffic rollups). Disk is measured nightly in
+the maintenance window and on demand (at most every five minutes per account): the site's directory walked
+through `os.Root` without following symlinks (a link to another site or `/` counts as a few bytes), plus
+the database's data and indexes from MariaDB's `information_schema`. Usage comes through the
+`billing.UsageSource` interface, so a cluster adds what remote nodes report. Every hour each account's
+month is recorded (`account_usage`); crossing 80% and 100% of the bandwidth or disk is notified once per
+month (account log, `usage.threshold` webhook); bandwidth past 100% suspends the account when the plan
+says so, and the next month (or a bigger plan) lifts that suspension by itself.
+
+**Suspension.** Suspending an account (by an administrator, billing, overage, or a reseller for their
+customer) suspends every site it owns, and a reseller's suspension takes its customers' sites down too.
+A suspended site answers every domain with a static 503 page from Caddy (no PHP, no shield, no log),
+its PHP replicas are stopped once no job holds the site, cron, backups, updates, scans and the autoscaler
+skip it, its SFTP logins and Adminer sessions end; files, databases, backups and settings stay. Only the
+party that suspended (or an administrator) lifts a suspension; a stronger reason replaces a weaker one
+(admin > billing > overage > reseller). Unsuspending starts the replicas first and switches Caddy only
+once they answer. Suspension goes through `billing.SiteOps` (`site.Service` here), so sites on other nodes
+plug in. **Terminating** blocks the account's users (sessions end, tokens stop working), suspends its
+sites and, when confirmed with the account's ID, deletes them (staging copies first; backups stay).
+Everything is in the account's activity log and the audit log. An hourly reconcile catches sites created
+while an account was suspended and retries failures.
+
+**Provisioning API.** Administrators, and resellers for their customers, create accounts with a first user
+(given or generated password); an idempotency key (body or `Idempotency-Key`, scoped per caller) makes a
+billing system's retries return the same account. Plans are changed, accounts suspended, unsuspended and
+terminated, users' passwords reset, usage reported (`GET /api/v1/usage`) and **single sign-on** links
+made: a one-time token (256 bits, stored hashed, two minutes, single use through an atomic delete) in the
+URL's fragment, which browsers never send to servers or in a Referer; the dashboard exchanges it (POST,
+with the CSRF header) only after the user clicks *Continue*, so a link can't sign anyone in behind their
+back. The link replaces the password, not the second factor: a user with two-factor authentication still
+enters a code, and on a panel requiring it a user without it only reaches Account, as after a password
+sign-in. Staff never sign in by link. The trade-off: whoever controls the billing system (or a reseller's
+token) can sign in as its clients who have no second factor, which is what single sign-on is for.
+
+**WHMCS** (`integrations/whmcs`): a server module mapping every WHMCS action to the provisioning API over
+HTTPS (certificate verified), authenticated with a user's API token; accounts are found by WHMCS service ID.
+Service IDs belong to the billing system that set them: the panel owner's WHMCS numbers top-level
+accounts, a reseller's WHMCS its customers. They are unique within each namespace, and lookups and usage
+reports only use the caller's, so a reseller reusing the owner's service number can't steer the owner's
+WHMCS (suspensions, terminations, plan changes) onto an account of theirs; the module refuses ambiguity.
+
+**Stripe.** `POST /api/v1/billing/stripe/webhook` is public (through the panel's Caddy site) and trusted
+only through `Stripe-Signature`: HMAC-SHA256 of `timestamp.payload` with the endpoint's signing secret,
+compared in constant time with every `v1` signature, timestamp within 5 minutes. Events are processed
+once, one at a time, by event ID (recorded only after success, so Stripe's retries redo a failure).
+Subscriptions (created, updated, or a completed checkout with the secret key set) create or update the
+customer's account on the plan mapped from the price; `unpaid`, `canceled` and a deleted subscription
+suspend it (reason billing), `invoice.paid` and an active subscription lift a billing suspension, a failed
+payment is only notified (Stripe retries it). Only the account's own subscription counts: a customer's
+other subscriptions (another product, unmapped prices), one-off invoices and other subscriptions'
+invoices change nothing, and a subscription with an unmapped price never replaces the hosting one.
+Stripe doesn't deliver in order, so each account remembers the creation time of the last event applied
+and ignores older ones (a retried "active" can't undo a later cancellation); with the secret key set,
+the subscription's current status is fetched from Stripe rather than trusted from the event, and a late
+payment of a subscription that has since ended doesn't unsuspend. With a secret key and a meter event name, each account's
+monthly bandwidth is reported hourly to a Billing Meter in whole MB, with an identifier per month and total
+so a lost answer isn't billed twice. Secrets are write-only settings.
+
+**Outgoing webhooks.** Administrators add HTTPS endpoints (with a secret, shown once, rotatable) for
+`account.*`, `plan.changed`, `usage.threshold` and `site.created`/`site.deleted`. Events are queued in the
+store for each endpoint and delivered with `X-WPGenie-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret,
+"t.body")>`, retried after 30 s, doubling up to 6 h, 12 attempts (about a day and a half), with a
+delivery log. Deliveries connect only to public addresses, checked on the address actually dialled (a
+name rebound to 127.0.0.1 can't reach Caddy's admin API), ignore proxies and don't follow redirects.
+
+Known limits, to close before hosting mutually untrusted tenants at scale (object cache isolation, once
+the first of them, is done: see *Caching*):
+
+- **Domain ownership.** A tenant can attach any domain not yet on the server (no DNS ownership check, as
+  on most shared hosting): first come, first served, and a subdomain of another customer's domain is
+  served only if its DNS points here. A TXT-record check would close it.
+- Backups aren't counted in the disk quota, and manual backups aren't limited beyond the per-site job
+  lock and the shared heavy-job slots.
 
 ## Analytics
 
@@ -332,6 +474,22 @@ image and is loaded by a wrapper in `wp-content/object-cache.php`. The wrapper f
 site's cache). Keys are prefixed with the site ID. Panel purges delete the site's keys straight from
 Valkey (a server-side `SCAN` + `UNLINK` script), never via `wp cache flush`: WP-CLI would load the
 site-replaceable drop-in outside the PHP jail.
+
+*Isolation.* Every site is its own Valkey ACL user (`wpg_<site>`, password in its root-owned
+`wp-config.php`), limited to keys under its prefix, with no pub/sub channels, no dangerous or administrative
+command (`KEYS`, `FLUSHALL`, `CONFIG`, `CLIENT`, `DEBUG`, …), no functions and no flushing or killing others'
+scripts; `INFO` stays (the drop-in reads the server version) and so does `SCAN` (its own selective flush
+needs it), which lists other sites' key names but never their values. The default user is off; the daemon is
+the `wpgenie` user, its password passed to `valkey-cli` in the exec's environment. Without this, PHP on one
+site, which a tenant or a compromised plugin controls, could read or rewrite another site's cached options
+and user capabilities and take it over. Passwords are HMACs of the site ID with a key only the daemon reads
+(`/etc/wpgenie/valkey.key`), so nothing new is stored: the ACL file (`/etc/wpgenie/valkey/users.acl`, hashes
+only, mounted read-only into Valkey) is rewritten and reloaded whenever a site is created or deleted, and
+sites that predate it get their line in `wp-config.php` at the next start (Valkey, started before its file
+existed, is restarted once to take it; the cache is disposable). A moved site gets its new server's
+credentials; a spread site's replicas elsewhere use the home's, through the copied `wp-config.php`.
+`TestValkeyACLIsolatesSites` checks the rules against a real Valkey, `TestCacheIsolationEndToEnd` against real
+WordPress.
 
 ### Images
 
@@ -661,24 +819,349 @@ sit next to `wp-config.php` (root:82 0640) and an mu-plugin wrapper loads `smtp.
 which points PHPMailer at the mail server (a visitor's address set as sender by a contact form
 becomes Reply-To). Outbound mail can go through a relay (SES, Postmark, …) where port 25 is blocked.
 
-## Multi-server plan
+## Monitoring and alerts
 
-The code has explicit seams for going multi-server:
+`internal/monitor` watches the server from the outside, the way visitors see it, and tells people
+when something breaks.
 
-1. **`runtime.Runtime` interface** — today `Docker` (local CLI). A `RemoteAgent` implementation will
-   send the same calls over mTLS to a `wpgenie agent` on each node.
-2. **Stateless shield tokens** — any node with the shared secret verifies any pass/challenge, so
-   Caddy + shield can run on every node with no shared session store.
-3. **Rate limits** are per-node (good enough: attackers are spread by DNS/anycast anyway); a shared
-   Valkey-backed limiter can be added for strict global limits.
-4. **Store** — SQLite now; the `store` package is the only SQL-aware code, so a Postgres backend
-   is a contained change when a multi-node control plane needs it.
-5. **Analytics** — each node ingests its own log and ships rollups (tiny) to the control plane.
-6. **Upstreams are addresses** (`host:port`) in the proxy layer, so replicas on other nodes slot
-   into the same `php_fastcgi` load balancer. Across nodes the docroot is no longer shared:
-   uploads need offloading to object storage (or a shared filesystem) first.
-7. **Density** — PHP-FPM `pm = ondemand` means idle sites hold no workers; Caddy serves static
-   assets and cached pages without touching PHP.
+**Alerts.** Every minute the evaluator runs these checks on *live* sites (active, not staging):
+
+- **Site down**: `site.HTTPProber` (home and login page through Caddy on loopback, full TLS
+  verification, the shield's per-process health token) — critical after `down_after` (3) failed
+  probes in a row, resolved by the first success. A site that has never been judged healthy and is
+  unreachable (no certificate yet: DNS doesn't point here) isn't paged, the update manager's "can't
+  be judged" rule; once it has worked, unreachable counts (Caddy down pages every site). A site with a
+  running job (restore, push, clone) or WordPress update isn't judged while it runs. Probes aren't
+  traffic: the ingester drops requests carrying the health token from the figures (by the token
+  Caddy logs, never by User-Agent, which anyone could send to vanish from bandwidth counts).
+- **Certificates**: a TLS handshake with `127.0.0.1:443` and SNI = each served and redirecting domain,
+  i.e. exactly what browsers get, ACME or uploaded. Warning under 14 days, critical under 3, critical
+  when expired, not covering the name or not chaining to a public root. Uploaded certificates that
+  don't chain publicly (Cloudflare origin certificates) are judged on names and dates only. Once an
+  hour per domain, every ten minutes while the last result was bad. A failed handshake isn't judged
+  (no certificate yet; Caddy down is the uptime check's).
+- **Disk**: the filesystems of the data directory and the log directory (each once), used as `df`
+  counts it: warning at 85%, critical at 95%.
+- **Backups**: warning when a scheduled backup hasn't succeeded for two intervals.
+
+State lives in the store: one `alerts` row per watched target once judged (`firing` or `resolved`;
+the row's existence is what "was healthy once" means, so it survives restarts), and `alert_history`
+(firing, severity changes, resolved; newest 1000). Targets that disappear (a deleted site or domain)
+are resolved and forgotten. Thresholds are settings (`GET/PUT /api/v1/monitoring/settings`, admin).
+
+**Notifications** go out on firing, severity change and resolve, and again every `renotify_hours`
+(4) while firing: one message per channel per evaluation, listing every change (when Caddy stops, one
+message, not fifty). Channels:
+
+- **E-mail** over SMTP with STARTTLS (required, not opportunistic) or implicit TLS; never in clear.
+  Header fields are single-line and length-bounded; addresses are validated when saved.
+- **Webhooks**: JSON POST with `text` (Slack, Mattermost), `content` (Discord) and the structured
+  alerts, signed: `X-WPGenie-Timestamp` and `X-WPGenie-Signature: sha256=hex(HMAC-SHA256(secret,
+  timestamp + "." + body))` (receivers should refuse old timestamps). https only, no redirects
+  followed, no proxy, and the dialer refuses loopback, link-local (cloud metadata) and multicast
+  addresses whatever the name resolves to, so a webhook can't be pointed at the daemon's own APIs.
+
+Deliveries run in the background (at most 16 at once) with retries after 15 s, 1 min and 4 min;
+failures are logged and never delay the next evaluation. `POST /api/v1/monitoring/test` sends one test
+message per channel and reports each result. Secrets are write-only, like the CDN token: the SMTP
+password, webhook URLs (a chat webhook's URL *is* its credential; the API shows scheme and host) and
+signing secrets are never returned. Omitted on update they are kept, but only where they would go to
+the same place (the SMTP password for the same host, port and user; a webhook's secret for the same
+URL), or anyone with API access could send them to a server of their choosing. Missing signing
+secrets are generated and shown once.
+
+**Metrics.** `GET /metrics` serves the Prometheus text format (0.0.4) on the daemon's loopback
+listener, and through Caddy only when the panel domain is published. It needs its own bearer token
+(`POST /api/v1/monitoring/metrics-token`, admin, shown once, only its SHA-256 stored): never the API
+token, which can change everything, nor a session. Without a token, `/metrics` answers 401 to
+everyone. Series: build info and uptime; per site (label `site`) requests, bytes, page views, bot hits,
+shield blocks, 5xx and page cache hits/misses (counters fed in-process by the access-log ingester's
+committed batches, reset at restart as Prometheus expects), the PHP response time histogram
+(`store.LatencyBuckets`), replicas desired/running, CPU, PHP workers busy and queued, known
+vulnerabilities, last successful backup, probe up/duration; certificate expiry and validity per
+domain; shield decisions by verdict and active bans; jobs by status; filesystem size/free/available;
+host memory; alerts firing by severity. Labels are bounded by design (sites, domains, paths of watched
+filesystems, verdicts, statuses), never URLs, IPs or user agents.
+
+**Several servers.** The evaluator only sees its data sources, func fields on `monitor.Service`:
+`Sites`, `Probe` and `CertCheck` (given the `*store.Site`, so they route to the node serving it),
+`Hosts` (one `Host` per node, with its memory and filesystems; disk alerts are keyed
+`disk:<node>:<path>`) and `Nodes`. On a panel with other servers `monitor.Cluster` supplies them (see
+*Several servers*); nodes don't evaluate or notify, the panel does it for every server.
+
+## Panel database
+
+The panel's own state (sites, users, sessions, audit log, jobs, backups settings, traffic rollups)
+lives in `/var/lib/wpgenie/wpgenie.db` (SQLite, WAL mode, one connection, `0600`) unless
+`database_url` in `/etc/wpgenie/config.json` names a PostgreSQL database:
+
+```json
+"database_url": "postgres://wpgenie:PASSWORD@db.example.com:5432/wpgenie?sslmode=verify-full"
+```
+
+Stay on SQLite for a single server: nothing to run or back up separately, and it is fast. Use
+PostgreSQL (13 or later, built with ICU, as every mainstream package and managed service is) to keep the
+panel's state in a managed or replicated database (point-in-time recovery, a standby panel ready to take
+over; nodes of a cluster always keep their own SQLite). The database holds password hashes, TOTP secrets and
+backup credentials, so a server that isn't on the same machine (loopback address or Unix socket) is
+only reached over TLS: without `sslmode` the connection verifies the certificate and host name
+(`verify-full`; system CAs, or `sslrootcert=/path`), `require` and `verify-ca` are respected, and
+`disable`, `allow` and `prefer` (which may fall back to plaintext) are refused, by `wpgenie` at
+startup and by config validation. Give the role its own database and ownership of it (it creates
+tables and a collation when it migrates); nothing else is needed. Schema migrations run at startup
+in one transaction under an advisory lock, so two panel processes starting together don't race.
+
+**Moving to PostgreSQL:** create an empty database, stop the daemon, then
+
+```bash
+systemctl stop wpgenie
+wpgenie store migrate-to-postgres -        # reads the URL from stdin (keeps the password out of ps and history)
+```
+
+It checks that the daemon isn't answering, reads the SQLite database read-only in one snapshot,
+migrates PostgreSQL to the same schema version, copies every table in one transaction (ids included;
+identity sequences continue after the highest id either database handed out), refuses a target that
+already has data, verifies the row counts and prints the `database_url` line to add. Start the daemon
+and it runs any newer migrations. The SQLite file is left as it was: removing `database_url` goes
+back to it (without what was written on PostgreSQL meanwhile).
+
+How the two stay equivalent: queries and migrations are written once, in SQL both accept, with `?`
+placeholders (`internal/store/dialect.go`, `translate.go`). On PostgreSQL the store rebinds
+placeholders, qualifies upsert column references, maps `IFNULL`, scalar `MAX`/`MIN`, `LIKE`
+(case-insensitive, as in SQLite) and `INSERT OR IGNORE`, and translates migrations mechanically
+(`INTEGER` → `BIGINT`, `REAL` → `DOUBLE PRECISION`, `BLOB` → `BYTEA`, `TEXT` → `TEXT COLLATE "C"` so
+comparisons and sort order match SQLite's, `COLLATE NOCASE` → a case-insensitive ICU collation,
+reserved column names quoted). Constructs only one database runs (`INSERT OR REPLACE`, `rowid`,
+`strftime`, `LastInsertId`, …) are rejected on both, so the default SQLite test run catches them;
+`make test-postgres` runs every store-backed test on PostgreSQL, and the store tests compare the
+schema both databases end up with.
+
+## Uploads offload
+
+Per site (off by default), `wp-content/uploads` is copied to S3-compatible object storage (AWS S3, Cloudflare
+R2, Backblaze B2, MinIO, …), and Caddy fetches any upload missing on disk from the storage's **public URL**
+(the bucket's own address for the prefix, or a CDN in front of it). Local copies can then be removed after
+`local_days`, and replicas on other servers (Phase 5) can serve every upload. Settings: endpoint, region,
+bucket, key prefix (default `<site-id>/uploads/`), access key ID, secret key (write-only), public URL, an
+optional `public-read` ACL for services that need one per object, and `local_days` (0 keeps every local copy).
+
+- **Enabling is checked end to end**: a test object is written with the key, fetched over HTTPS through the
+  public URL (a direct `200` with the same bytes; redirects don't count, Caddy wouldn't follow them), and
+  deleted. Settings that fail any step are refused with the step's error and not stored. Endpoint and public
+  URL must be `https://`; the public URL must use a public hostname (no IP address or internal name: visitors'
+  requests are proxied there) and a path of unreserved characters (it goes into the Caddyfile). No two sites
+  may use nested prefixes in the same bucket: a site's delete queue can only reach its own objects.
+- **rclone** (`rclone/rclone`, pinned by `rclone_image`) runs in a throwaway container per command, like restic:
+  no capabilities, read-only root filesystem, bounded memory and PIDs, the default bridge network (never the
+  sites' network). The keys go in on stdin, a `KEY=VALUE` block the entrypoint exports (`RCLONE_S3_*`); the
+  remote is `:s3:` configured by flags and that environment only (no config file), so nothing secret is in argv
+  or `docker inspect`. The key never enters the PHP container and no API returns it.
+- **rclone never reads a site's files.** A site controls every path under its docroot and could make
+  `wp-content/uploads` a symlink at any moment: bind-mounted, Docker would resolve it on the host (any
+  directory published to a public bucket); inside rclone's container it would reach rclone's own
+  `/proc/self/environ`, where the keys are. So the daemon walks the uploads through `os.Root` (after an
+  `Lstat`/`SameFile` check that it opened the real directory; never following a symlink, never blocking on a
+  named pipe, reading only regular files) and copies what needs uploading into a root-only scratch directory
+  (`/var/lib/wpgenie/offload/<site>/`), in batches of at most 256 MB / 2 000 files, with their mtimes. rclone
+  uploads that directory with `--no-check-dest` (no listing, no request per file); the scratch copy is removed
+  after each batch.
+- **Copies.** Every minute (and within ~15 s of an upload or delete: PHP touches `logs/offload.poke`), the files
+  whose mtime is newer than the start of the last successful copy (minus a 2-minute margin for writes in
+  progress), minus those the previous copies already sent unchanged. Nightly, in the maintenance window (or
+  after 48 h without one), a **full copy**: the bucket's prefix is listed once (`lsf` with sizes, upload times
+  and ETag MD5s) and every file it lacks, or holds with another size or uploaded before the file last changed,
+  is uploaded (rclone's `--update --use-server-modtime` rule). Files that arrive with old mtimes (SFTP preserving
+  times, restores, pushes) are caught by the full copy. Remote objects are never deleted because a local copy is
+  missing: local copies may have been removed on purpose. The first copy after enabling is a full one.
+  Content-Type comes from the extension; every object gets `Cache-Control: public, max-age=2592000`.
+- **Never offloaded** (they stay on disk only): anything with `.php` (or `.phtml`, `.phar`, …) in its name,
+  dotfiles and dot directories, what Caddy refuses to serve (`*.sql`, `*.sql.gz`, `*.bak`, `*.log`, `*.ini`, …),
+  the AVIF/WebP copies of images (negotiated from disk only), names with control characters, and directories
+  where plugins keep private files behind `.htaccess` rules a public bucket doesn't have: WooCommerce's
+  downloadable products and logs, Easy Digital Downloads, Gravity Forms / WPForms / Contact Form 7 uploads,
+  backup plugins' archives (UpdraftPlus, BackWPup, WPvivid, All-in-One WP Migration, …), security plugin logs.
+- **Deletes.** The mu-plugin wrapper (`wpgenie-offload.php`, loading `offload.php` read-only from the image)
+  appends, one per line and relative to the uploads directory, every file of an attachment WordPress deletes
+  (`delete_attachment`: the file, the original of a scaled image, every size and edit backups, which covers
+  local copies already removed, for which WordPress never calls `wp_delete_file`) and every other
+  `wp_delete_file`, to `logs/offload-deletes.queue` in the site directory (PHP-writable, not Caddy-readable),
+  under `flock(LOCK_EX)`. The daemon reads it like the PHP error log (one non-blocking `O_NOFOLLOW` open checked
+  against `Lstat`, at most 16 MB a pass), holding the same lock from reading to truncating so no line is lost,
+  and treats every line as untrusted: relative, already clean (`path.Clean` must not change it), no `..`,
+  control characters or backslashes, and wanted by the filters above. Paths go into `offload_deletes` (so a
+  failed delete is retried, up to 500 000 waiting per site) and are deleted with `rclone delete
+  --files-from-raw -` (the list follows the secret block on stdin). Deletes run before uploads, and a path that
+  exists on disk again (a new upload took the name) isn't deleted: it's uploaded instead.
+- **Serving.** For a site with offload (or a staging site whose live site has it), Caddy tries the file on disk
+  first; a `GET`/`HEAD` under `/wp-content/uploads/` whose path has no `.php` and no dot segment, for a file that
+  doesn't exist on disk, is reverse-proxied to the public URL: the path mapped onto its prefix, the query string
+  dropped (it could address the storage's API, e.g. `?acl`), the storage's `Host` and TLS server name, no
+  cookies, `Authorization`, `Referer` or `X-Forwarded-*` sent; `Set-Cookie` and `X-Amz-*` headers dropped,
+  `Cache-Control: public, max-age=2592000` set, and any `4xx` from the storage (XML naming the bucket) turned
+  into a plain 404. It runs after the shield, the hardening rules and the AVIF/WebP negotiation, before PHP.
+  Negotiation keeps working for files on disk; an image whose local copy was removed is served in its original
+  format (its converted copies are removed with it by the nightly conversion, which drops copies without an
+  original). `TestOffloadFallbackInRealCaddy` runs this in a real Caddy against MinIO and a stand-in storage
+  that echoes what it receives.
+- **Removing local copies** (`local_days` > 0) only after a successful full copy, and only for files whose
+  mtime is older than `local_days` *and* older than that copy's start, which the listing shows in the bucket
+  with the same size, an MD5 equal to the local file's (ETags of multipart uploads aren't MD5s: such files,
+  over 200 MB, and buckets with KMS encryption keep their local copies) and an upload time after the file last
+  changed; and only if the public URL answers a `HEAD` for one of them with the same length. Each file is
+  hashed through a non-blocking `O_NOFOLLOW` open and removed only if it is still the same file (inode, size,
+  mtime) afterwards. When in doubt, the file stays. Turning offload off, or moving it to another bucket or
+  prefix, is refused while uploads only exist in the bucket, until *Copy back* (a job: the missing files are
+  downloaded into the scratch directory and written into uploads through `os.Root`, owned by the site, never
+  over an existing file or through a symlink) or an explicit `force`. What removed local copies cost: WordPress
+  can't edit or regenerate those images, and backups no longer contain them (the bucket does).
+- **Status**: last incremental and full copy, what they uploaded (rclone's JSON statistics), totals, deletes
+  waiting, uploads only in the bucket, the last error. Failures are retried with exponential backoff (1 minute
+  doubling to an hour) and logged as site events once per distinct error, and again when copies work again.
+  Up to three incremental and two full copies run at once across sites.
+- **Staging** sites never offload by default (a clone gets no settings, and the live site's wrapper is removed
+  from the copy, so it can't queue deletes for the live bucket). A staging site without offload of its own
+  serves uploads it lacks from its live site's public URL, read-only (no credentials involved), so uploads the
+  live site no longer keeps locally still show.
+- **Deleting a site doesn't delete its objects**: the bucket is the operator's. Neither does turning offload
+  off.
+- `(*site.Service).OffloadEnabled` says whether a site's uploads are offloaded: spreading a site's replicas
+  across servers will require it.
+
+## Several servers
+
+A panel can run sites on other servers. Every server is a complete data plane for the sites placed on it
+(its own Caddy, PHP containers, MariaDB and Valkey) run by the same daemon: `wpgenie agent` is `serve` as a
+*node*, with its own SQLite store, shield, analytics, cron, autoscaler, backups, SFTP and Adminer for its sites.
+The panel (the control plane, itself node `local`) keeps the registry of which site lives where, signs people
+in and checks what they may do, and forwards everything about a site to the server it lives on. A node
+holds nothing of other nodes' sites, except the install (not the database) of sites spread onto it (below):
+a compromised node exposes its own sites, not the cluster, with one exception: shared backup destinations
+(below) are on every node with their credentials, so a compromised node can read or delete every server's
+backups there. Give servers that shouldn't trust each other destinations of their own. Nothing about a
+single-server install changes until the first node is added.
+
+**Mutual TLS** (`internal/cluster`). The panel creates a private CA (ECDSA P-256, `/etc/wpgenie/cluster`,
+root only) when the first node is added; its key never leaves the panel. A node's identity is a DNS name in
+its certificate (`<id>.nodes.wpgenie`; the panel's also carries `control.wpgenie`), and every connection to
+a node verifies the chain against that node's name, and the key against the one it was paired with (the
+panel keeps its hash; nodes get each other's with the peer list), so reaching the wrong server fails the
+handshake even with a certificate the CA signed. Certificates last a year and are reissued over the channel 60 days before they expire. All traffic is HTTP/2
+over TLS 1.3 on port 7443.
+
+**Pairing.** A new server prints a pairing code (`wpgenie agent pair-code`, also at the end of `install.sh
+--agent`): the SHA-256 of its public key and a one-time 128-bit secret. The panel dials the address given
+with it, refuses the connection unless the server holds that key (so neither the wrong server nor anyone in
+between gets anything), issues the node's certificate for that key and hands it over with the secret. The
+node accepts it only with the secret, only once (the secret is deleted), and only while unpaired (a paired
+node answers nothing without a cluster certificate), with a few wrong guesses per start at most. Neither side
+has to trust the network. The panel opens every control connection, so a node never needs to reach the panel
+for that; servers do reach each other on 7443 for tunnels while a site moves between them or is spread over
+them, the panel's own server included when it is one end (a move onto it, or a site of its own spread).
+
+**What a node accepts.** Panel API requests arrive only over a connection with the panel's certificate,
+carrying the acting user (name, role, job owner, client address for the node's audit log); the node applies
+the same role checks as the panel. The node's own loopback API ignores those headers (they mean nothing
+without the certificate) and takes its API token for local CLI use; it serves no sign-in, accounts or mail.
+Other nodes get only tunnels to targets tied to a relationship the panel set up (below) and the replica API
+for sites the panel granted them.
+
+**The registry.** `cluster_sites` holds each remote site's node and the node's own record of it, refreshed
+after every change made through the panel and on every health pass (every 30 s: facts, certificates, the
+site list). Listings, placement, access checks and domain uniqueness (a domain can't be taken on two servers)
+read it, so the panel shows every site when a node is down. Site routes (`/api/v1/sites/{id}/…`) for a
+remote site are reverse-proxied to its node as the signed-in user, downloads and job output streaming
+through; the session cookie or API token never leave the panel. Server-wide lists (security allow/deny,
+bans) are applied on every server; bans and security events are merged into one view. Shared backup
+destinations (S3, B2, SFTP) are copied to every node with their password and keys, since a site's backups go
+to the same repository whichever server it is on; each server keeps its own `local` repository, and a
+destination can't be deleted while sites on any server use it. A site's WordPress mail goes through the
+mail server next to the panel: the panel creates the sender mailbox and only sends the node its credentials.
+
+**Accounts across servers.** Tenancy lives on the panel only: a site's account is keyed by its ID
+(`site_accounts`, no foreign key to `sites`), so ownership, plan features and quotas are checked on the panel
+before anything is forwarded, for sites on every server alike. Handlers with plan checks (resources, autoscale,
+domains, backup destinations, staging, pushes) run those checks against the site's record (the registry's copy
+for a remote site) and only then forward; a tenant's request reaches the node as an operator's (nodes know
+nothing of accounts; the panel already decided), and a tenant deleting its own live site as an admin's.
+Billing's per-site operations (suspend, bring back, delete, measure disk, count bandwidth) go to the server
+each site lives on (`site.ClusterOps`), so a plan's limits and a suspension cover all of an account's sites.
+
+**Job IDs** tell the panel where a job ran without any change to the dashboard: node number *n* numbers its
+jobs from *n*×10¹² (SQLite's `sqlite_sequence`, PostgreSQL's `setval`), so `GET /jobs/{id}` is forwarded by
+range and the job list merges every server's. Node numbers are never reused.
+
+**Placement.** A new site goes to the server the admin picks, or else to the one with the smallest share of
+its memory already promised to sites (container limits × replicas: limits don't reserve memory), among the
+reachable, active servers with at least 5 GB and 10 % of their disk free, then the fewest sites.
+`place_on_control: false` keeps sites off the panel's own server. A *draining* server takes no new sites.
+
+**Moving a site** (`POST /sites/{id}/migrate`, a job on the panel; *Drain* moves every site of a server one
+after the other). The target creates the site with the same ID and settings but a fresh database account
+(status *importing*, not served). A first copy runs while the site is live: files as the site user on both
+ends, extracted in two phases as for restores, then the database. The source then goes into WordPress's
+maintenance mode (`.maintenance` with a time a day ahead: it holds however long the copy takes, yet can't hold
+a site down for good) and a second pass copies the database again and the files whose change time (ctime, which `touch` can't set
+back) is after the first pass began, then deletes on the target what the source no longer has (a manifest of
+the source's paths): the only downtime, usually seconds to a few minutes. The site's SFTP logins are frozen
+from the maintenance page on, so nothing changes behind the last copy. The target goes live with them,
+CDN settings, own certificate, backup policy (the local repository becomes the target's own), uploads offload
+(with its sync history: the bucket already holds what it says) and mail credentials; the registry switches.
+Anything failing before then deletes the half-imported copy and takes the source out of maintenance. If the
+panel stops following a move (it died, or the network did), each end cleans up after an hour: an import that
+stopped arriving is removed, and a maintenance page a move put up is taken down.
+
+DNS still sends visitors to the old server for a while, so the old server stops its replicas and forwards the
+site's domains to the new one through the cluster tunnel, with the visitor's address in a PROXY protocol
+header, into a Caddy listener on the new server that is loopback-only and trusts PROXY headers only from
+loopback (`127.0.0.1:8444`, only rendered while a peer may forward). There the full site block runs (shield,
+WAF, page cache) with the real client address, and PHP sees HTTPS as the visitor did. Let's Encrypt's HTTP
+challenges are forwarded too, so the new server has its certificates before DNS moves. The forward and the
+old copy last 7 days, or until *Finish move* once DNS points at the new server's public IP; the new server
+accepts forwarded visitors only from that old server (the panel tells it), since a peer sending PROXY headers
+could claim any address. Staging sites don't move (delete the copy, move the live site, clone again); nor do
+spread sites.
+
+**Spreading a site** (`PUT /sites/{id}/spread`). A site still lives on one server, its home: files,
+database, object cache, Caddy (static files and the page cache) and cron are there. Some of its PHP replicas
+run on other nodes:
+
+- The home keeps a copy of the install on each such node, pushed as the site user whenever its fingerprint
+  (paths, sizes, modes, times; caches excluded) changes, checked every minute. Uploads offload is required,
+  so the copies never carry the media library (every upload would otherwise be a copy of it to every server).
+- The guest's `wp-config.php` is the home's (same salts, so a login works on every replica) with the database
+  and cache hosts pointing at `wpg-link-<home>`: the wpgenie binary in *link* mode in a container on the
+  guest's Docker network, with no capabilities and a read-only filesystem, tunnelling MariaDB and Valkey to
+  the home over the cluster's mutual TLS. The home serves those tunnels only to nodes running its sites'
+  replicas; nothing is published on any network, Valkey not even on the host's loopback.
+- The home's Caddy load-balances page views over every replica, reaching the guests' through local tunnel
+  ports (the guest serves `fpm:<port>` only to the home of that replica); anything that may write files
+  (wp-admin, sign-in, any non-GET request) goes only to home replicas, so the copies never diverge.
+- A guest runs replicas only of a site the panel granted to that site's home, never over a site of its own
+  (same path), and checks the spec it is sent (PHP version, memory, CPU, settings) as if typed in the panel: a
+  node can't make another run its code.
+- The link container mounts the binary and this node's own certificate, key and CA, file by file (not the
+  cluster directory); the panel's server is never a guest (its directory holds the CA's key).
+- Files a page view generates on a guest (CSS and JS plugins build under `uploads` or `wp-content/cache`) are
+  sent back to the home every minute, since the home's Caddy serves them from its disk. The home takes them
+  from that site's guests only, as the site user, under those two directories, no PHP, symlinks, dotfiles or
+  page cache, and only where it has no file yet: a guest can't replace the home's files.
+- Replicas are shared out home first (one replica stays home; two put one elsewhere); autoscaling reads the
+  home replicas. Every replica counts against the site's database connection limit.
+
+What spreading doesn't change: every site still reaches only its own cache keys (its Valkey user, see
+*Caching*); the link gives a guest's other sites a route to the home's Valkey and MariaDB, but no user
+there. Rate limits and bans are per server (each shield sees its own traffic).
+
+**Monitoring.** The panel watches every server: remote sites' uptime and certificates are checked through the
+tunnel to their own Caddy with that node's health token (fetched over mTLS, kept in memory only), disks from
+each node's health checks (last known figures while it is unreachable, so its alerts aren't resolved as if it
+were gone), and a node that stops answering for 3 minutes is an alert of its own. `/metrics?node=<id>` serves a
+node's metrics through the panel: one scrape token, no route from Prometheus to the nodes. The shield's health
+token is hashed in Caddy's access log (the ingester recognises probes by the hash), so the log never holds it.
+
+**Updates.** A node updates itself like the panel (signed releases, rollback), when asked from *Servers*; it is
+a systemd drop-in (`wpgenie.service.d/agent.conf`) that makes the unit run `wpgenie agent`, so updates, which
+replace the unit file, keep it a node.
 
 ## Directory layout on a server
 
@@ -686,7 +1169,7 @@ The code has explicit seams for going multi-server:
 /etc/wpgenie/config.json          panel config + secrets (0600)
 /etc/wpgenie/infra.env            MariaDB root password (0600)
 /etc/wpgenie/caddy/Caddyfile      generated; last config Caddy accepted
-/var/lib/wpgenie/wpgenie.db       panel state
+/var/lib/wpgenie/wpgenie.db       panel state (SQLite; kept as it was after moving to PostgreSQL)
 /var/lib/wpgenie/sites/<id>/      root:82 0751; wp-config.php (root:82 0640)
 /var/lib/wpgenie/sites/<id>/public/   WordPress (82:82)
 /var/lib/wpgenie/sites/<id>/logs/     PHP's error log (82:82 0750; read by the daemon)
@@ -696,8 +1179,11 @@ The code has explicit seams for going multi-server:
 /var/lib/wpgenie/snapshots/       pre-update snapshots (root only)
 /var/lib/wpgenie/backups/local/   the local restic repository (root only)
 /var/lib/wpgenie/backups/cache/   restic's cache; staging/ holds database dumps while backing up
+/var/lib/wpgenie/offload/<id>/    uploads on their way to object storage (root only, emptied after each batch)
 /var/lib/wpgenie/sftp/            SFTP accounts (config/) and host keys
 /etc/wpgenie/caddy/certs/<site>/  sites' own TLS certificates
+/etc/wpgenie/cluster/             cluster CA and identity (panel: ca.key, control.*; node: node.key,
+                                  node.pem, ca.pem, node.json; pairing.json until paired), root only
 /var/lib/wpgenie/iprep/           IP blocklists and the country database
 /var/lib/wpgenie/updates/         staged WPGenie releases, status.json
 /var/lib/wpgenie/mail/            mailboxes (data/), mail server config, Roundcube DB

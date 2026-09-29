@@ -237,8 +237,10 @@ func (s *Service) reconcile(ctx context.Context, st *store.Site) (retire func(),
 	hash := spec.Hash()
 	var keepPorts []int
 	var old []runtime.Replica
+	// Spread sites run some replicas on other nodes (reconcileRemote).
+	local := localReplicas(st)
 	for _, r := range current {
-		if r.Running && r.SpecHash == hash && slices.Contains(st.Upstreams, r.Port) && len(keepPorts) < st.Replicas {
+		if r.Running && r.SpecHash == hash && slices.Contains(st.Upstreams, r.Port) && len(keepPorts) < local {
 			keepPorts = append(keepPorts, r.Port)
 		} else {
 			old = append(old, r)
@@ -256,7 +258,7 @@ func (s *Service) reconcile(ctx context.Context, st *store.Site) (retire func(),
 	for _, r := range all {
 		held = append(held, r.Port)
 	}
-	newPorts, err := s.Store.AllocatePorts(ctx, s.Cfg.SitePortBase, st.Replicas-len(keepPorts), held...)
+	newPorts, err := s.Store.AllocatePorts(ctx, s.Cfg.SitePortBase, local-len(keepPorts), held...)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +309,10 @@ func (s *Service) reconcile(ctx context.Context, st *store.Site) (retire func(),
 		return cleanup(err)
 	}
 	st.Upstreams = ports
+	// A spread site's other nodes follow once the local swap is done, in the
+	// retire step: without opsMu held (they call other servers, which take
+	// their own; two servers spreading to each other would deadlock).
+	remote := len(st.SpreadNodes) > 0 || len(st.RemoteUpstreams) > 0
 	s.Log.Info("site scaled", "site", st.ID, "replicas", st.Replicas, "memory_mb", st.MemoryMB,
 		"cpus", st.CPUs, "workers_per_replica", spec.MaxChildren, "ports", ports)
 
@@ -329,6 +335,9 @@ func (s *Service) reconcile(ctx context.Context, st *store.Site) (retire func(),
 		}
 	}
 	return func() {
+		if remote {
+			s.syncRemote(post, st, spec)
+		}
 		// Updates, restores and scans run WP-CLI and tar inside one of the
 		// site's containers, possibly one retired here: stopping it would
 		// kill `wp core update` halfway. Take the site's maintenance lock

@@ -6,7 +6,9 @@ package analytics
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/textproto"
@@ -48,6 +50,16 @@ func parseLine(line []byte) (*entry, bool) {
 // first returns a header value from a logged header map. Caddy logs Go's
 // canonical header keys ("X-Wpgenie-Shield"), so the lookup key must be
 // canonicalised the same way.
+// HealthTokenHash is what Caddy's access log shows instead of the health
+// token (its log filter "hash": the first 4 bytes of SHA-256, hex).
+func HealthTokenHash(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
+}
+
 func first(h map[string][]string, k string) string {
 	if v := h[textproto.CanonicalMIMEHeaderKey(k)]; len(v) > 0 {
 		return v[0]
@@ -64,6 +76,7 @@ func normalizeHost(h string) string {
 
 type aggregator struct {
 	secret   []byte
+	health   []byte // the daemon's probe token; "" = count everything
 	hourly   map[store.HourKey]*store.Counters
 	visitors map[store.DayKey]*hyperloglog.Sketch
 	perf     map[store.HourKey]*store.PerfCounters
@@ -94,6 +107,14 @@ func (a *aggregator) reset() {
 }
 
 func (a *aggregator) add(siteID string, e *entry) {
+	// The daemon's own probes aren't traffic. Recognised by their token
+	// (Caddy logs its hash, see HealthTokenHash), never by their
+	// User-Agent, which anyone could send to vanish from the bandwidth
+	// figures.
+	if len(a.health) > 0 &&
+		subtle.ConstantTimeCompare([]byte(first(e.Request.Headers, shield.HealthHeader)), a.health) == 1 {
+		return
+	}
 	ts := time.Unix(0, int64(e.TS*float64(time.Second))).UTC()
 	hk := store.HourKey{SiteID: siteID, Hour: ts.Truncate(time.Hour).Unix()}
 	c := a.hourly[hk]

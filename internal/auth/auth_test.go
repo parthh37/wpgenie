@@ -113,3 +113,21 @@ func TestRoles(t *testing.T) {
 		t.Error("role order")
 	}
 }
+
+// Tenant roles must never pass a staff role check, and never be accepted
+// where a staff role is expected.
+func TestTenantRolesHaveNoStaffLevel(t *testing.T) {
+	for _, r := range []string{RoleCustomer, RoleReseller} {
+		if Level(r) != 0 || ValidRole(r) || !IsTenant(r) {
+			t.Errorf("%s: level %d, valid staff role %v, tenant %v", r, Level(r), ValidRole(r), IsTenant(r))
+		}
+	}
+	for _, r := range []string{RoleViewer, RoleOperator, RoleAdmin, "", "root"} {
+		if IsTenant(r) {
+			t.Errorf("%q is not a tenant role", r)
+		}
+	}
+	if TenantRole("customer") != RoleCustomer || TenantRole("reseller") != RoleReseller || TenantRole("admin") != "" {
+		t.Error("TenantRole")
+	}
+}

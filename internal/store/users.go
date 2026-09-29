@@ -15,6 +15,9 @@ type User struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
 	Disabled bool   `json:"disabled"`
+	// AccountID is the tenant account the user belongs to (see
+	// accounts.go); 0 for staff (viewer, operator, admin).
+	AccountID int64 `json:"account_id,omitempty"`
 	// TOTPEnabled is derived from TOTPSecret.
 	TOTPEnabled bool      `json:"totp_enabled"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -32,14 +35,14 @@ type User struct {
 }
 
 const userCols = `id, username, password, role, totp_secret, totp_pending, totp_last_step, recovery, disabled,
-	created_at, last_login_at`
+	created_at, last_login_at, account_id`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var recovery string
 	var created, lastLogin int64
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TOTPSecret, &u.TOTPPending, &u.TOTPLastStep,
-		&recovery, &u.Disabled, &created, &lastLogin)
+		&recovery, &u.Disabled, &created, &lastLogin, &u.AccountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -59,15 +62,14 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role string) (*User, error) {
 	now := time.Now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO users (username, password, role, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`, username, passwordHash, role, now, now)
+	// The username is unique case-insensitively (COLLATE NOCASE; its
+	// PostgreSQL translation is a case-insensitive collation).
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO users (username, password, role, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?) RETURNING id`, username, passwordHash, role, now, now).Scan(&id)
 	if isUnique(err) {
 		return nil, ErrExists
 	}
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
 	if err != nil {
 		return nil, err
 	}
@@ -76,17 +78,23 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role str
 
 // CreateFirstUser creates a user only if there are none yet, atomically:
 // two concurrent first-run setups can't both create an administrator.
+// NOT EXISTS alone would not do on PostgreSQL, where two transactions can
+// both see an empty table; the table lock makes the second one wait and
+// then see the first one's user.
 func (s *Store) CreateFirstUser(ctx context.Context, username, passwordHash, role string) (*User, error) {
 	now := time.Now().Unix()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO users (username, password, role, created_at, updated_at)
-		SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`, username, passwordHash, role, now, now)
-	if err != nil {
-		return nil, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	var id int64
+	err := s.db.inTx(ctx, func(tx *Tx) error {
+		if err := tx.lockTable(ctx, "users"); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `INSERT INTO users (username, password, role, created_at, updated_at)
+			SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`,
+			username, passwordHash, role, now, now).Scan(&id)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrExists
 	}
-	id, err := res.LastInsertId()
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +171,10 @@ func (s *Store) DisableTOTP(ctx context.Context, id int64) error {
 }
 
 // UseTOTPStep records an accepted code's time step, only if it is newer than
-// the last one: of two concurrent logins with the same code, one fails.
+// the last one: of two concurrent logins with the same code, one fails. One
+// conditional UPDATE is atomic on both backends (on PostgreSQL the second
+// writer waits for the first one's row lock, then re-checks the condition
+// against the updated row).
 func (s *Store) UseTOTPStep(ctx context.Context, id, step int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?`,
 		step, id, step)
@@ -175,35 +186,41 @@ func (s *Store) UseTOTPStep(ctx context.Context, id, step int64) (bool, error) {
 }
 
 // UseRecoveryCode removes a recovery code hash, reporting whether it was
-// still there (each code works once).
+// still there (each code works once). The list is replaced only if it is
+// still the one read (compare-and-swap): of two concurrent sign-ins with
+// the same code, whichever writes second finds the list changed, reads it
+// again and no longer finds its code. No lock needed on either backend.
 func (s *Store) UseRecoveryCode(ctx context.Context, id int64, hash string) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	var raw string
-	if err := tx.QueryRowContext(ctx, `SELECT recovery FROM users WHERE id = ?`, id).Scan(&raw); err != nil {
-		return false, err
-	}
-	var hashes []string
-	if err := json.Unmarshal([]byte(raw), &hashes); err != nil {
-		return false, err
-	}
-	i := -1
-	for j, h := range hashes {
-		if h == hash {
-			i = j
+	for {
+		var raw string
+		if err := s.db.QueryRowContext(ctx, `SELECT recovery FROM users WHERE id = ?`, id).Scan(&raw); err != nil {
+			return false, err
+		}
+		var hashes []string
+		if err := json.Unmarshal([]byte(raw), &hashes); err != nil {
+			return false, err
+		}
+		i := -1
+		for j, h := range hashes {
+			if h == hash {
+				i = j
+			}
+		}
+		if i < 0 {
+			return false, nil
+		}
+		b, _ := json.Marshal(append(hashes[:i:i], hashes[i+1:]...))
+		res, err := s.db.ExecContext(ctx, `UPDATE users SET recovery = ? WHERE id = ? AND recovery = ?`, string(b), id, raw)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			return true, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
 	}
-	if i < 0 {
-		return false, nil
-	}
-	b, _ := json.Marshal(append(hashes[:i:i], hashes[i+1:]...))
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET recovery = ? WHERE id = ?`, string(b), id); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
 }
 
 func (s *Store) TouchLogin(ctx context.Context, id int64, at time.Time) error {
@@ -259,7 +276,7 @@ func (s *Store) SessionByToken(ctx context.Context, tokenHash string) (*Session,
 // Sessions lists sessions, of one user or (userID 0) everyone's.
 func (s *Store) Sessions(ctx context.Context, userID int64) ([]*Session, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE ? = 0 OR s.user_id = ? ORDER BY s.last_seen_at DESC`, userID, userID)
+		WHERE ? = 0 OR s.user_id = ? ORDER BY s.last_seen_at DESC, s.id`, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +292,12 @@ func (s *Store) Sessions(ctx context.Context, userID int64) ([]*Session, error) 
 	return out, rows.Err()
 }
 
+// TouchSession moves a session's last activity forward (never back: with
+// several requests, or nodes, touching at once, the latest time wins
+// whatever order the writes land in).
 func (s *Store) TouchSession(ctx context.Context, id string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`, at.Unix(), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?`,
+		at.Unix(), id, at.Unix())
 	return err
 }
 
@@ -318,16 +339,18 @@ func (s *Store) AddAudit(ctx context.Context, e AuditEntry) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO audit_log (time, actor, ip, action, target, status, detail)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, e.Time.Unix(), e.Actor, e.IP, e.Action, e.Target, e.Status, e.Detail)
-	if err != nil {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO audit_log (time, actor, ip, action, target, status, detail)
+		VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`, e.Time.Unix(), e.Actor, e.IP, e.Action, e.Target, e.Status,
+		e.Detail).Scan(&id); err != nil {
 		return err
 	}
 	// Trim occasionally rather than on every insert.
-	if id, _ := res.LastInsertId(); id%100 == 0 {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM audit_log WHERE id <= ?`, id-keepAudit)
+	if id%100 == 0 {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM audit_log WHERE id <= ?`, id-keepAudit)
+		return err
 	}
-	return err
+	return nil
 }
 
 // Audit returns the newest entries first; actor filters when not empty.

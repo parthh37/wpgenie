@@ -118,6 +118,14 @@ func pipe(produce func(io.Writer) error, consume func(io.Reader) error) error {
 // produce writes, keeping the listed wp-content entries.
 func (s *Service) replaceInstall(ctx context.Context, siteID string, strip int, keep []string,
 	produce func(io.Writer) error) error {
+	return s.replaceInstallAs(ctx, siteID, strip, keep, true, produce)
+}
+
+// replaceInstallAs is replaceInstall; rewrite false leaves WPGenie's
+// wrappers as the archive had them (a spread site's copy on another node,
+// which has no record of the site).
+func (s *Service) replaceInstallAs(ctx context.Context, siteID string, strip int, keep []string, rewrite bool,
+	produce func(io.Writer) error) error {
 	root := s.Cfg.SiteRoot(siteID)
 	err := pipe(produce, func(r io.Reader) error {
 		return s.Runtime.Exec(ctx, siteID, r, nil, "sh", "-c", extractScript, "sh", root, strconv.Itoa(strip))
@@ -130,6 +138,9 @@ func (s *Service) replaceInstall(ctx context.Context, siteID string, strip int, 
 	}
 	if err := s.Runtime.Exec(ctx, siteID, nil, nil, "sh", "-c", commitScript, "sh", root, strings.Join(keep, " ")); err != nil {
 		return fmt.Errorf("replacing files: %w", err)
+	}
+	if !rewrite {
+		return nil
 	}
 	// Whatever the archive carried, WPGenie's own wrappers are root-owned
 	// and follow the target's settings.

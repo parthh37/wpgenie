@@ -1,10 +1,14 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -112,35 +116,19 @@ func (a *SlowAgg) Add(ms int64, status int, at int64) {
 	}
 }
 
-func applyPerf(ctx context.Context, tx *sql.Tx, perf map[HourKey]*PerfCounters, slow map[SlowKey]*SlowAgg) error {
-	for k, c := range perf {
-		var old Histogram
-		var blob string
-		err := tx.QueryRowContext(ctx, `SELECT hist FROM perf_hourly WHERE site_id = ? AND hour = ?`, k.SiteID, k.Hour).Scan(&blob)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-		case err != nil:
-			return err
-		default:
-			_ = json.Unmarshal([]byte(blob), &old) // a damaged row restarts its histogram
-		}
-		old.Add(c.Hist)
-		h, _ := json.Marshal(old)
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO perf_hourly (site_id, hour, php_requests, php_ms, slow, cache_hits, cache_misses, hist)
-			VALUES (?,?,?,?,?,?,?,?)
-			ON CONFLICT (site_id, hour) DO UPDATE SET
-				php_requests = php_requests + excluded.php_requests,
-				php_ms       = php_ms       + excluded.php_ms,
-				slow         = slow         + excluded.slow,
-				cache_hits   = cache_hits   + excluded.cache_hits,
-				cache_misses = cache_misses + excluded.cache_misses,
-				hist         = excluded.hist`,
-			k.SiteID, k.Hour, c.PHPRequests, c.PHPMS, c.Slow, c.CacheHits, c.CacheMisses, string(h)); err != nil {
+// applyPerf runs inside ApplyTraffic's transaction; rows are written in
+// key order (see ApplyTraffic).
+func applyPerf(ctx context.Context, tx *Tx, perf map[HourKey]*PerfCounters, slow map[SlowKey]*SlowAgg) error {
+	for _, k := range sortedHourKeys(perf) {
+		if err := mergePerf(ctx, tx, k, perf[k]); err != nil {
 			return err
 		}
 	}
-	for k, a := range slow {
+	slowKeys := slices.SortedFunc(maps.Keys(slow), func(x, y SlowKey) int {
+		return cmp.Or(strings.Compare(x.SiteID, y.SiteID), strings.Compare(x.Method, y.Method), strings.Compare(x.Path, y.Path))
+	})
+	for _, k := range slowKeys {
+		a := slow[k]
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO slow_requests (site_id, method, path, count, total_ms, max_ms, last_status, last_seen)
 			VALUES (?,?,?,?,?,?,?,?)
@@ -155,18 +143,59 @@ func applyPerf(ctx context.Context, tx *sql.Tx, perf map[HourKey]*PerfCounters, 
 		}
 	}
 	trimmed := map[string]bool{}
-	for k := range slow {
+	for _, k := range slowKeys {
 		if trimmed[k.SiteID] {
 			continue
 		}
 		trimmed[k.SiteID] = true
-		if _, err := tx.ExecContext(ctx, `DELETE FROM slow_requests WHERE site_id = ? AND rowid NOT IN
-			(SELECT rowid FROM slow_requests WHERE site_id = ? ORDER BY last_seen DESC, total_ms DESC LIMIT ?)`,
+		// By primary key (row values): PostgreSQL has no rowid.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM slow_requests WHERE site_id = ? AND (method, path) NOT IN
+			(SELECT method, path FROM slow_requests WHERE site_id = ? ORDER BY last_seen DESC, total_ms DESC, method, path LIMIT ?)`,
 			k.SiteID, k.SiteID, maxSlowRequests); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// mergePerf adds an hour of performance counters. The histogram is JSON,
+// merged in Go: the row is read locked (FOR UPDATE) so a concurrent batch
+// can't merge into the same old histogram and overwrite this one's
+// counts; a missing row is inserted without overwriting one a concurrent
+// batch has just added (DO NOTHING), and the merge starts over from it.
+func mergePerf(ctx context.Context, tx *Tx, k HourKey, c *PerfCounters) error {
+	for {
+		var blob string
+		err := tx.QueryRowContext(ctx, `SELECT hist FROM perf_hourly WHERE site_id = ? AND hour = ? FOR UPDATE`,
+			k.SiteID, k.Hour).Scan(&blob)
+		if errors.Is(err, sql.ErrNoRows) {
+			h, _ := json.Marshal(c.Hist)
+			res, err := tx.ExecContext(ctx, `
+				INSERT INTO perf_hourly (site_id, hour, php_requests, php_ms, slow, cache_hits, cache_misses, hist)
+				VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (site_id, hour) DO NOTHING`,
+				k.SiteID, k.Hour, c.PHPRequests, c.PHPMS, c.Slow, c.CacheHits, c.CacheMisses, string(h))
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				return nil
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var old Histogram
+		_ = json.Unmarshal([]byte(blob), &old) // a damaged row restarts its histogram
+		old.Add(c.Hist)
+		h, _ := json.Marshal(old)
+		_, err = tx.ExecContext(ctx, `UPDATE perf_hourly SET
+				php_requests = php_requests + ?, php_ms = php_ms + ?, slow = slow + ?,
+				cache_hits = cache_hits + ?, cache_misses = cache_misses + ?, hist = ?
+			WHERE site_id = ? AND hour = ?`,
+			c.PHPRequests, c.PHPMS, c.Slow, c.CacheHits, c.CacheMisses, string(h), k.SiteID, k.Hour)
+		return err
+	}
 }
 
 // PerfPoint is one hour of a site's performance.
@@ -240,7 +269,7 @@ type SlowRequest struct {
 // ones costing the most time in total first.
 func (s *Store) SlowRequests(ctx context.Context, siteID string, since time.Time, limit int) ([]SlowRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT method, path, count, total_ms, max_ms, last_status, last_seen
-		FROM slow_requests WHERE site_id = ? AND last_seen >= ? ORDER BY total_ms DESC LIMIT ?`,
+		FROM slow_requests WHERE site_id = ? AND last_seen >= ? ORDER BY total_ms DESC, method, path LIMIT ?`,
 		siteID, since.Unix(), limit)
 	if err != nil {
 		return nil, err
@@ -284,11 +313,12 @@ const maxPHPErrors = 300
 // the log was read, in one transaction: a crash neither loses nor
 // double-counts errors.
 func (s *Store) RecordPHPErrors(ctx context.Context, siteID string, errs []PHPError, st IngestState) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	// In fingerprint order: concurrent writers lock rows in the same order.
+	errs = slices.SortedFunc(slices.Values(errs), func(x, y PHPError) int { return strings.Compare(x.Fingerprint, y.Fingerprint) })
+	return s.db.inTx(ctx, func(tx *Tx) error { return recordPHPErrors(ctx, tx, siteID, errs, st) })
+}
+
+func recordPHPErrors(ctx context.Context, tx *Tx, siteID string, errs []PHPError, st IngestState) error {
 	for _, e := range errs {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO php_errors (site_id, fingerprint, level, message, file, line, source, count, first_seen, last_seen)
@@ -303,23 +333,23 @@ func (s *Store) RecordPHPErrors(ctx context.Context, siteID string, errs []PHPEr
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM php_errors WHERE site_id = ? AND fingerprint NOT IN
-		(SELECT fingerprint FROM php_errors WHERE site_id = ? ORDER BY last_seen DESC LIMIT ?)`,
+		(SELECT fingerprint FROM php_errors WHERE site_id = ? ORDER BY last_seen DESC, fingerprint LIMIT ?)`,
 		siteID, siteID, maxPHPErrors); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ingest_state (name, inode, offset) VALUES (?,?,?)
-		ON CONFLICT (name) DO UPDATE SET inode = excluded.inode, offset = excluded.offset`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ingest_state (name, inode, "offset") VALUES (?,?,?)
+		ON CONFLICT (name) DO UPDATE SET inode = excluded.inode, "offset" = excluded."offset"`,
 		st.Name, int64(st.Inode), st.Offset); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 // PHPErrors lists the kinds of PHP errors seen since the given time, the
 // most frequent first.
 func (s *Store) PHPErrors(ctx context.Context, siteID string, since time.Time, limit int) ([]PHPError, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT fingerprint, level, message, file, line, source, count, first_seen, last_seen
-		FROM php_errors WHERE site_id = ? AND last_seen >= ? ORDER BY count DESC, last_seen DESC LIMIT ?`,
+		FROM php_errors WHERE site_id = ? AND last_seen >= ? ORDER BY count DESC, last_seen DESC, fingerprint LIMIT ?`,
 		siteID, since.Unix(), limit)
 	if err != nil {
 		return nil, err
