@@ -189,6 +189,21 @@ func (s *Service) searchReplace(ctx context.Context, siteID, from, to string) er
 	if err := s.Runtime.Exec(ctx, siteID, nil, &out, searchReplaceArgs(from, to, nil, false)...); err != nil {
 		return fmt.Errorf("replacing %s with %s in the database: %w", from, to, err)
 	}
+	return s.flushObjectCache(ctx, siteID)
+}
+
+// flushObjectCache drops a site's keys from the object cache after its
+// database was changed behind WordPress's back (search-replace, loads).
+// Unconditionally: WP-CLI itself loads the drop-in, and a copied site
+// carries its source's, so keys may exist whatever the site's setting;
+// stale ones would serve the old links (a clone showing its live site's).
+func (s *Service) flushObjectCache(ctx context.Context, siteID string) error {
+	if s.Cache == nil {
+		return nil
+	}
+	if err := s.Cache.FlushPrefix(ctx, cachePrefix(siteID)); err != nil {
+		return fmt.Errorf("flushing the object cache: %w", err)
+	}
 	return nil
 }
 

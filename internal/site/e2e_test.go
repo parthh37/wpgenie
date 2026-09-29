@@ -259,7 +259,7 @@ func newE2E(t *testing.T) *e2e {
 	}
 	svc := &Service{Cfg: cfg, Store: st, Runtime: docker, DB: db, Log: log,
 		Dumper: &runtime.MariaDB{Container: dbName, Password: dbPass},
-		Proxy:  &fakeProxy{log: &[]string{}}, Cache: fakeCache{&[]string{}}, Prober: okProber{},
+		Proxy:  &fakeProxy{log: &[]string{}}, Cache: &runtime.Valkey{Container: valkey}, Prober: okProber{},
 		Jobs: &jobs.Queue{Store: st, Log: log},
 		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
 			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},

@@ -444,3 +444,16 @@ func TestStaleCDNSettingsAreNotUsed(t *testing.T) {
 		t.Fatalf("edge rule brought back from stale settings: %v", f.rules)
 	}
 }
+
+// Links rewritten in the database behind WordPress's back must not be
+// hidden by options the object cache still holds (a fresh staging copy
+// showing its live site's URLs).
+func TestSearchReplaceFlushesObjectCache(t *testing.T) {
+	h := newHarness(t)
+	if err := h.svc.searchReplace(context.Background(), "s1", "a.test", "staging.a.test"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*h.flushed, []string{"s1:"}) {
+		t.Fatalf("flushed %v", *h.flushed)
+	}
+}

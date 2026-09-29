@@ -274,6 +274,10 @@ func (b *siteBuild) finish(ctx context.Context, report Progress) error {
 	if err := s.rewriteManagedFiles(ctx, st.ID); err != nil {
 		return err
 	}
+	// Copied or restored databases were loaded under WordPress's feet.
+	if err := s.flushObjectCache(ctx, st.ID); err != nil {
+		return err
+	}
 	if err := s.DB.SetConnectionLimit(ctx, b.dbUser, dbConnLimit(st.Replicas, runtime.FPMMaxChildren(st.MemoryMB))); err != nil {
 		return err
 	}
