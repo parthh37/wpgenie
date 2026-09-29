@@ -10,7 +10,7 @@ check.
 | Component | Role | Why this choice |
 |---|---|---|
 | `wpgenie` daemon | API, dashboard, shield, analytics, orchestration | Single static binary: trivial install/upgrade, low memory |
-| Caddy 2 | TLS termination, ACME, HTTP/3, static files, FastCGI | Automatic certificates; config hot-reload through its admin API; validates before switching |
+| Caddy 2 + Coraza | TLS termination, ACME, HTTP/3, static files, FastCGI, request-body WAF | Automatic certificates; config hot-reload through its admin API; validates before switching. Built locally with the Coraza module (`images/caddy`) |
 | PHP-FPM container per site | Runs WordPress | Isolation boundary between customers; per-site resource limits |
 | MariaDB 11.4 LTS | WordPress databases | One DB + one user per site, grants limited to that schema |
 | Valkey 8 | Object cache | BSD-licensed Redis fork; LRU cache, no persistence |
@@ -21,11 +21,13 @@ check.
 1. Client connects to Caddy (`network_mode: host`, so it sees real client IPs), directly or through
    Cloudflare (see *CDN*).
 2. Hardening rules run first: `wp-config.php`, dotfiles, backups, and PHP inside `uploads/` → 404;
-   `xmlrpc.php` → 403.
+   `xmlrpc.php` → 403 unless the site allows XML-RPC (Jetpack, the mobile apps).
 3. Static assets (`*.css`, images, fonts, …) are served directly from disk by Caddy.
 4. Dynamic requests hit `forward_auth` → `wpgenie /_shield/check`. The shield classifies the client
-   (UA + FCrDNS for search engines), checks the pass cookie and rate limits, and returns
-   allow (200) / challenge (403 + PoW page) / block (403) / throttle (429).
+   (UA + FCrDNS for search engines), checks deny lists, IP reputation, country rules, the pass cookie
+   and rate limits, and returns allow (200) / challenge (403 + PoW page) / block (403) / throttle (429).
+   Then, for sites with body inspection on, Coraza runs the OWASP Core Rule Set over the request,
+   body included (see *Request-body WAF*).
 5. If the page cache is on and the request is cacheable (see below), Caddy serves the cached HTML
    from disk; PHP never runs. The cache is consulted *after* the shield, so cached pages still get
    bot blocking and rate limits.
@@ -61,6 +63,8 @@ check.
 - Every path containing `.php` goes through the shield, even with a static-looking suffix
   (`/wp-login.php/x.css` runs `wp-login.php`). URLs are decoded leniently like PHP, so one invalid
   escape can't hide a payload.
+- Per site: request limits (requests/s, burst, logins/min) and challenge difficulty override the server
+  defaults; a deny list blocks networks outright.
 - Per site: optional wp-admin / wp-login.php IP allowlist (`admin-ajax.php` and `admin-post.php`
   stay public for front-end forms; REST/XML-RPC requests carrying credentials are covered) and
   trusted IPs that bypass the shield. The daemon's own health checks prove themselves with a
@@ -71,6 +75,54 @@ check.
   `POST /wp-login.php` and `xmlrpc.php`.
 - Proof-of-work challenge: stateless HMAC-signed tokens bound to site, client /24 (/64 for IPv6)
   and User-Agent. No third-party CAPTCHA, no cookies until the challenge is passed.
+
+**IP reputation and country rules** (`internal/iprep`)
+- Blocklists: Spamhaus DROP/DROPv6 (hijacked and criminal networks) and blocklist.de (addresses
+  reported by fail2ban installations for attacks in the last 48 h), refreshed every 6 h and saved,
+  so a restart without network keeps them. Each site chooses what listed clients get: nothing,
+  a challenge (default: a person on a shared, listed address can still get in) or a block.
+- Countries: DB-IP's free country database (CC BY 4.0, credited in the panel), downloaded only once
+  a site uses country rules and refreshed monthly. A rule blocks or challenges the listed countries,
+  or everyone *but* them. Until the database is loaded, rules are skipped rather than applied to
+  everyone.
+- Lookups are binary searches over sorted, merged ranges in immutable snapshots swapped atomically:
+  no locks on the hot path. A feed that downloads implausibly short keeps its previous list, and every
+  list drops private, loopback, CGNAT and special-purpose ranges and anything wider than /8 (/19 for
+  IPv6), so a bad download can never cut off the Docker network, a tunnel or half the internet.
+- Server-wide lists (panel settings): *allow* is never challenged, blocked or banned on any site;
+  *deny* is blocked on every site.
+- Where a client is never counts towards a ban (only what it does), and verified search engines are
+  exempt from reputation and country rules: de-indexing a site is worse than a crawl from a listed
+  network.
+
+**Request-body WAF** (Coraza + OWASP CRS)
+- The shield only sees what `forward_auth` passes (method, URI, headers). Attacks in POST bodies and
+  JSON (most plugin exploits) need the body, so Caddy is built with the Coraza module
+  (`images/caddy`); its OWASP Core Rule Set (paranoia level 1) runs in Caddy after the shield, only on
+  dynamic requests.
+- WordPress would trip the stock rules constantly (HTML in post content, quotes in passwords, method
+  override from the block editor), so the CRS project's
+  [WordPress rule exclusions](https://github.com/coreruleset/wordpress-rule-exclusions-plugin) are
+  vendored unmodified in `internal/proxy/waf/`. WPGenie's own settings add: inspect bodies up to
+  12.5 MB (1 MB without files) and pass the remainder rather than rejecting uploads; no response body
+  buffering; `Expect` allowed (HTTP clients send it on large POSTs).
+- Per site: off, *log only* (DetectionOnly: matches are recorded, nothing is blocked; the way to
+  check a site before blocking) or block. New sites block; sites that existed before the feature keep
+  it off until switched on.
+- Coraza writes a JSON audit log with only the transaction summary and the rule messages (never
+  request headers or bodies: cookies, passwords). The daemon tails it into the security log (site
+  from the Host, rule ID, the variable that matched, never the matched data) and truncates it once
+  read past 16 MB. Blocks are tagged with `X-WPGenie-Shield: waf` through `handle_errors`, so
+  analytics count them as blocked. Body-WAF matches don't count towards bans: without the request's
+  headers there's no telling a forged cross-site form submission from its victim.
+- A Caddy without the module would reject the whole config, taking every site's changes with it. The
+  daemon asks Caddy's `/adapt` endpoint first and renders body inspection only when the module is
+  there (re-checked every minute while it isn't). Compose builds `wpgenie/caddy:2` from
+  `images/caddy` (`pull_policy: build`: never pulled, so an image of that name on a registry can't
+  take its place; rebuilt from cache on every `compose up`, which also covers an upgrade applied by an
+  older version's updater). The installer and self-updates build it first, before anything live
+  changes, and a rollback re-tags the previous image. 30 sites with
+  body inspection cost Caddy about 20 MB.
 
 **Static files (Caddy)**
 
@@ -116,8 +168,43 @@ every new site would need a Caddy restart or per-site host mounts.
 
 **Control plane**
 - Listens on loopback only; exposed (optionally) through Caddy with TLS.
-- Constant-time bearer-token auth; strict CSP on the dashboard; DOM built with `textContent`.
+- Panel accounts with roles, TOTP two-factor authentication and an audit log (see *Panel access*);
+  the API token (root-readable, for the CLI and scripts) keeps working with full access.
+- Strict CSP on the dashboard; DOM built with `textContent`.
 - systemd sandboxing (`ProtectSystem`, `ProtectHome`, `NoNewPrivileges`, …).
+
+## Panel access
+
+The installer's API token is the server owner's key: the CLI uses it, and the dashboard asks for it
+once, to create the first administrator (`POST /auth/setup` only works while there are no accounts,
+and creates the first one atomically). After that people sign in with their own accounts.
+
+- **Roles**: *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
+  plugin analysis, CDN, mailboxes, bans), *admin* (also creates and deletes sites, users, server-wide
+  security lists and mail settings, self-update). Every route declares the role it needs.
+- **Passwords**: PBKDF2-HMAC-SHA256, 600 000 iterations (standard library), 12+ characters. Unknown
+  user names take as long as wrong passwords. 10 failures per account or 20 per address (IPv6: per
+  /64) in 15 minutes lock sign-in for the rest of the window (the CLI still gets in with the token).
+  Attempts are counted before the password check, so parallel bursts can't slip past the limit, and
+  password checks run a few at a time so a flood queues instead of starving the server. Setup is
+  throttled per address and closes for good once an account exists.
+- **Two-factor**: TOTP (RFC 6238, what every authenticator app does), enrolled by scanning a QR code
+  rendered on the server (the secret never goes to a third-party QR service) and confirmed with a
+  code. Each code works once (the last accepted time step is stored and advanced atomically). Ten
+  one-time recovery codes are shown once, stored hashed. An admin can require 2FA for everyone:
+  accounts without it can only reach Account until they enrol.
+- **Sessions**: a random 256-bit token in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` behind
+  TLS); only its SHA-256 is stored, so a copy of the database can't sign anyone in. Sessions end
+  after 12 h idle or 7 days, on sign-out, and when the user is disabled, their password changes or
+  their 2FA is reset. Users see and revoke their sessions; admins see everyone's.
+- **CSRF**: every state-changing request made with the cookie must carry
+  `X-Requested-With: wpgenie`; browsers only send custom headers cross-origin after a CORS preflight,
+  which the API never grants. The sign-in endpoints require it too, so no site can sign a visitor in or
+  out.
+- **Audit log**: every change made through the API (method, path, status, error), including refused
+  ones, and every sign-in, failure, lockout and recovery-code use, with the client address (Caddy
+  passes `{client_ip}`). The newest 20 000 entries are kept. The CLI appears as `api-token`.
+- An admin can't demote, disable or delete the last active admin, or delete themselves.
 
 ## Analytics
 
@@ -280,6 +367,27 @@ vulnerability; `all` applies everything; both go through the snapshot/rollback p
 whose updater only runs with plugins loaded are invisible to WP-CLI in this mode: update them from
 wp-admin.
 
+**Plugin analyser** (nightly after the scan, or `POST /sites/{id}/plugins`). For every plugin:
+
+- *wordpress.org*: listed, **closed** (with date and reason: often a security issue, and a closed
+  plugin never gets another fix), or not listed (premium/custom). Listed plugins with no release in
+  2 years are flagged **abandoned**. Answers are cached for 12 h across sites.
+- *Files*: `wp plugin verify-checksums` against the wordpress.org release: modified and added files
+  (the usual shape of a backdoor or a nulled copy). Plugins not on wordpress.org can't be verified
+  and are said so. PHP files in plugins and themes are also searched for markers of nulled-plugin
+  distributors and the WP-VCD malware spread through them; a match in a file that verifies against
+  wordpress.org is dropped (security plugins carry such strings in their signatures).
+- *Cost*: `images/php/profile.php` renders the front page once with the PHP CLI inside the site's
+  container, under the same jail as web requests. Hooks registered before WordPress loads time each
+  plugin's main file (`plugin_loaded` fires after each one) and wrap every hook callback in place,
+  keeping its key, so `remove_action` still works; time is attributed exclusively (a callback
+  triggering another plugin's callbacks doesn't pay for them), and queries are counted per plugin via
+  the `query` filter. The render runs twice with an opcache file cache in the container's tmpfs
+  (removed afterwards): the first compiles, the second measures what FPM would spend. The page itself
+  is discarded (`DONOTCACHEPAGE` keeps it out of the page cache). The report comes from code that ran
+  plugins, so it is parsed as untrusted input and only ever displayed.
+- Vulnerability counts come from the latest scan. Findings are logged to the site's activity log.
+
 ## Updating WPGenie itself
 
 Trust chain: an Ed25519 public key compiled into the binary (`internal/updater/release.pub`) →
@@ -359,8 +467,10 @@ The code has explicit seams for going multi-server:
 /var/lib/wpgenie/caddy/           certificates (owned by wpgenie-caddy)
 /var/lib/wpgenie/mariadb/         databases
 /var/lib/wpgenie/snapshots/       pre-update snapshots (root only)
+/var/lib/wpgenie/iprep/           IP blocklists and the country database
 /var/lib/wpgenie/updates/         staged WPGenie releases, status.json
 /var/lib/wpgenie/mail/            mailboxes (data/), mail server config, Roundcube DB
 /var/log/wpgenie/access.log       JSON access log (rotated by Caddy)
+/var/log/wpgenie/waf.log          Coraza audit log (read and truncated by the daemon)
 /opt/wpgenie/                     installed sources (deploy/, images/)
 ```

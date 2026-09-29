@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
@@ -58,7 +60,9 @@ type Service struct {
 	Cache   ObjectCache
 	Prober  Prober
 	Vulns   VulnDB
-	Mailer  Mailer
+	// Directory is wordpress.org's plugin directory (plugin analysis).
+	Directory PluginDirectory
+	Mailer    Mailer
 	// Webmail returns the webmail host and upstream to publish, or "".
 	Webmail func() (host, upstream string)
 	// CDN purges Cloudflare's cache; CDNRanges are its edge networks; DNS
@@ -127,6 +131,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 	if in.Name == "" {
 		in.Name = domain
 	}
+	// The name ends up in generated config comments: no line breaks or
+	// other control characters.
+	if utf8.RuneCountInString(in.Name) > 100 || strings.IndexFunc(in.Name, unicode.IsControl) >= 0 {
+		return nil, nil, fmt.Errorf("%w: name must be up to 100 characters on one line", ErrInvalidInput)
+	}
 
 	s.opsMu.Lock()
 	defer s.opsMu.Unlock()
@@ -152,6 +161,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 		ID: id, Name: in.Name, PrimaryDomain: domain, PHPVersion: "8.3", FPMPort: port,
 		DBName: "wp_" + id, Status: store.StatusProvisioning,
 		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
+		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
 		PageCache: true, ObjectCache: true, Upstreams: []int{port},
 	}
@@ -341,12 +351,11 @@ func (s *Service) Sync(ctx context.Context) error {
 			continue
 		}
 		mode := shield.Mode(st.ShieldMode)
-		settings[st.ID] = shield.SiteSettings{ID: st.ID, Mode: mode, BlockAIBots: st.BlockAIBots, Inspect: st.WAF,
-			AdminAllow: mustPrefixes(st.AdminAllow), Trusted: mustPrefixes(st.TrustedIPs)}
+		settings[st.ID] = shieldSettings(st)
 		ps = append(ps, proxy.Site{
 			ID: st.ID, Name: st.Name, Domains: st.Domains, Root: s.Cfg.SiteRoot(st.ID),
-			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: true,
-			PageCache: st.PageCache,
+			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: !st.XMLRPC,
+			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
 		})
 	}
 	if s.Webmail != nil {

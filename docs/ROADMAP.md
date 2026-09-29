@@ -13,21 +13,26 @@ issue candidate once its phase starts.
 - [x] Analytics: visitors (HLL), page views, bandwidth, bot hits, shield blocks
 - [x] Dashboard, REST API, CLI
 
-## Phase 1 — Security & maintenance
+## Phase 1 — Security & maintenance ✅
 - [x] **WAF**: WordPress-tuned request inspection in the shield (URI/headers), automatic bans
-- [ ] Body inspection: custom Caddy build with Coraza + OWASP CRS (needs WordPress exclusions)
+- [x] Body inspection: custom Caddy build with Coraza + OWASP CRS and the CRS WordPress exclusions,
+      per site (log-only or block), matches in the security log
 - [x] **Vulnerability checks**: nightly `wp plugin/theme/core list` → match against
       [WPVulnerability.net](https://www.wpvulnerability.net/) (free, no key) and optionally
       Wordfence Intelligence / Patchstack; alert + dashboard badges
-- [ ] **Plugin analyser**: inventory, abandoned plugins (not updated in 2y / closed on wp.org),
-      nulled/modified detection via `wp plugin verify-checksums`, performance cost per plugin
+- [x] **Plugin analyser**: inventory, abandoned plugins (not updated in 2y / closed on wp.org),
+      nulled/modified detection via `wp plugin verify-checksums` (+ nulled/WP-VCD markers),
+      performance cost per plugin (jailed front-page profile: load, hooks, queries)
 - [x] **Update manager**: scheduled updates → snapshot → update → HTTP + visual health check →
       auto-rollback on failure (WP Engine Smart Plugin Manager equivalent)
 - [x] **Malware / integrity scanning**: `wp core verify-checksums`, new-PHP-file alerts in uploads
-- [ ] Panel users with roles, TOTP 2FA, sessions, audit log
-- [ ] Global IP reputation (crowd-sourced blocklists), country rules, per-site allow/deny lists
+- [x] Panel users with roles, TOTP 2FA (+ recovery codes, optional requirement), sessions, audit log
+- [x] Global IP reputation (Spamhaus DROP, blocklist.de), country rules (DB-IP), per-site and
+      server-wide allow/deny lists
 - [x] Per-site WAF toggle, wp-admin IP allowlist, trusted IPs
-- [ ] Shield settings per site: xmlrpc toggle, custom rate limits, challenge difficulty
+- [x] Shield settings per site: xmlrpc toggle, custom rate limits, challenge difficulty
+- [ ] Follow-ups (not needed for the phase): body-WAF matches towards automatic bans, CrowdSec/AbuseIPDB feeds (need accounts),
+      WebAuthn/passkeys, per-user API tokens
 
 ## Phase 2 — Backups & environments
 - [ ] Backups with restic (dedup + encryption): files + `mysqldump`, to local/S3/B2/SFTP

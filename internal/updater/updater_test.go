@@ -386,3 +386,40 @@ func TestApplyRollsBackWhenNewVersionDoesNotStart(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyBuildsCaddyImage(t *testing.T) {
+	h := newApplier(t)
+	h.a.CaddyImage = "wpgenie/caddy:2"
+	dir := filepath.Join(h.a.Staged, "images", "caddy")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM caddy"), 0o644)
+	if err := h.a.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	caddy := slices.IndexFunc(h.cmds, func(c string) bool { return strings.HasPrefix(c, "docker build -q -t wpgenie/caddy:2") })
+	compose := slices.IndexFunc(h.cmds, func(c string) bool { return strings.HasPrefix(c, "docker compose") })
+	if caddy < 0 || compose < caddy || !strings.HasSuffix(h.cmds[caddy], filepath.Join("images", "caddy")) {
+		t.Fatalf("commands %v: Caddy must be built before compose recreates it", h.cmds)
+	}
+
+	// A failed Caddy build puts the freshly built PHP image's tag back.
+	h = newApplier(t)
+	h.a.CaddyImage = "wpgenie/caddy:2"
+	os.MkdirAll(filepath.Join(h.a.Staged, "images", "caddy"), 0o755)
+	os.WriteFile(filepath.Join(h.a.Staged, "images", "caddy", "Dockerfile"), []byte("FROM caddy"), 0o644)
+	h.failCmd = "docker build -q -t wpgenie/caddy"
+	if err := h.a.Apply(context.Background()); err == nil {
+		t.Fatal("expected failure")
+	}
+	if !slices.Contains(h.cmds, "docker tag sha256:old wpgenie/php:8.3") || slices.Contains(h.cmds, "systemctl restart wpgenie") {
+		t.Fatalf("commands %v", h.cmds)
+	}
+
+	// Releases without images/caddy (older ones) build only PHP.
+	h = newApplier(t)
+	h.a.CaddyImage = "wpgenie/caddy:2"
+	h.a.Apply(context.Background())
+	if slices.ContainsFunc(h.cmds, func(c string) bool { return strings.Contains(c, "wpgenie/caddy") }) {
+		t.Errorf("built Caddy for a release without it: %v", h.cmds)
+	}
+}

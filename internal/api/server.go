@@ -3,7 +3,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/auth"
+	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
@@ -29,8 +30,21 @@ type Server struct {
 	Shield  *shield.Shield
 	Updater *updater.Updater
 	Mail    *mail.Service
-	Log     *slog.Logger
+	// IP reputation data, for the status view (optional).
+	Lists     *iprep.Lists
+	Countries *iprep.Countries
+	Log       *slog.Logger
+	Now       func() time.Time // for tests
+
+	guard loginGuard
 }
+
+// Roles a route needs (see auth.Role*).
+const (
+	viewer   = auth.RoleViewer
+	operator = auth.RoleOperator
+	admin    = auth.RoleAdmin
+)
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -41,57 +55,95 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
-	mux.Handle("GET /api/v1/sites", s.auth(s.listSites))
-	mux.Handle("POST /api/v1/sites", s.auth(s.createSite))
-	mux.Handle("GET /api/v1/sites/{id}", s.auth(s.getSite))
-	mux.Handle("DELETE /api/v1/sites/{id}", s.auth(s.deleteSite))
-	mux.Handle("PUT /api/v1/sites/{id}/shield", s.auth(s.setShield))
-	mux.Handle("GET /api/v1/sites/{id}/stats", s.auth(s.siteStats))
-	mux.Handle("PUT /api/v1/sites/{id}/resources", s.auth(s.setResources))
-	mux.Handle("PUT /api/v1/sites/{id}/cache", s.auth(s.setCache))
-	mux.Handle("POST /api/v1/sites/{id}/cache/purge", s.auth(s.purgeCache))
-	mux.Handle("PUT /api/v1/sites/{id}/autoscale", s.auth(s.setAutoscale))
-	mux.Handle("GET /api/v1/sites/{id}/events", s.auth(s.siteEvents))
-	mux.Handle("GET /api/v1/sites/{id}/metrics", s.auth(s.siteMetrics))
-	mux.Handle("GET /api/v1/sites/{id}/updates", s.auth(s.siteUpdates))
-	mux.Handle("POST /api/v1/sites/{id}/updates", s.auth(s.startUpdate))
-	mux.Handle("GET /api/v1/sites/{id}/updates/history", s.auth(s.updateHistory))
-	mux.Handle("PUT /api/v1/sites/{id}/auto-update", s.auth(s.setAutoUpdate))
-	mux.Handle("POST /api/v1/sites/{id}/scan", s.auth(s.runScan))
-	mux.Handle("GET /api/v1/sites/{id}/scan", s.auth(s.lastScan))
+	// Signing in.
+	mux.Handle("GET /api/v1/auth/state", s.publicAuth(s.authState))
+	mux.Handle("POST /api/v1/auth/setup", s.publicAuth(s.setup))
+	mux.Handle("POST /api/v1/auth/login", s.publicAuth(s.login))
+	mux.Handle("POST /api/v1/auth/logout", s.publicAuth(s.logout))
 
-	mux.Handle("PUT /api/v1/sites/{id}/smtp", s.auth(s.setSiteSMTP))
-	mux.Handle("GET /api/v1/sites/{id}/cdn", s.auth(s.cdnStatus))
-	mux.Handle("PUT /api/v1/sites/{id}/cdn", s.auth(s.setCDN))
-	mux.Handle("POST /api/v1/sites/{id}/cdn/purge", s.auth(s.purgeCDN))
+	r := func(pattern, role string, h handlerFunc) { s.route(mux, pattern, role, h) }
 
-	mux.Handle("GET /api/v1/mail", s.auth(s.mailStatus))
-	mux.Handle("PUT /api/v1/mail", s.auth(s.setMail))
-	mux.Handle("PUT /api/v1/mail/relay", s.auth(s.setRelay))
-	mux.Handle("DELETE /api/v1/mail/relay", s.auth(s.deleteRelay))
-	mux.Handle("GET /api/v1/mail/domains", s.auth(s.mailDomains))
-	mux.Handle("POST /api/v1/mail/domains", s.auth(s.addMailDomain))
-	mux.Handle("GET /api/v1/mail/domains/{domain}", s.auth(s.mailDomain))
-	mux.Handle("DELETE /api/v1/mail/domains/{domain}", s.auth(s.deleteMailDomain))
-	mux.Handle("GET /api/v1/mail/mailboxes", s.auth(s.mailboxes))
-	mux.Handle("POST /api/v1/mail/mailboxes", s.auth(s.createMailbox))
-	mux.Handle("PUT /api/v1/mail/mailboxes/{address}/password", s.auth(s.setMailboxPassword))
-	mux.Handle("PUT /api/v1/mail/mailboxes/{address}/quota", s.auth(s.setMailboxQuota))
-	mux.Handle("DELETE /api/v1/mail/mailboxes/{address}", s.auth(s.deleteMailbox))
-	mux.Handle("GET /api/v1/mail/aliases", s.auth(s.mailAliases))
-	mux.Handle("POST /api/v1/mail/aliases", s.auth(s.addMailAlias))
-	mux.Handle("DELETE /api/v1/mail/aliases", s.auth(s.deleteMailAlias))
+	// Your own account: any role, and reachable before enrolling in 2FA
+	// when the panel requires it.
+	r("GET /api/v1/account", viewer, s.account)
+	r("PUT /api/v1/account/password", viewer, s.changePassword)
+	r("POST /api/v1/account/totp", viewer, s.startTOTP)
+	r("GET /api/v1/account/totp/qr.svg", viewer, s.totpQR)
+	r("PUT /api/v1/account/totp", viewer, s.confirmTOTP)
+	r("DELETE /api/v1/account/totp", viewer, s.disableTOTP)
+	r("POST /api/v1/account/recovery-codes", viewer, s.newRecoveryCodes)
+	r("GET /api/v1/account/sessions", viewer, s.mySessions)
+	r("DELETE /api/v1/account/sessions/{id}", viewer, s.deleteMySession)
 
-	mux.Handle("GET /api/v1/system", s.auth(s.systemInfo))
-	mux.Handle("GET /api/v1/system/version", s.auth(s.systemVersion))
-	mux.Handle("POST /api/v1/system/update/check", s.auth(s.checkUpdate))
-	mux.Handle("POST /api/v1/system/update", s.auth(s.selfUpdate))
-	mux.Handle("POST /api/v1/system/roll-sites", s.auth(s.rollSites))
+	r("GET /api/v1/users", admin, s.listUsers)
+	r("POST /api/v1/users", admin, s.createUser)
+	r("PUT /api/v1/users/{id}", admin, s.updateUser)
+	r("POST /api/v1/users/{id}/password", admin, s.resetPassword)
+	r("DELETE /api/v1/users/{id}/totp", admin, s.resetTOTP)
+	r("DELETE /api/v1/users/{id}", admin, s.deleteUser)
+	r("GET /api/v1/sessions", admin, s.allSessions)
+	r("DELETE /api/v1/sessions/{id}", admin, s.deleteAnySession)
+	r("GET /api/v1/audit", admin, s.auditLog)
+	r("GET /api/v1/settings/auth", admin, s.authSettings)
+	r("PUT /api/v1/settings/auth", admin, s.setAuthSettings)
 
-	mux.Handle("GET /api/v1/security/bans", s.auth(s.listBans))
-	mux.Handle("POST /api/v1/security/bans", s.auth(s.addBan))
-	mux.Handle("DELETE /api/v1/security/bans", s.auth(s.removeBan))
-	mux.Handle("GET /api/v1/security/events", s.auth(s.securityEvents))
+	r("GET /api/v1/sites", viewer, s.listSites)
+	r("POST /api/v1/sites", admin, s.createSite)
+	r("GET /api/v1/sites/{id}", viewer, s.getSite)
+	r("DELETE /api/v1/sites/{id}", admin, s.deleteSite)
+	r("PUT /api/v1/sites/{id}/shield", operator, s.setShield)
+	r("GET /api/v1/sites/{id}/stats", viewer, s.siteStats)
+	r("PUT /api/v1/sites/{id}/resources", operator, s.setResources)
+	r("PUT /api/v1/sites/{id}/cache", operator, s.setCache)
+	r("POST /api/v1/sites/{id}/cache/purge", operator, s.purgeCache)
+	r("PUT /api/v1/sites/{id}/autoscale", operator, s.setAutoscale)
+	r("GET /api/v1/sites/{id}/events", viewer, s.siteEvents)
+	r("GET /api/v1/sites/{id}/metrics", viewer, s.siteMetrics)
+	r("GET /api/v1/sites/{id}/updates", viewer, s.siteUpdates)
+	r("POST /api/v1/sites/{id}/updates", operator, s.startUpdate)
+	r("GET /api/v1/sites/{id}/updates/history", viewer, s.updateHistory)
+	r("PUT /api/v1/sites/{id}/auto-update", operator, s.setAutoUpdate)
+	r("POST /api/v1/sites/{id}/scan", operator, s.runScan)
+	r("GET /api/v1/sites/{id}/scan", viewer, s.lastScan)
+	r("POST /api/v1/sites/{id}/plugins", operator, s.analysePlugins)
+	r("GET /api/v1/sites/{id}/plugins", viewer, s.pluginReport)
+
+	r("PUT /api/v1/sites/{id}/smtp", operator, s.setSiteSMTP)
+	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
+	r("PUT /api/v1/sites/{id}/cdn", operator, s.setCDN)
+	r("POST /api/v1/sites/{id}/cdn/purge", operator, s.purgeCDN)
+
+	r("GET /api/v1/mail", viewer, s.mailStatus)
+	r("PUT /api/v1/mail", admin, s.setMail)
+	r("PUT /api/v1/mail/relay", admin, s.setRelay)
+	r("DELETE /api/v1/mail/relay", admin, s.deleteRelay)
+	r("GET /api/v1/mail/domains", viewer, s.mailDomains)
+	r("POST /api/v1/mail/domains", operator, s.addMailDomain)
+	r("GET /api/v1/mail/domains/{domain}", viewer, s.mailDomain)
+	r("DELETE /api/v1/mail/domains/{domain}", operator, s.deleteMailDomain)
+	r("GET /api/v1/mail/mailboxes", viewer, s.mailboxes)
+	r("POST /api/v1/mail/mailboxes", operator, s.createMailbox)
+	r("PUT /api/v1/mail/mailboxes/{address}/password", operator, s.setMailboxPassword)
+	r("PUT /api/v1/mail/mailboxes/{address}/quota", operator, s.setMailboxQuota)
+	r("DELETE /api/v1/mail/mailboxes/{address}", operator, s.deleteMailbox)
+	r("GET /api/v1/mail/aliases", viewer, s.mailAliases)
+	r("POST /api/v1/mail/aliases", operator, s.addMailAlias)
+	r("DELETE /api/v1/mail/aliases", operator, s.deleteMailAlias)
+
+	r("GET /api/v1/system", viewer, s.systemInfo)
+	r("GET /api/v1/system/version", viewer, s.systemVersion)
+	r("POST /api/v1/system/update/check", operator, s.checkUpdate)
+	r("POST /api/v1/system/update", admin, s.selfUpdate)
+	r("POST /api/v1/system/roll-sites", admin, s.rollSites)
+
+	r("GET /api/v1/security/bans", viewer, s.listBans)
+	r("POST /api/v1/security/bans", operator, s.addBan)
+	r("DELETE /api/v1/security/bans", operator, s.removeBan)
+	r("GET /api/v1/security/events", viewer, s.securityEvents)
+	r("GET /api/v1/security/settings", viewer, s.securitySettings)
+	r("PUT /api/v1/security/settings", admin, s.setSecuritySettings)
+	r("GET /api/v1/security/reputation", viewer, s.reputationStatus)
+	r("POST /api/v1/security/reputation/refresh", admin, s.refreshReputation)
 
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("GET /", http.FileServerFS(static))
@@ -101,32 +153,30 @@ func (s *Server) Handler() http.Handler {
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
-// auth wraps a handler with bearer-token auth and uniform error handling.
-func (s *Server) auth(h handlerFunc) http.Handler {
-	want := []byte("Bearer " + s.Token)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-		if err := h(w, r); err != nil {
-			status := http.StatusInternalServerError
-			switch {
-			case errors.Is(err, store.ErrNotFound):
-				status = http.StatusNotFound
-			case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict),
-				errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled):
-				status = http.StatusConflict
-			case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
-				errors.Is(err, mail.ErrInvalid):
-				status = http.StatusBadRequest
-			}
-			if status == http.StatusInternalServerError {
-				s.Log.Error("api", "method", r.Method, "path", r.URL.Path, "err", err)
-			}
-			writeJSON(w, status, map[string]string{"error": err.Error()})
-		}
-	})
+// writeError maps an error to a status and a JSON body.
+func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict),
+		errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled), errors.Is(err, errConflict),
+		errors.Is(err, errLastAdmin):
+		status = http.StatusConflict
+	case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
+		errors.Is(err, mail.ErrInvalid):
+		status = http.StatusBadRequest
+	case errors.Is(err, errUnauthorized), errors.Is(err, errBadLogin):
+		status = http.StatusUnauthorized
+	case errors.Is(err, errForbidden):
+		status = http.StatusForbidden
+	case errors.Is(err, errTooMany):
+		status = http.StatusTooManyRequests
+	}
+	if status == http.StatusInternalServerError {
+		s.Log.Error("api", "method", r.Method, "path", r.URL.Path, "err", err)
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 var errBadRequest = errors.New("bad request")

@@ -4,7 +4,13 @@ name: wpgenie
 
 services:
   caddy:
-    image: caddy:2-alpine
+    # Caddy with the Coraza WAF (request-body inspection), built from
+    # images/caddy on every `compose up` (cached after the first build; this
+    # also covers an upgrade applied by a version that predates the image)
+    # and never pulled: a same-named image on a registry can't replace it.
+    image: wpgenie/caddy:2
+    build: ../images/caddy
+    pull_policy: build
     container_name: wpgenie-caddy
     # Host networking: real client IPs for the shield and analytics, no
     # docker-proxy hop, and Caddy reaches wpgenie + PHP-FPM on 127.0.0.1.

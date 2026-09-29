@@ -30,6 +30,9 @@ type Config struct {
 
 	DockerNetwork string `json:"docker_network"`
 	PHPImage      string `json:"php_image"`
+	// CaddyImage is Caddy built with the Coraza WAF module (images/caddy);
+	// deploy/docker-compose.yml runs it.
+	CaddyImage string `json:"caddy_image"`
 	// SitePortBase is the first loopback port handed to a site's PHP-FPM.
 	SitePortBase int `json:"site_port_base"`
 	// MaxReplicas bounds how many PHP-FPM containers one site may run.
@@ -71,6 +74,7 @@ func Default() *Config {
 		AccessLog:        "/var/log/wpgenie/access.log",
 		DockerNetwork:    "wpgenie",
 		PHPImage:         "wpgenie/php:8.3",
+		CaddyImage:       "wpgenie/caddy:2",
 		SitePortBase:     19000,
 		MaxReplicas:      8,
 		DBMaxConnections: 300,

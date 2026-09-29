@@ -352,6 +352,10 @@ func (s *Service) maintainSite(ctx context.Context, st *store.Site, nightly bool
 		s.Log.Warn("scheduled scan failed", "site", st.ID, "err", err)
 		return
 	}
+	// After the scan, whose vulnerabilities the analysis links to.
+	if _, err := s.analyseLocked(ctx, st); err != nil {
+		s.Log.Warn("scheduled plugin analysis failed", "site", st.ID, "err", err)
+	}
 	if !nightly || st.AutoUpdate == AutoUpdateOff {
 		return
 	}

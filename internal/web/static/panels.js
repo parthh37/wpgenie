@@ -2,7 +2,7 @@
 // Mail, Security and System tabs. Shares api(), h(), table(), status() and
 // showError() with app.js.
 
-const loaders = { sites: () => load(), mail: loadMail, security: loadSecurity, system: loadSystem };
+const loaders = { sites: () => load(), mail: loadMail, security: loadSecurity, system: loadSystem, account: loadAccount, users: loadUsers };
 
 document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
@@ -154,7 +154,12 @@ $('#relay-clear').addEventListener('click', async () => {
 // ---- Security ----
 
 async function loadSecurity() {
-  const [bans, events] = await Promise.all([api('GET', '/security/bans'), api('GET', '/security/events?limit=100')]);
+  const [bans, events, rep, lists] = await Promise.all([api('GET', '/security/bans'), api('GET', '/security/events?limit=100'),
+    api('GET', '/security/reputation'), api('GET', '/security/settings')]);
+  showReputation(rep);
+  const gl = $('#global-lists');
+  gl.allow.value = lists.allow.join(', ');
+  gl.deny.value = lists.deny.join(', ');
   $('#bans').replaceChildren(table(['Address', 'Until', 'Reason', ''], bans.map((b) => {
     const un = h('button', { class: 'ghost' }, 'Unban');
     un.addEventListener('click', async () => {
@@ -166,6 +171,34 @@ async function loadSecurity() {
     events.map((e) => [fmtTime(e.time), e.site, e.ip, h('td', {}, status(e.verdict === 'ban' ? 'failed' : e.verdict)), e.reason,
       h('td', { class: 'wrap' }, e.path)])));
 }
+
+function showReputation(rep) {
+  const refresh = h('button', { class: 'ghost admin-only' }, 'Refresh now');
+  refresh.addEventListener('click', async () => {
+    refresh.disabled = true;
+    refresh.textContent = 'Refreshing…';
+    try { showReputation(await api('POST', '/security/reputation/refresh')); } catch (e) { showError(e); refresh.disabled = false; }
+  });
+  const c = rep.countries;
+  $('#reputation').replaceChildren(
+    table(['List', 'Entries', 'Updated', ''], rep.lists.map((l) => [l.title, fmtNum(l.entries),
+      l.updated_at ? fmtTime(l.updated_at) : 'never', h('td', { class: l.error ? 'st-failed small' : '' }, l.error || '')])),
+    h('p', { class: 'small' }, 'Country database: ', c && c.loaded ? `${c.month} release, ${fmtNum(c.ranges)} ranges` :
+      'downloaded when a site first uses country rules', c && c.error ? h('span', { class: 'st-failed' }, ` (${c.error})`) : '',
+      c ? h('span', { class: 'muted' }, `. ${c.attribution}`) : ''),
+    h('p', { class: 'small' }, 'Request-body inspection (Coraza + OWASP CRS): ',
+      rep.waf_available ? h('span', { class: 'st-ok' }, 'available') :
+        h('span', { class: 'st-warning' }, 'not detected yet: it is checked when a site turns it on; Caddy needs the wpgenie/caddy image')),
+    h('div', { class: 'actions' }, refresh));
+}
+
+$('#global-lists').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('PUT', '/security/settings', { allow: splitList(e.target.allow.value), deny: splitList(e.target.deny.value) });
+    await loadSecurity();
+  } catch (err) { showError(err); }
+});
 
 $('#ban-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -230,3 +263,161 @@ async function pollSystem() {
     } catch (e) { /* restarting */ }
   }
 }
+
+// ---- Account ----
+
+async function loadAccount() {
+  const [acct, sessions] = await Promise.all([api('GET', '/account'), api('GET', '/account/sessions')]);
+  const u = acct.user;
+  ME = u;
+  const notice = $('#account-notice');
+  notice.hidden = !(acct.require_2fa && !u.totp_enabled);
+  notice.replaceChildren(h('strong', {}, 'This panel requires two-factor authentication.'), ' Set it up below to continue.');
+  $('#account-profile').replaceChildren(h('h2', {}, u.username), table(['', ''], [
+    ['Role', u.role], ['Member since', fmtTime(u.created_at)], ['Last sign-in', u.last_login_at ? fmtTime(u.last_login_at) : '–']]));
+  show2FA(u);
+  $('#account-sessions').replaceChildren(sessionsTable(sessions, false, loadAccount));
+}
+
+function show2FA(u) {
+  const box = $('#account-2fa');
+  if (u.totp_enabled) {
+    const regen = h('button', { class: 'ghost' }, 'New recovery codes');
+    regen.addEventListener('click', async () => {
+      const password = prompt('Your password, to create new recovery codes (the old ones stop working):');
+      if (!password) return;
+      try { const r = await api('POST', '/account/recovery-codes', { password }); showSecret('Recovery codes', r.recovery_codes); await loadAccount(); }
+      catch (e) { showError(e); }
+    });
+    const off = h('button', { class: 'ghost danger' }, 'Turn off');
+    off.addEventListener('click', async () => {
+      const password = prompt('Your password, to turn two-factor authentication off:');
+      if (!password) return;
+      try { await api('DELETE', '/account/totp', { password }); await loadAccount(); } catch (e) { showError(e); }
+    });
+    box.replaceChildren(h('p', {}, h('span', { class: 'st-ok' }, 'On.'),
+      ` Signing in asks for a code from your authenticator app. ${u.recovery_codes_left} recovery code(s) left.`),
+    h('div', { class: 'actions' }, regen, off));
+    return;
+  }
+  const start = h('button', {}, 'Set up two-factor authentication');
+  start.addEventListener('click', async () => {
+    try {
+      const r = await api('POST', '/account/totp');
+      const code = h('input', { placeholder: '6-digit code', inputmode: 'numeric', autocomplete: 'one-time-code', required: true });
+      const form = h('form', { class: 'inline' }, code, h('button', { type: 'submit' }, 'Turn on'));
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+          const locked = !$('#account-notice').hidden; // the panel was waiting for this
+          const res = await api('PUT', '/account/totp', { code: code.value.trim() });
+          await loadAccount();
+          if (locked) signedIn(ME);
+          showSecret('Recovery codes: each signs you in once if you lose your phone', res.recovery_codes);
+        } catch (err) { showError(err); }
+      });
+      box.replaceChildren(
+        h('p', {}, 'Scan this with an authenticator app (1Password, Google Authenticator, Authy, …), then enter the code it shows.'),
+        h('img', { class: 'qr', src: '/api/v1/account/totp/qr.svg?' + Date.now(), alt: 'QR code for your authenticator app', width: 200, height: 200 }),
+        h('p', { class: 'muted small' }, 'Can\'t scan? Enter this key: ', h('code', {}, r.secret.replace(/(.{4})/g, '$1 ').trim())),
+        form);
+      code.focus();
+    } catch (e) { showError(e); }
+  });
+  box.replaceChildren(h('p', {}, h('span', { class: 'st-warning' }, 'Off.'),
+    ' A stolen password is enough to get into your account. Add a code from your phone.'), start);
+}
+
+function sessionsTable(sessions, withUser, reload) {
+  return table([withUser ? 'User' : null, 'Signed in', 'Last active', 'From', 'Browser', ''].filter((x) => x !== null), sessions.map((s) => {
+    const out = h('button', { class: 'ghost' }, s.current ? 'Sign out' : 'Revoke');
+    out.addEventListener('click', async () => {
+      try {
+        await api('DELETE', (withUser ? '/sessions/' : '/account/sessions/') + encodeURIComponent(s.id));
+        if (s.current) { showSignIn(); return; }
+        await reload();
+      } catch (e) { showError(e); }
+    });
+    const row = [fmtTime(s.created_at), fmtTime(s.last_seen_at), s.ip, h('td', { class: 'small', title: s.user_agent }, shortUA(s.user_agent) + (s.current ? ' (this one)' : '')), h('td', {}, out)];
+    return withUser ? [s.username, ...row] : row;
+  }));
+}
+
+function shortUA(ua) {
+  const m = /(Firefox|Edg|Chrome|Safari)\/[\d.]+/.exec(ua || '');
+  const os = /(Windows|Mac OS X|Android|iPhone|Linux)/.exec(ua || '');
+  return [m ? m[1].replace('Edg', 'Edge') : 'unknown', os ? os[1].replace('Mac OS X', 'macOS') : ''].filter(Boolean).join(' on ');
+}
+
+$('#password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('PUT', '/account/password', { current: e.target.current.value, new: e.target.new.value });
+    e.target.reset();
+    showSecret('Password changed', ['Your other sessions were signed out.']);
+  } catch (err) { showError(err); }
+});
+
+// ---- Users (administrators) ----
+
+async function loadUsers() {
+  const [users, sessions, settings] = await Promise.all([api('GET', '/users'), api('GET', '/sessions'), api('GET', '/settings/auth')]);
+  $('#require-2fa').checked = settings.require_2fa;
+  $('#users').replaceChildren(table(['User', 'Role', '2FA', 'Last sign-in', ''], users.map((u) => {
+    const role = h('select', {}, ['viewer', 'operator', 'admin'].map((r) => h('option', { value: r, selected: r === u.role }, r)));
+    role.addEventListener('change', async () => {
+      try { await api('PUT', `/users/${u.id}`, { role: role.value }); } catch (e) { showError(e); role.value = u.role; }
+    });
+    const act = (label, fn, cls = 'ghost') => { const b = h('button', { class: cls }, label); b.addEventListener('click', fn); return b; };
+    const self = ME && ME.id === u.id;
+    const actions = h('div', { class: 'actions' },
+      act(u.disabled ? 'Enable' : 'Disable', async () => {
+        try { await api('PUT', `/users/${u.id}`, { disabled: !u.disabled }); await loadUsers(); } catch (e) { showError(e); }
+      }),
+      act('Reset password', async () => {
+        if (!confirm(`Give ${u.username} a new password? They are signed out everywhere.`)) return;
+        try { const r = await api('POST', `/users/${u.id}/password`); showSecret(`New password for ${u.username}`, [`Password: ${r.password}`]); } catch (e) { showError(e); }
+      }),
+      u.totp_enabled ? act('Reset 2FA', async () => {
+        if (!confirm(`Turn off two-factor authentication for ${u.username} (lost phone)? They are signed out everywhere.`)) return;
+        try { await api('DELETE', `/users/${u.id}/totp`); await loadUsers(); } catch (e) { showError(e); }
+      }) : null,
+      self ? null : act('Delete', async () => {
+        if (prompt(`Delete ${u.username}? Type the username to confirm:`) !== u.username) return;
+        try { await api('DELETE', `/users/${u.id}`); await loadUsers(); } catch (e) { showError(e); }
+      }, 'ghost danger'));
+    return [h('td', {}, u.username, u.disabled ? h('span', { class: 'st-failed small' }, ' disabled') : '', self ? h('span', { class: 'muted small' }, ' (you)') : ''),
+      h('td', {}, role), h('td', {}, u.totp_enabled ? h('span', { class: 'st-ok' }, 'on') : h('span', { class: 'st-warning' }, 'off')),
+      u.last_login_at ? fmtTime(u.last_login_at) : 'never', h('td', {}, actions)];
+  })));
+  $('#all-sessions').replaceChildren(sessionsTable(sessions, true, loadUsers));
+  await loadAudit();
+}
+
+async function loadAudit() {
+  const actor = $('#audit-filter').actor.value.trim();
+  const entries = await api('GET', '/audit?limit=200' + (actor ? '&actor=' + encodeURIComponent(actor) : ''));
+  $('#audit').replaceChildren(table(['Time', 'User', 'From', 'Action', 'Result', 'Detail'], entries.map((e) => [
+    fmtTime(e.time), e.actor, e.ip, h('td', { class: 'wrap' }, e.action),
+    h('td', { class: e.status >= 400 ? 'st-failed' : 'st-ok' }, e.status || ''), h('td', { class: 'small' }, e.detail || '')])));
+}
+
+$('#audit-filter').addEventListener('submit', (e) => { e.preventDefault(); loadAudit().catch(showError); });
+
+$('#user-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const r = await api('POST', '/users', { username: f.username.value.trim(), role: f.role.value });
+    showSecret(`User ${r.user.username} created`, [`Username: ${r.user.username}`, `Password: ${r.password}`, '', 'They can change the password and set up two-factor authentication under Account.']);
+    f.reset();
+    await loadUsers();
+  } catch (err) { showError(err); }
+});
+
+$('#require-2fa').addEventListener('change', async (e) => {
+  try {
+    await api('PUT', '/settings/auth', { require_2fa: e.target.checked });
+    if (e.target.checked && !ME.totp_enabled) openTab('account');
+  } catch (err) { showError(err); e.target.checked = !e.target.checked; }
+});

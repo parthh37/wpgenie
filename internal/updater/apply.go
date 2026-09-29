@@ -92,6 +92,9 @@ type Applier struct {
 	From     string // version being replaced
 	Paths    Paths
 	PHPImage string // tag to rebuild, e.g. wpgenie/php:8.3
+	// CaddyImage is the Caddy build with the Coraza WAF (wpgenie/caddy:2),
+	// rebuilt when the release has images/caddy.
+	CaddyImage string
 	// Run executes a command and returns its combined output.
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
 	// Version asks the running daemon for its version.
@@ -133,44 +136,49 @@ func (a *Applier) Apply(ctx context.Context) error {
 		return err
 	}
 	to := strings.TrimSpace(string(vb))
-	a.status(PhaseApplying, to, "building the PHP image")
 
-	// 1. Build the new PHP image first: the slowest and likeliest step to
-	// fail, and nothing live changes until it succeeds. The old image ID is
-	// kept so a rollback can re-tag it.
-	oldImage := ""
-	if out, err := a.Run(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", a.PHPImage); err == nil {
-		oldImage = strings.TrimSpace(string(out))
-	}
-	buildArgs := []string{"build", "-q", "-t", a.PHPImage}
-	if _, tag, ok := strings.Cut(a.PHPImage, ":"); ok {
-		buildArgs = append(buildArgs, "--build-arg", "PHP_VERSION="+tag)
-	}
-	if err := a.run(ctx, "docker", append(buildArgs, filepath.Join(a.Staged, "images", "php"))...); err != nil {
-		a.status(PhaseFailed, to, "PHP image build failed, nothing was changed: "+err.Error())
-		return err
+	// 1. Build the new images first: the slowest and likeliest step to
+	// fail, and nothing live changes until they are built. The old image
+	// IDs are kept so a rollback can re-tag them.
+	oldImages := map[string]string{}
+	for _, img := range a.images() {
+		a.status(PhaseApplying, to, "building the "+img.name+" image")
+		if out, err := a.Run(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", img.tag); err == nil {
+			oldImages[img.tag] = strings.TrimSpace(string(out))
+		}
+		args := append([]string{"build", "-q", "-t", img.tag}, img.args...)
+		if err := a.run(ctx, "docker", append(args, filepath.Join(a.Staged, "images", img.dir))...); err != nil {
+			// Put back what an earlier build in this loop replaced.
+			for tag, id := range oldImages {
+				if tag != img.tag && id != "" {
+					a.run(ctx, "docker", "tag", id, tag)
+				}
+			}
+			a.status(PhaseFailed, to, img.name+" image build failed, nothing was changed: "+err.Error())
+			return err
+		}
 	}
 
 	// 2. Swap files, keeping the previous ones next to them.
 	a.status(PhaseApplying, to, "installing")
 	if err := a.install(); err != nil {
-		return a.rollback(ctx, to, oldImage, fmt.Errorf("installing files: %w", err))
+		return a.rollback(ctx, to, oldImages, fmt.Errorf("installing files: %w", err))
 	}
 	if err := a.run(ctx, "systemctl", "daemon-reload"); err != nil {
-		return a.rollback(ctx, to, oldImage, err)
+		return a.rollback(ctx, to, oldImages, err)
 	}
 	// 3. Shared services (Caddy, MariaDB, Valkey): compose only recreates
 	// what the new compose file changed.
 	if err := a.compose(ctx); err != nil {
-		return a.rollback(ctx, to, oldImage, err)
+		return a.rollback(ctx, to, oldImages, err)
 	}
 	// 4. Restart and wait for the new version to answer.
 	a.status(PhaseRestarting, to, "restarting WPGenie")
 	if err := a.run(ctx, "systemctl", "restart", "wpgenie"); err != nil {
-		return a.rollback(ctx, to, oldImage, err)
+		return a.rollback(ctx, to, oldImages, err)
 	}
 	if err := a.waitVersion(ctx, to); err != nil {
-		return a.rollback(ctx, to, oldImage, fmt.Errorf("the new version did not come up: %w", err))
+		return a.rollback(ctx, to, oldImages, fmt.Errorf("the new version did not come up: %w", err))
 	}
 	msg := "updated from " + a.From + " to " + to
 	if a.RollSites != nil {
@@ -183,6 +191,25 @@ func (a *Applier) Apply(ctx context.Context) error {
 	a.status(PhaseDone, to, msg)
 	os.RemoveAll(a.Paths.Share + ".prev")
 	return nil
+}
+
+type imageBuild struct {
+	name, tag, dir string
+	args           []string
+}
+
+// images are the images a release builds: PHP, and Caddy with Coraza
+// (releases before body inspection have no images/caddy).
+func (a *Applier) images() []imageBuild {
+	php := imageBuild{name: "PHP", tag: a.PHPImage, dir: "php"}
+	if _, tag, ok := strings.Cut(a.PHPImage, ":"); ok {
+		php.args = []string{"--build-arg", "PHP_VERSION=" + tag}
+	}
+	out := []imageBuild{php}
+	if _, err := os.Stat(filepath.Join(a.Staged, "images", "caddy", "Dockerfile")); err == nil && a.CaddyImage != "" {
+		out = append(out, imageBuild{name: "Caddy", tag: a.CaddyImage, dir: "caddy"})
+	}
+	return out
 }
 
 func (a *Applier) install() error {
@@ -257,9 +284,9 @@ func (a *Applier) waitVersion(ctx context.Context, want string) error {
 	}
 }
 
-// rollback restores the previous binary, sources, unit and PHP image tag
+// rollback restores the previous binary, sources, unit and image tags
 // and restarts the previous version.
-func (a *Applier) rollback(ctx context.Context, to, oldImage string, cause error) error {
+func (a *Applier) rollback(ctx context.Context, to string, oldImages map[string]string, cause error) error {
 	a.status(PhaseApplying, to, "rolling back: "+cause.Error())
 	p := a.Paths
 	var errs []error
@@ -277,8 +304,10 @@ func (a *Applier) rollback(ctx context.Context, to, oldImage string, cause error
 		errs = append(errs, copyFile(p.Unit+".prev", p.Unit, 0o644))
 	}
 	errs = append(errs, a.run(ctx, "systemctl", "daemon-reload"))
-	if oldImage != "" {
-		errs = append(errs, a.run(ctx, "docker", "tag", oldImage, a.PHPImage))
+	for tag, id := range oldImages {
+		if id != "" {
+			errs = append(errs, a.run(ctx, "docker", "tag", id, tag))
+		}
 	}
 	errs = append(errs, a.compose(ctx))
 	errs = append(errs, a.run(ctx, "systemctl", "restart", "wpgenie"))

@@ -15,19 +15,39 @@
     <button class="tab active" data-tab="sites">Sites</button>
     <button class="tab" data-tab="mail">Mail</button>
     <button class="tab" data-tab="security">Security</button>
+    <button class="tab admin-only" data-tab="users">Users</button>
     <button class="tab" data-tab="system">System <span id="update-dot" class="dot" hidden></span></button>
   </nav>
-  <button id="logout" class="ghost" hidden>Sign out</button>
+  <div class="who" id="who" hidden>
+    <button class="tab" data-tab="account" id="me-tab"></button>
+    <button id="logout" class="ghost">Sign out</button>
+  </div>
 </header>
 
 <main>
   <section id="login" class="card narrow" hidden>
     <h1>Sign in</h1>
-    <p class="muted">Paste the API token printed by the installer<br>(also in <code>/etc/wpgenie/config.json</code>).</p>
     <form id="login-form">
-      <input name="token" type="password" placeholder="API token" autocomplete="current-password" required>
-      <button type="submit">Continue</button>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <label class="code-step" hidden>Code from your authenticator app (or a recovery code)
+        <input name="code" autocomplete="one-time-code" inputmode="numeric"></label>
+      <button type="submit">Sign in</button>
     </form>
+    <p id="login-error" class="st-failed small" hidden></p>
+  </section>
+
+  <section id="setup" class="card narrow" hidden>
+    <h1>Welcome to WPGenie</h1>
+    <p class="muted">Create the first administrator. To prove you own this server, paste the API token the installer printed
+      (it is in <code>/etc/wpgenie/config.json</code>).</p>
+    <form id="setup-form">
+      <label>API token<input name="token" type="password" autocomplete="off" required></label>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password <span class="muted">(12+ characters)</span><input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+      <button type="submit">Create account</button>
+    </form>
+    <p id="setup-error" class="st-failed small" hidden></p>
   </section>
 
   <div id="error" class="card error" hidden></div>
@@ -36,7 +56,7 @@
   <section id="app" class="panel" data-panel="sites" hidden>
     <div class="bar">
       <h1>Sites</h1>
-      <button id="new-site-btn">New site</button>
+      <button id="new-site-btn" class="admin-only">New site</button>
     </div>
 
     <form id="new-site" class="card" hidden>
@@ -105,6 +125,22 @@
   <section class="panel" data-panel="security" hidden>
     <div class="bar"><h1>Security</h1></div>
     <div class="card">
+      <h2>IP reputation</h2>
+      <p class="muted small">Public blocklists of hijacked networks and addresses attacking servers right now, refreshed every 6 hours.
+        Each site chooses whether listed clients are challenged or blocked (Site → Security). Verified search engines are never affected.</p>
+      <div id="reputation"></div>
+    </div>
+    <div class="card">
+      <h2>Server-wide lists</h2>
+      <p class="muted small">Apply to every site. Allowed addresses are never challenged, blocked or banned (your office, monitoring);
+        blocked ones get nothing from any site.</p>
+      <form id="global-lists" class="grid">
+        <label>Always allow<input name="allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
+        <label>Block everywhere<input name="deny" placeholder="192.0.2.0/24"></label>
+        <div class="actions"><button type="submit">Save lists</button></div>
+      </form>
+    </div>
+    <div class="card">
       <h2>Banned addresses</h2>
       <p class="muted small">Clients that send attacks (SQL injection, scanners, brute force) are banned on every site automatically: 1 hour, doubling for repeat offenders.</p>
       <form id="ban-form" class="inline">
@@ -117,6 +153,57 @@
     <div class="card">
       <h2>Recent blocks</h2>
       <div id="sec-events"></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="account" hidden>
+    <div class="bar"><h1>Account</h1></div>
+    <div id="account-notice" class="card notice" hidden></div>
+    <div class="card" id="account-profile"></div>
+    <div class="card">
+      <h2>Two-factor authentication</h2>
+      <div id="account-2fa"></div>
+    </div>
+    <div class="card">
+      <h2>Password</h2>
+      <form id="password-form" class="grid">
+        <label>Current password<input name="current" type="password" autocomplete="current-password" required></label>
+        <label>New password <span class="muted">(12+ characters)</span><input name="new" type="password" minlength="12" autocomplete="new-password" required></label>
+        <div class="actions"><button type="submit">Change password</button></div>
+      </form>
+      <p class="muted small">Changing it signs out your other sessions.</p>
+    </div>
+    <div class="card">
+      <h2>Your sessions</h2>
+      <div id="account-sessions"></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="users" hidden>
+    <div class="bar"><h1>Users</h1></div>
+    <div class="card">
+      <h2>Accounts</h2>
+      <p class="muted small"><strong>Viewers</strong> see everything and change nothing. <strong>Operators</strong> run sites: shield, scaling,
+        caches, updates, scans, mailboxes. <strong>Administrators</strong> also create and delete sites, manage users, server-wide
+        security and mail settings, and update WPGenie.</p>
+      <form id="user-form" class="inline">
+        <input name="username" placeholder="username or email" required>
+        <select name="role"><option value="viewer">Viewer</option><option value="operator" selected>Operator</option><option value="admin">Administrator</option></select>
+        <button type="submit">Add user</button>
+      </form>
+      <div id="users"></div>
+      <label class="check small"><input type="checkbox" id="require-2fa"> Require two-factor authentication for everyone
+        (accounts without it can only reach Account until they set it up)</label>
+    </div>
+    <div class="card">
+      <h2>Signed-in sessions</h2>
+      <div id="all-sessions"></div>
+    </div>
+    <div class="card">
+      <div class="site-head"><h2>Audit log</h2>
+        <form id="audit-filter" class="inline"><input name="actor" placeholder="filter by user"><button class="ghost" type="submit">Filter</button></form></div>
+      <p class="muted small">Every change made through the panel, the API or the CLI (as <code>api-token</code>), and every sign-in.</p>
+      <div id="audit"></div>
     </div>
   </section>
 
@@ -152,7 +239,7 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
-      <button class="danger ghost delete">Delete</button>
+      <button class="danger ghost delete admin-only">Delete</button>
     </div>
     <details class="perf">
       <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
@@ -197,14 +284,61 @@
     <details class="perf sec">
       <summary>Security <span class="muted small sec-summary"></span></summary>
       <div class="controls">
-        <label class="check"><input type="checkbox" class="waf"> Web application firewall</label>
+        <label class="check"><input type="checkbox" class="waf"> Firewall (URLs and headers)</label>
+        <label>Request bodies (OWASP CRS)
+          <select class="body-waf">
+            <option value="off">Off</option>
+            <option value="detect">Log only</option>
+            <option value="block">Block</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" class="xmlrpc"> Allow XML-RPC <span class="muted">(Jetpack, mobile apps)</span></label>
       </div>
+      <p class="muted small waf-note"></p>
       <div class="grid">
         <label>Admin allowlist <span class="muted">(only these IPs/CIDRs reach wp-admin; empty = anyone)</span><input class="admin-allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
         <label>Trusted IPs <span class="muted">(bypass the shield: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
+        <label>Blocked IPs <span class="muted">(denied on this site)</span><input class="deny" placeholder="198.51.100.0/24"></label>
       </div>
+      <div class="controls">
+        <label>IP blocklists
+          <select class="reputation">
+            <option value="off">Ignore</option>
+            <option value="challenge">Challenge listed clients</option>
+            <option value="block">Block listed clients</option>
+          </select>
+        </label>
+        <label>Countries
+          <select class="country-mode">
+            <option value="off">No country rule</option>
+            <option value="block">Rule applies to these countries</option>
+            <option value="allow">Rule applies to all others</option>
+          </select>
+        </label>
+        <label>Country codes<input class="countries" placeholder="CN, RU"></label>
+        <label>Rule
+          <select class="country-action">
+            <option value="block">Block</option>
+            <option value="challenge">Challenge</option>
+          </select>
+        </label>
+      </div>
+      <div class="controls">
+        <label>Requests / s <span class="muted">(0 = 10)</span><input type="number" class="rate" min="0" step="any"></label>
+        <label>Burst <span class="muted">(0 = 60)</span><input type="number" class="burst" min="0"></label>
+        <label>Logins / min <span class="muted">(0 = 6)</span><input type="number" class="login-rate" min="0" step="any"></label>
+        <label>Challenge bits <span class="muted">(0 = 16)</span><input type="number" class="difficulty" min="0" max="22"></label>
+      </div>
+      <p class="muted small">Per visitor address. Challenges are a proof-of-work page a browser solves in about a second; scripts can't.</p>
       <div class="actions"><button class="ghost sec-save">Save security</button><button class="scan">Scan now</button></div>
       <div class="scan-report"></div>
+    </details>
+    <details class="perf plugins">
+      <summary>Plugins <span class="muted small plugins-summary"></span></summary>
+      <p class="muted small">Checks each plugin against wordpress.org (closed or abandoned), compares its files with the published release
+        (modified or nulled copies) and measures what it costs to load the front page. Runs nightly; takes 10–30 seconds.</p>
+      <div class="actions"><button class="analyse">Analyse now</button></div>
+      <div class="plugins-report"></div>
     </details>
     <details class="perf upd">
       <summary>Updates <span class="muted small upd-summary"></span></summary>

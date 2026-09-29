@@ -86,3 +86,22 @@ td button { padding: .2rem .6rem; font-size: .8rem; }
 .events div { font-size: .85rem; padding: .25rem 0; border-bottom: 1px solid var(--line); }
 .events time { color: var(--muted); margin-right: .5rem; font-variant-numeric: tabular-nums; }
 .stats div.cpu dd { color: var(--accent); }
+body:not(.is-admin) .admin-only { display: none !important; }
+.readonly .controls button, .readonly .actions button, .readonly input, .readonly select { pointer-events: none; opacity: .55; }
+.who { display: flex; gap: .5rem; align-items: center; }
+.narrow form label { margin-bottom: .75rem; }
+.narrow form button { width: 100%; }
+img.qr { display: block; margin: .75rem 0; background: #fff; border-radius: 8px; padding: 4px; }
+label.check.small { display: flex; gap: .5rem; align-items: center; color: var(--text); margin-top: .75rem; }
+label.check.small input { width: auto; margin: 0; }
+td select { width: auto; margin: 0; padding: .2rem .4rem; }
+.site-head form.inline { margin: 0; }
+form.inline select { flex: 0 1 180px; width: auto; margin: 0; }
+form.inline button { margin-top: 0; }
+.site-head form.inline { flex-wrap: nowrap; }
+td .actions { justify-content: flex-start; flex-wrap: wrap; }
+td .actions button { margin-top: 0; }
+.st-detect, .st-challenge { color: var(--warn); }
+.st-block, .st-throttle { color: var(--bad); }
+.perf .grid { margin-top: .75rem; }
+.waf-note:empty { display: none; }

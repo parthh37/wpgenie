@@ -163,6 +163,63 @@ var migrations = []string{
 		last_error TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL
 	);`,
+	// v6: per-site shield tuning (XML-RPC, rate limits, challenge
+	// difficulty), deny lists, IP reputation, country rules and request-body
+	// inspection; panel users, their sessions and the audit log; plugin
+	// analysis reports. Zero rate limits and difficulty mean the server
+	// defaults. Existing sites keep body inspection off: switching it on can
+	// change what a live site accepts.
+	`ALTER TABLE sites ADD COLUMN xmlrpc INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN rate_rps REAL NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN rate_burst INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN login_per_min REAL NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN challenge_bits INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN deny_ips TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN reputation TEXT NOT NULL DEFAULT 'challenge';
+	ALTER TABLE sites ADD COLUMN country_mode TEXT NOT NULL DEFAULT 'off';
+	ALTER TABLE sites ADD COLUMN countries TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN country_action TEXT NOT NULL DEFAULT 'block';
+	ALTER TABLE sites ADD COLUMN body_waf TEXT NOT NULL DEFAULT 'off';
+	CREATE TABLE users (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		username       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		password       TEXT NOT NULL,
+		role           TEXT NOT NULL,
+		totp_secret    TEXT NOT NULL DEFAULT '',
+		totp_pending   TEXT NOT NULL DEFAULT '',
+		totp_last_step INTEGER NOT NULL DEFAULT 0,
+		recovery       TEXT NOT NULL DEFAULT '[]',
+		disabled       INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL,
+		updated_at     INTEGER NOT NULL,
+		last_login_at  INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE sessions (
+		id           TEXT PRIMARY KEY,
+		token_hash   TEXT NOT NULL UNIQUE,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at   INTEGER NOT NULL,
+		last_seen_at INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL,
+		ip           TEXT NOT NULL,
+		user_agent   TEXT NOT NULL
+	);
+	CREATE INDEX sessions_by_user ON sessions (user_id);
+	CREATE TABLE audit_log (
+		id     INTEGER PRIMARY KEY AUTOINCREMENT,
+		time   INTEGER NOT NULL,
+		actor  TEXT NOT NULL,
+		ip     TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		status INTEGER NOT NULL DEFAULT 0,
+		detail TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE site_plugin_reports (
+		site_id     TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		analysed_at INTEGER NOT NULL,
+		report      TEXT NOT NULL
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

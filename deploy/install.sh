@@ -202,6 +202,8 @@ verify_caddy_isolation() {
 start_stack() {
   log "Building the hardened PHP image (a few minutes on first install)"
   docker build -q -t wpgenie/php:8.3 --build-arg PHP_VERSION=8.3 "${SHARE}/images/php" >/dev/null
+  log "Building Caddy with the Coraza WAF"
+  docker build -q -t wpgenie/caddy:2 "${SHARE}/images/caddy" >/dev/null
 
   setup_caddy_user
   setup_caddy_sites_mount
