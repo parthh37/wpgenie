@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -152,14 +153,16 @@ func TestWAFInRealCaddy(t *testing.T) {
 	}
 
 	// The audit log names the host and the rules, without request data.
+	// Read through the container: Caddy creates it 0600 as its own user,
+	// which the test's user may not be (the daemon reads it as root).
 	var entries []WAFAuditEntry
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && len(entries) < 3; time.Sleep(200 * time.Millisecond) {
 		entries = nil
-		f, err := os.Open(filepath.Join(logs, "waf.log"))
+		out, err := exec.Command("docker", "exec", cid, "cat", "/logs/waf.log").Output()
 		if err != nil {
 			continue
 		}
-		sc := bufio.NewScanner(f)
+		sc := bufio.NewScanner(bytes.NewReader(out))
 		sc.Buffer(nil, 1<<20)
 		for sc.Scan() {
 			var e WAFAuditEntry
@@ -167,7 +170,6 @@ func TestWAFInRealCaddy(t *testing.T) {
 				entries = append(entries, e)
 			}
 		}
-		f.Close()
 	}
 	if len(entries) != 3 {
 		t.Fatalf("%d audit log entries, want 3", len(entries))
