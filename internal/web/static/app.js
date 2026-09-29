@@ -26,6 +26,30 @@ function fmtBytes(n) {
   return (i ? n.toFixed(1) : n) + ' ' + u[i];
 }
 const fmtNum = (n) => new Intl.NumberFormat().format(n);
+const fmtTime = (t) => new Date(t).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+
+// h builds DOM nodes; text is always set with textContent, never parsed.
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+
+function table(headers, rows) {
+  if (!rows.length) return h('p', { class: 'muted small' }, 'Nothing here yet.');
+  return h('table', {}, h('tr', {}, headers.map((x) => h('th', {}, x))), rows.map((r) => h('tr', {}, r.map((c) => (c instanceof Node && c.tagName === 'TD' ? c : h('td', {}, c))))));
+}
+
+const status = (s) => h('span', { class: 'st-' + s }, s.replace(/_/g, ' '));
+const splitList = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
 
 function showError(err) {
   const box = $('#error');
@@ -35,6 +59,8 @@ function showError(err) {
 
 function signOut() {
   localStorage.removeItem(TOKEN_KEY);
+  document.querySelectorAll('.panel').forEach((p) => { p.hidden = true; });
+  $('#tabs').hidden = true;
   $('#app').hidden = true;
   $('#logout').hidden = true;
   $('#login').hidden = false;
@@ -44,7 +70,12 @@ async function load() {
   showError(null);
   const sites = await api('GET', '/sites');
   const list = $('#sites');
+  // Actions re-render every card: keep the panels that were open, open.
+  const open = new Set([...list.querySelectorAll('details[open]')].map((d) => d.closest('[data-id]').dataset.id + '|' + d.className));
   list.replaceChildren(...sites.map(renderSite));
+  list.querySelectorAll('details').forEach((d) => {
+    if (open.has(d.closest('[data-id]').dataset.id + '|' + d.className)) d.open = true; // fires 'toggle' itself
+  });
   $('#empty').hidden = sites.length > 0;
   sites.filter((s) => s.status === 'active').forEach(loadStats);
 }
@@ -71,6 +102,11 @@ function renderSite(site) {
   ai.addEventListener('change', saveShield);
 
   renderPerf(el, site);
+  renderAutoscale(el, site);
+  renderSecurity(el, site);
+  renderUpdates(el, site);
+  const log = $('.log', el);
+  log.addEventListener('toggle', () => { if (log.open) loadEvents(el, site); });
 
   $('.delete', el).addEventListener('click', async () => {
     const typed = prompt(`This permanently deletes ${site.primary_domain}, its files and database.\nType the domain to confirm:`);
@@ -153,6 +189,174 @@ async function loadStats(site) {
     set('blocked', fmtNum(s.totals.blocked));
     set('bot_hits', fmtNum(s.totals.bot_hits));
   } catch (e) { /* stats are best-effort */ }
+  loadCPU(site);
+}
+
+async function loadCPU(site) {
+  try {
+    const m = await api('GET', `/sites/${site.id}/metrics`);
+    const el = document.querySelector(`[data-id="${site.id}"]`);
+    if (!el) return;
+    $('[data-k="cpu"]', el).textContent = m.cpu ? `${m.cpu.percent}%` : '–';
+    $('.cpu-line', el).textContent = m.cpu
+      ? `CPU: ${m.cpu.percent}% of each replica's allowance across ${m.cpu.replicas} replica(s), sampled ${fmtTime(m.cpu.at)}.`
+      : '';
+  } catch (e) { /* best-effort */ }
+}
+
+function renderAutoscale(el, site) {
+  const on = $('.autoscale', el), min = $('.as-min', el), max = $('.as-max', el), target = $('.as-target', el);
+  on.checked = site.autoscale;
+  min.value = site.min_replicas;
+  // Suggest room to grow when turning it on; the server enforces its own limit.
+  max.value = site.autoscale ? site.max_replicas : Math.max(site.replicas, site.max_replicas, 2);
+  target.value = site.target_cpu;
+  if (site.autoscale) {
+    $('.replicas', el).disabled = true;
+    $('.shape', el).textContent += ` · autoscaling ${site.min_replicas}–${site.max_replicas}`;
+  }
+  const save = $('.as-save', el);
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await api('PUT', `/sites/${site.id}/autoscale`, {
+        enabled: on.checked, min_replicas: Number(min.value), max_replicas: Number(max.value), target_cpu: Number(target.value),
+      });
+      await load();
+    } catch (e) { showError(e); save.disabled = false; }
+  });
+}
+
+function renderSecurity(el, site) {
+  const waf = $('.waf', el), admin = $('.admin-allow', el), trusted = $('.trusted', el);
+  waf.checked = site.waf;
+  admin.value = (site.admin_allow || []).join(', ');
+  trusted.value = (site.trusted_ips || []).join(', ');
+  $('.sec-summary', el).textContent = `· WAF ${site.waf ? 'on' : 'off'}` + (site.admin_allow.length ? ' · admin allowlist' : '');
+  const save = $('.sec-save', el);
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    try {
+      await api('PUT', `/sites/${site.id}/shield`, {
+        mode: $('.mode', el).value, block_ai_bots: $('.ai', el).checked, waf: waf.checked,
+        admin_allow: splitList(admin.value), trusted_ips: splitList(trusted.value),
+      });
+      await load();
+    } catch (e) { showError(e); save.disabled = false; }
+  });
+  const box = $('.scan-report', el), scan = $('.scan', el), details = $('.sec', el);
+  details.addEventListener('toggle', async () => {
+    if (!details.open || box.dataset.loaded) return;
+    box.dataset.loaded = '1';
+    try { showScan(box, await api('GET', `/sites/${site.id}/scan`)); } catch (e) { showError(e); }
+  });
+  scan.addEventListener('click', async () => {
+    scan.disabled = true;
+    scan.textContent = 'Scanning… (up to a minute)';
+    try { showScan(box, await api('POST', `/sites/${site.id}/scan`)); }
+    catch (e) { showError(e); }
+    finally { scan.disabled = false; scan.textContent = 'Scan now'; }
+  });
+}
+
+function showScan(box, rep) {
+  if (!rep) { box.replaceChildren(h('p', { class: 'muted small' }, 'Not scanned yet. Sites are scanned daily.')); return; }
+  const inv = rep.inventory;
+  const vulnerable = [inv.core, ...inv.plugins, ...inv.themes].filter((c) => c.vulns && c.vulns.length);
+  const rows = [];
+  for (const c of vulnerable) {
+    for (const v of c.vulns) {
+      rows.push([`${c.slug} ${c.version}`, h('td', { class: 'sev-' + (v.severity || '') }, v.severity || '?'),
+        v.link ? h('a', { href: v.link, target: '_blank', rel: 'noopener' }, v.title) : v.title,
+        v.unfixed ? 'no fix yet' : c.update_fixes ? `update to ${c.update_version}` : v.fixed_in ? `fixed in ${v.fixed_in}` : '']);
+    }
+  }
+  const integ = rep.integrity;
+  const issues = [
+    ...integ.core_modified.map((f) => ['Modified core file', f]),
+    ...integ.plugins_modified.map((f) => ['Modified plugin file', f]),
+    ...integ.uploads_php.map((f) => ['PHP file in uploads', f]),
+  ];
+  box.replaceChildren(
+    h('p', { class: 'small' }, `Scanned ${fmtTime(rep.scanned_at)}: `,
+      vulnerable.length ? h('span', { class: 'st-failed' }, `${vulnerable.length} vulnerable component(s)`) : h('span', { class: 'st-ok' }, 'no known vulnerabilities'),
+      ', ', issues.length ? h('span', { class: 'st-failed' }, `${issues.length} integrity issue(s)`) : h('span', { class: 'st-ok' }, 'files intact')),
+    vulnerable.length ? table(['Component', 'Severity', 'Vulnerability', 'Fix'], rows) : null,
+    issues.length ? table(['Finding', 'File'], issues.map(([a, b]) => [a, h('td', { class: 'wrap' }, b)])) : null,
+    rep.errors && rep.errors.length ? h('p', { class: 'muted small' }, 'Partial scan: ' + rep.errors.join('; ')) : null,
+  );
+}
+
+function renderUpdates(el, site) {
+  const policy = $('.auto-update', el), smtp = $('.smtp', el), details = $('.upd', el);
+  policy.value = site.auto_update;
+  smtp.checked = site.smtp;
+  $('.upd-summary', el).textContent = `· automatic: ${site.auto_update}`;
+  policy.addEventListener('change', async () => {
+    try { await api('PUT', `/sites/${site.id}/auto-update`, { policy: policy.value }); await load(); } catch (e) { showError(e); }
+  });
+  smtp.addEventListener('change', async () => {
+    smtp.disabled = true;
+    try { await api('PUT', `/sites/${site.id}/smtp`, { enabled: smtp.checked }); await load(); }
+    catch (e) { showError(e); smtp.checked = !smtp.checked; smtp.disabled = false; }
+  });
+  const check = $('.check-updates', el);
+  check.addEventListener('click', async () => {
+    check.disabled = true;
+    check.textContent = 'Checking…';
+    try { showInventory(el, site, await api('GET', `/sites/${site.id}/updates`)); }
+    catch (e) { showError(e); }
+    finally { check.disabled = false; check.textContent = 'Check for updates'; }
+  });
+  details.addEventListener('toggle', () => { if (details.open) loadHistory(el, site); });
+}
+
+function showInventory(el, site, inv) {
+  const box = $('.upd-list', el);
+  const pending = [inv.core, ...inv.plugins, ...inv.themes].filter((c) => c.update_version);
+  if (!pending.length) { box.replaceChildren(h('p', { class: 'st-ok small' }, 'Everything is up to date.')); return; }
+  const boxes = pending.map((c) => h('input', { type: 'checkbox', checked: true, 'data-type': c.type, 'data-slug': c.slug }));
+  const run = h('button', {}, `Update ${pending.length} selected`);
+  run.addEventListener('click', async () => {
+    const req = { core: false, plugins: [], themes: [] };
+    boxes.filter((b) => b.checked).forEach((b) => {
+      if (b.dataset.type === 'core') req.core = true;
+      else req[b.dataset.type + 's'].push(b.dataset.slug);
+    });
+    run.disabled = true;
+    try {
+      await api('POST', `/sites/${site.id}/updates`, req);
+      box.replaceChildren(h('p', { class: 'small' }, 'Update running: snapshot, update, health check. The result appears below.'));
+      pollHistory(el, site);
+    } catch (e) { showError(e); run.disabled = false; }
+  });
+  box.replaceChildren(table(['', 'Component', 'Installed', 'Available'],
+    pending.map((c, i) => [boxes[i], `${c.type === 'core' ? 'WordPress' : c.slug} (${c.type})`, c.version, c.update_version])), h('div', { class: 'actions' }, run));
+}
+
+async function loadHistory(el, site) {
+  try {
+    const runs = await api('GET', `/sites/${site.id}/updates/history?limit=10`);
+    $('.upd-history', el).replaceChildren(h('h2', {}, 'History'), table(['Started', 'Trigger', 'Result', 'Summary'],
+      runs.map(({ run }) => [fmtTime(run.started_at), run.trigger, h('td', {}, status(run.status)), run.summary])));
+    return runs;
+  } catch (e) { showError(e); return []; }
+}
+
+async function pollHistory(el, site) {
+  for (let i = 0; i < 180; i++) {
+    const runs = await loadHistory(el, site);
+    if (runs.length && runs[0].run.status !== 'running') return;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+
+async function loadEvents(el, site) {
+  try {
+    const ev = await api('GET', `/sites/${site.id}/events?limit=50`);
+    $('.events', el).replaceChildren(...(ev.length ? ev.map((e) => h('div', {}, h('time', {}, fmtTime(e.time)), `[${e.kind}] ${e.message}`))
+      : [h('p', { class: 'muted small' }, 'No activity yet.')]));
+  } catch (e) { showError(e); }
 }
 
 function showCredentials(res) {
@@ -204,7 +408,16 @@ async function start() {
   $('#login').hidden = true;
   $('#app').hidden = false;
   $('#logout').hidden = false;
+  $('#tabs').hidden = false;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'sites'));
   try { await load(); } catch (e) { showError(e); }
+  if (typeof checkSystem === 'function') checkSystem();
 }
+
+// Live CPU readings refresh with the autoscaler's sampling.
+setInterval(() => {
+  if ($('#app').hidden) return;
+  document.querySelectorAll('#sites [data-id]').forEach((el) => loadCPU({ id: el.dataset.id }));
+}, 15000);
 
 init();

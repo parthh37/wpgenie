@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 
 	_ "modernc.org/sqlite" // pure Go: no cgo, trivial cross-compilation
 )
@@ -24,6 +25,12 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Settings hold secrets (the mail relay password): root only. SQLite
+	// gives the -wal/-shm files the same mode as the database.
+	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -85,6 +92,65 @@ var migrations = []string{
 		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE
 	);
 	INSERT INTO site_upstreams (port, site_id) SELECT fpm_port, id FROM sites;`,
+	// v3: shield settings, CPU autoscaling, WordPress update manager and
+	// security scans. IP lists are comma-separated normalised prefixes.
+	`ALTER TABLE sites ADD COLUMN waf INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE sites ADD COLUMN admin_allow TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN trusted_ips TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN autoscale INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN min_replicas INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE sites ADD COLUMN max_replicas INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE sites ADD COLUMN target_cpu INTEGER NOT NULL DEFAULT 70;
+	ALTER TABLE sites ADD COLUMN auto_update TEXT NOT NULL DEFAULT 'security';
+	CREATE TABLE site_events (
+		id      INTEGER PRIMARY KEY AUTOINCREMENT,
+		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		time    INTEGER NOT NULL,
+		kind    TEXT NOT NULL,
+		message TEXT NOT NULL
+	);
+	CREATE INDEX site_events_by_site ON site_events (site_id, id);
+	CREATE TABLE site_updates (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		site_id     TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		trigger     TEXT NOT NULL,
+		status      TEXT NOT NULL,
+		summary     TEXT NOT NULL DEFAULT '',
+		details     TEXT NOT NULL DEFAULT '[]',
+		started_at  INTEGER NOT NULL,
+		finished_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX site_updates_by_site ON site_updates (site_id, id);
+	CREATE TABLE site_scans (
+		site_id    TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		scanned_at INTEGER NOT NULL,
+		report     TEXT NOT NULL
+	);
+	CREATE TABLE settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	);`,
+	// v4: mail. The mail server's own files are the source of truth for
+	// accounts; these tables are what the panel shows and validates against.
+	// A mailbox with a site_id is that site's WordPress sender (managed).
+	`CREATE TABLE mail_domains (
+		domain     TEXT PRIMARY KEY,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE mailboxes (
+		address    TEXT PRIMARY KEY,
+		domain     TEXT NOT NULL REFERENCES mail_domains(domain),
+		quota_mb   INTEGER NOT NULL DEFAULT 0,
+		site_id    TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE mail_aliases (
+		alias  TEXT NOT NULL,
+		target TEXT NOT NULL,
+		domain TEXT NOT NULL REFERENCES mail_domains(domain),
+		PRIMARY KEY (alias, target)
+	);
+	ALTER TABLE sites ADD COLUMN smtp INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

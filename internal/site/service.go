@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/config"
+	"github.com/parthh37/wpgenie/internal/domain"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/shield"
@@ -24,7 +25,7 @@ import (
 
 var (
 	ErrDomainTaken   = errors.New("domain is already attached to a site")
-	ErrInvalidDomain = errors.New("invalid domain name")
+	ErrInvalidDomain = domain.ErrInvalid
 	ErrInvalidInput  = errors.New("invalid input")
 )
 
@@ -32,6 +33,8 @@ type DBProvisioner interface {
 	CreateSiteDB(ctx context.Context, name, user, password string) error
 	DropSiteDB(ctx context.Context, name, user string) error
 	SetConnectionLimit(ctx context.Context, user string, n int) error
+	Tables(ctx context.Context, db string) ([]string, error)
+	DropTables(ctx context.Context, db string, tables []string) error
 }
 
 // ObjectCache clears keys from the shared object cache. Flushing must never
@@ -49,15 +52,31 @@ type Service struct {
 	Store   *store.Store
 	Runtime runtime.Runtime
 	DB      DBProvisioner
+	Dumper  DBDumper
 	Proxy   ProxyApplier
 	Cache   ObjectCache
+	Prober  Prober
+	Vulns   VulnDB
+	Mailer  Mailer
+	// Webmail returns the webmail host and upstream to publish, or "".
+	Webmail func() (host, upstream string)
 	Log     *slog.Logger
 
 	// opsMu serialises everything that allocates ports or starts/stops
 	// containers (create, scale, cache changes): port allocation is only
 	// race-free while the allocated ports are recorded under the same lock.
 	opsMu    sync.Mutex
+	syncMu   sync.Mutex // see Sync
 	shieldSt atomic.Pointer[map[string]shield.SiteSettings]
+	cpu      sync.Map // site ID -> CPUReading, written by the autoscaler loop
+	// maint holds one mutex per site (ID -> *sync.Mutex) so updates and
+	// scans of a site never overlap; different sites run independently.
+	maint sync.Map
+	// scaleFailNoted: site ID -> time of the last autoscale failure logged.
+	scaleFailNoted sync.Map
+	// lastMaint: site ID -> time the maintenance loop last ran for it.
+	lastMaint sync.Map
+	inflight  sync.WaitGroup // running WordPress updates
 }
 
 type CreateInput struct {
@@ -75,20 +94,11 @@ type Credentials struct {
 }
 
 var (
-	domainRe = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	emailRe  = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	userRe   = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,60}$`)
+	emailRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	userRe  = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,60}$`)
 )
 
-func NormalizeDomain(d string) (string, error) {
-	d = strings.ToLower(strings.TrimSpace(d))
-	d = strings.TrimPrefix(strings.TrimPrefix(d, "https://"), "http://")
-	d = strings.TrimSuffix(strings.TrimSuffix(d, "/"), ".")
-	if len(d) > 253 || !domainRe.MatchString(d) {
-		return "", ErrInvalidDomain
-	}
-	return d, nil
-}
+func NormalizeDomain(d string) (string, error) { return domain.Normalize(d) }
 
 // Create provisions a site end to end. Every completed step registers an
 // undo; if a later step fails, the undos run in reverse so a failed create
@@ -114,6 +124,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 	s.opsMu.Lock()
 	defer s.opsMu.Unlock()
 
+	if s.Webmail != nil {
+		if host, _ := s.Webmail(); host == domain {
+			return nil, nil, fmt.Errorf("%w: it is the mail server's hostname", ErrDomainTaken)
+		}
+	}
 	if taken, err := s.Store.DomainExists(ctx, domain); err != nil {
 		return nil, nil, err
 	} else if taken {
@@ -129,7 +144,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 	st := &store.Site{
 		ID: id, Name: in.Name, PrimaryDomain: domain, PHPVersion: "8.3", FPMPort: port,
 		DBName: "wp_" + id, Status: store.StatusProvisioning,
-		ShieldMode: string(shield.ModeStandard), BlockAIBots: true,
+		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
 		PageCache: true, ObjectCache: true, Upstreams: []int{port},
 	}
@@ -264,6 +279,17 @@ func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass string) error {
 // database and files. It keeps going on errors so a half-broken site can
 // always be cleaned up, and reports everything that failed.
 func (s *Service) Delete(ctx context.Context, id string) error {
+	// Never delete under a running update or scan: it would keep writing
+	// snapshots and files for a site that no longer exists.
+	lock := s.maintLock(id)
+	if !lock.TryLock() {
+		return fmt.Errorf("%w: an update or scan is running on this site; try again when it finishes", ErrConflict)
+	}
+	defer lock.Unlock()
+	// Nor under a reconcile, whose `docker run -v` would recreate the
+	// site directory we are about to remove.
+	s.opsMu.Lock()
+	defer s.opsMu.Unlock()
 	st, err := s.Store.GetSite(ctx, id)
 	if err != nil {
 		return err
@@ -272,26 +298,29 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	var errs []error
+	if s.Mailer != nil {
+		// Unconditionally: a half-finished SetSMTP can leave the sender
+		// mailbox behind with smtp still off. A no-op if there is none.
+		errs = append(errs, s.Mailer.RemoveSender(ctx, id, st.PrimaryDomain))
+	}
 	errs = append(errs, s.Sync(ctx))
 	errs = append(errs, s.Runtime.RemoveSite(ctx, id))
 	errs = append(errs, s.DB.DropSiteDB(ctx, st.DBName, "u_"+id))
 	errs = append(errs, os.RemoveAll(s.Cfg.SiteDir(id)))
+	// Snapshots hold full database dumps: a deleted site's data must go too.
+	errs = append(errs, os.RemoveAll(s.snapshotRoot(id)))
 	return errors.Join(errs...)
-}
-
-func (s *Service) SetShield(ctx context.Context, id string, mode shield.Mode, blockAI bool) error {
-	if !mode.Valid() {
-		return fmt.Errorf("%w: shield mode", ErrInvalidInput)
-	}
-	if err := s.Store.SetShield(ctx, id, string(mode), blockAI); err != nil {
-		return err
-	}
-	return s.Sync(ctx)
 }
 
 // Sync pushes the current set of active sites to the proxy and refreshes
 // the shield's in-memory settings snapshot.
+//
+// syncMu covers reading the sites and applying them: otherwise a Sync that
+// read the store before a reconcile switched upstreams could apply after
+// it, pointing Caddy back at replicas that are about to be stopped.
 func (s *Service) Sync(ctx context.Context) error {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	sites, err := s.Store.ListSites(ctx)
 	if err != nil {
 		return err
@@ -303,12 +332,20 @@ func (s *Service) Sync(ctx context.Context) error {
 			continue
 		}
 		mode := shield.Mode(st.ShieldMode)
-		settings[st.ID] = shield.SiteSettings{ID: st.ID, Mode: mode, BlockAIBots: st.BlockAIBots}
+		settings[st.ID] = shield.SiteSettings{ID: st.ID, Mode: mode, BlockAIBots: st.BlockAIBots, Inspect: st.WAF,
+			AdminAllow: mustPrefixes(st.AdminAllow), Trusted: mustPrefixes(st.TrustedIPs)}
 		ps = append(ps, proxy.Site{
 			ID: st.ID, Name: st.Name, Domains: st.Domains, Root: s.Cfg.SiteRoot(st.ID),
 			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: true,
 			PageCache: st.PageCache,
 		})
+	}
+	if s.Webmail != nil {
+		if host, up := s.Webmail(); host != "" {
+			settings["webmail"] = shield.SiteSettings{ID: "webmail", Mode: shield.ModeStandard, Inspect: true, Webmail: true}
+			ps = append(ps, proxy.Site{ID: "webmail", Name: "Webmail (Roundcube)", Domains: []string{host},
+				Proxy: up, ShieldEnabled: true})
+		}
 	}
 	// Publish shield settings before the proxy starts routing to new sites.
 	s.shieldSt.Store(&settings)

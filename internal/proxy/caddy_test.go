@@ -14,6 +14,7 @@ var testSites = []Site{
 		ShieldEnabled: true, BlockXMLRPC: true, PageCache: true},
 	{ID: "sdef5678", Name: "Shop", Domains: []string{"shop.test"},
 		Root: "/var/lib/wpgenie/sites/sdef5678/public", Upstreams: []string{"127.0.0.1:19001"}},
+	{ID: "webmail", Name: "Webmail", Domains: []string{"mail.example.com"}, Proxy: "127.0.0.1:8089", ShieldEnabled: true},
 }
 
 func testCaddy() *Caddy {
@@ -40,6 +41,8 @@ func TestRender(t *testing.T) {
 		"header_up X-WPGenie-Site sabc1234",
 		"panel.example.com {",
 		"header_up -X-WPGenie-Site",
+		// /wp-login.php/x.css runs wp-login.php: ".php" anywhere must reach the shield.
+		"not path_regexp (?i)\\.php",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("rendered Caddyfile missing %q", want)
@@ -49,10 +52,21 @@ func TestRender(t *testing.T) {
 	if strings.Index(blog, "forward_auth") > strings.Index(blog, "route @wpg_cached") {
 		t.Error("cached pages must be served after the shield check, not before")
 	}
+	if strings.Index(blog, "forward_auth") > strings.Index(blog, "respond @wpg_forbidden") {
+		t.Error("the shield must see probes for forbidden files, or scanners never earn a ban")
+	}
+	if strings.Index(blog, "reverse_proxy /_shield/*") > strings.Index(blog, "forward_auth") {
+		t.Error("the challenge endpoint must not itself be behind the challenge")
+	}
 	if strings.Index(blog, "route @wpg_cached") > strings.Index(blog, "php_fastcgi") {
 		t.Error("cache hits must be served before falling through to PHP")
 	}
-	shop := s[strings.Index(s, "shop.test {"):]
+	shop := s[strings.Index(s, "shop.test {"):strings.Index(s, "mail.example.com {")]
+	webmail := s[strings.Index(s, "mail.example.com {"):]
+	if !strings.Contains(webmail, "reverse_proxy 127.0.0.1:8089") || !strings.Contains(webmail, "forward_auth @wpg_dynamic") ||
+		strings.Contains(webmail, "php_fastcgi") || strings.Contains(webmail, "root *") {
+		t.Errorf("webmail block:\n%s", webmail)
+	}
 	if strings.Contains(shop, "forward_auth") {
 		t.Error("shield disabled site must not call forward_auth")
 	}

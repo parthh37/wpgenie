@@ -13,18 +13,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/updater"
 	"github.com/parthh37/wpgenie/internal/web"
 )
 
 type Server struct {
-	Token  string
-	Sites  *site.Service
-	Store  *store.Store
-	Shield *shield.Shield
-	Log    *slog.Logger
+	Token   string
+	Version string
+	Sites   *site.Service
+	Store   *store.Store
+	Shield  *shield.Shield
+	Updater *updater.Updater
+	Mail    *mail.Service
+	Log     *slog.Logger
 }
 
 func (s *Server) Handler() http.Handler {
@@ -45,6 +50,45 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/sites/{id}/resources", s.auth(s.setResources))
 	mux.Handle("PUT /api/v1/sites/{id}/cache", s.auth(s.setCache))
 	mux.Handle("POST /api/v1/sites/{id}/cache/purge", s.auth(s.purgeCache))
+	mux.Handle("PUT /api/v1/sites/{id}/autoscale", s.auth(s.setAutoscale))
+	mux.Handle("GET /api/v1/sites/{id}/events", s.auth(s.siteEvents))
+	mux.Handle("GET /api/v1/sites/{id}/metrics", s.auth(s.siteMetrics))
+	mux.Handle("GET /api/v1/sites/{id}/updates", s.auth(s.siteUpdates))
+	mux.Handle("POST /api/v1/sites/{id}/updates", s.auth(s.startUpdate))
+	mux.Handle("GET /api/v1/sites/{id}/updates/history", s.auth(s.updateHistory))
+	mux.Handle("PUT /api/v1/sites/{id}/auto-update", s.auth(s.setAutoUpdate))
+	mux.Handle("POST /api/v1/sites/{id}/scan", s.auth(s.runScan))
+	mux.Handle("GET /api/v1/sites/{id}/scan", s.auth(s.lastScan))
+
+	mux.Handle("PUT /api/v1/sites/{id}/smtp", s.auth(s.setSiteSMTP))
+
+	mux.Handle("GET /api/v1/mail", s.auth(s.mailStatus))
+	mux.Handle("PUT /api/v1/mail", s.auth(s.setMail))
+	mux.Handle("PUT /api/v1/mail/relay", s.auth(s.setRelay))
+	mux.Handle("DELETE /api/v1/mail/relay", s.auth(s.deleteRelay))
+	mux.Handle("GET /api/v1/mail/domains", s.auth(s.mailDomains))
+	mux.Handle("POST /api/v1/mail/domains", s.auth(s.addMailDomain))
+	mux.Handle("GET /api/v1/mail/domains/{domain}", s.auth(s.mailDomain))
+	mux.Handle("DELETE /api/v1/mail/domains/{domain}", s.auth(s.deleteMailDomain))
+	mux.Handle("GET /api/v1/mail/mailboxes", s.auth(s.mailboxes))
+	mux.Handle("POST /api/v1/mail/mailboxes", s.auth(s.createMailbox))
+	mux.Handle("PUT /api/v1/mail/mailboxes/{address}/password", s.auth(s.setMailboxPassword))
+	mux.Handle("PUT /api/v1/mail/mailboxes/{address}/quota", s.auth(s.setMailboxQuota))
+	mux.Handle("DELETE /api/v1/mail/mailboxes/{address}", s.auth(s.deleteMailbox))
+	mux.Handle("GET /api/v1/mail/aliases", s.auth(s.mailAliases))
+	mux.Handle("POST /api/v1/mail/aliases", s.auth(s.addMailAlias))
+	mux.Handle("DELETE /api/v1/mail/aliases", s.auth(s.deleteMailAlias))
+
+	mux.Handle("GET /api/v1/system", s.auth(s.systemInfo))
+	mux.Handle("GET /api/v1/system/version", s.auth(s.systemVersion))
+	mux.Handle("POST /api/v1/system/update/check", s.auth(s.checkUpdate))
+	mux.Handle("POST /api/v1/system/update", s.auth(s.selfUpdate))
+	mux.Handle("POST /api/v1/system/roll-sites", s.auth(s.rollSites))
+
+	mux.Handle("GET /api/v1/security/bans", s.auth(s.listBans))
+	mux.Handle("POST /api/v1/security/bans", s.auth(s.addBan))
+	mux.Handle("DELETE /api/v1/security/bans", s.auth(s.removeBan))
+	mux.Handle("GET /api/v1/security/events", s.auth(s.securityEvents))
 
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("GET /", http.FileServerFS(static))
@@ -67,9 +111,11 @@ func (s *Server) auth(h handlerFunc) http.Handler {
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				status = http.StatusNotFound
-			case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict):
+			case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict),
+				errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled):
 				status = http.StatusConflict
-			case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest):
+			case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
+				errors.Is(err, mail.ErrInvalid):
 				status = http.StatusBadRequest
 			}
 			if status == http.StatusInternalServerError {
@@ -123,17 +169,15 @@ func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) setShield(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		Mode        shield.Mode `json:"mode"`
-		BlockAIBots bool        `json:"block_ai_bots"`
-	}
+	var in site.ShieldInput
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
-	if err := s.Sites.SetShield(r.Context(), r.PathValue("id"), in.Mode, in.BlockAIBots); err != nil {
+	st, err := s.Sites.SetShield(r.Context(), r.PathValue("id"), in)
+	if err != nil {
 		return err
 	}
-	return s.getSite(w, r)
+	return writeJSON(w, http.StatusOK, st)
 }
 
 // setResources scales a site (memory/CPU per replica, replica count). It

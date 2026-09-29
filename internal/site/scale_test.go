@@ -28,6 +28,9 @@ type fakeRuntime struct {
 	starts     int
 	busy       map[string]int // replica -> polls that still report a request
 	onBusy     func()
+	cpu        map[string]float64
+	// exec simulates commands run with Exec (see fakeWP in updates_test.go).
+	exec func(args []string, stdin io.Reader, stdout io.Writer) error
 }
 
 func (f *fakeRuntime) ImageID(context.Context, string) (string, error) { return f.imageID, nil }
@@ -82,6 +85,24 @@ func (f *fakeRuntime) WP(_ context.Context, _ string, _ io.Reader, args ...strin
 	return nil, nil
 }
 func (f *fakeRuntime) RunCron(context.Context, runtime.SiteSpec) ([]byte, error) { return nil, nil }
+func (f *fakeRuntime) Exec(_ context.Context, _ string, stdin io.Reader, stdout io.Writer, args ...string) error {
+	if f.exec == nil {
+		return nil
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	return f.exec(args, stdin, stdout)
+}
+func (f *fakeRuntime) CPUUsage(context.Context) (map[string]float64, error) {
+	out := map[string]float64{}
+	for name, c := range f.containers {
+		if v, ok := f.cpu[name]; ok && c.Running {
+			out[name] = v
+		}
+	}
+	return out, nil
+}
 
 type fakeProxy struct {
 	log     *[]string
@@ -103,10 +124,20 @@ func (p *fakeProxy) Apply(_ context.Context, sites []proxy.Site) error {
 	return nil
 }
 
-type fakeDB struct{ limits map[string]int }
+type fakeDB struct {
+	limits map[string]int
+	tables *[]string
+}
 
 func (fakeDB) CreateSiteDB(context.Context, string, string, string) error { return nil }
 func (fakeDB) DropSiteDB(context.Context, string, string) error           { return nil }
+func (d fakeDB) Tables(context.Context, string) ([]string, error) {
+	return slices.Clone(*d.tables), nil
+}
+func (d fakeDB) DropTables(_ context.Context, _ string, drop []string) error {
+	*d.tables = slices.DeleteFunc(*d.tables, func(t string) bool { return slices.Contains(drop, t) })
+	return nil
+}
 func (d fakeDB) SetConnectionLimit(_ context.Context, user string, n int) error {
 	d.limits[user] = n
 	return nil
@@ -143,7 +174,7 @@ func newHarness(t *testing.T) *harness {
 		rt: &fakeRuntime{log: log, containers: map[string]runtime.Replica{}, imageID: "sha256:v1",
 			busy: map[string]int{}},
 		proxy: &fakeProxy{log: log},
-		db:    fakeDB{limits: map[string]int{}},
+		db:    fakeDB{limits: map[string]int{}, tables: &[]string{"wp_options", "wp_posts"}},
 		log:   log,
 	}
 	h.flushed = &[]string{}

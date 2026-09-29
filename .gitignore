@@ -7,3 +7,4 @@
 .idea/
 .vscode/
 /config.dev.json
+release-signing.key

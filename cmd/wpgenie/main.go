@@ -4,6 +4,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,20 +15,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/parthh37/wpgenie/internal/analytics"
 	"github.com/parthh37/wpgenie/internal/api"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/dbprov"
+	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/updater"
 )
 
 var version = "dev" // set by -ldflags at release time
@@ -44,6 +51,24 @@ Usage:
   wpgenie site cache <site-id> [--page on|off] [--object on|off]
                                         toggle the page / object cache
   wpgenie site purge <site-id>          empty the site's caches
+  wpgenie site autoscale <site-id> [--on|--off] [--min N] [--max N] [--target PCT]
+                                        scale replicas with CPU use
+  wpgenie site shield <site-id> [--mode off|standard|under_attack] [--waf on|off]
+                          [--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...]
+  wpgenie site updates <site-id>        list WordPress core/plugin/theme updates
+  wpgenie site update <site-id> [--all] [--core] [--plugins a,b] [--themes c]
+                                        snapshot, update, health-check, roll back on failure
+  wpgenie site auto-update <site-id> off|security|all
+  wpgenie site scan <site-id>           security scan (vulnerabilities, file integrity)
+  wpgenie site smtp <site-id> on|off    send WordPress mail through the mail server
+  wpgenie site events <site-id>         activity log (autoscaling, updates, scans)
+  wpgenie mail enable <hostname> | disable | status
+  wpgenie mail domain add|rm|dns <domain>
+  wpgenie mail box add <address> [--quota MB] | passwd <address> | rm <address> | ls
+  wpgenie mail alias add|rm <alias> <target>
+  wpgenie security bans | unban <ip> | ban <ip> [--hours N]
+  wpgenie update [check|status]         update WPGenie to the latest signed release
+                                        (verified, health-checked, rolled back on failure)
   wpgenie version
 
 Flags:
@@ -73,6 +98,12 @@ func main() {
 		err = serve(cfg)
 	case "site":
 		err = siteCmd(cfg, args[1:])
+	case "update":
+		err = updateCmd(cfg, args[1:])
+	case "mail":
+		err = mailCmd(cfg, args[1:])
+	case "security":
+		err = securityCmd(cfg, args[1:])
 	default:
 		fs.Usage()
 		os.Exit(2)
@@ -106,17 +137,50 @@ func serve(cfg *config.Config) error {
 	}
 	defer db.Close()
 
+	rootDSN, err := mysql.ParseDSN(cfg.MariaDBDSN)
+	if err != nil {
+		return err
+	}
+	// Proves the daemon's own health checks to the shield (per process).
+	tok := make([]byte, 32)
+	if _, err := rand.Read(tok); err != nil {
+		return err
+	}
+	healthToken := hex.EncodeToString(tok)
+	if n, err := st.FailInterruptedUpdates(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		log.Warn("marked updates interrupted by the last shutdown as failed", "count", n)
+	}
 	svc := &site.Service{
 		Cfg: cfg, Store: st, Runtime: &runtime.Docker{}, DB: db, Log: log,
-		// redis_host is also the Valkey container's name (deploy/docker-compose.yml).
-		Cache: &runtime.Valkey{Container: cfg.RedisHost},
+		// Container names equal the hostnames sites use (deploy/docker-compose.yml).
+		Cache:  &runtime.Valkey{Container: cfg.RedisHost},
+		Dumper: &runtime.MariaDB{Container: cfg.MariaDBHost, Password: rootDSN.Passwd},
+		Prober: &site.HTTPProber{Token: healthToken},
+		Vulns:  &site.WPVulnerability{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
 		Proxy: proxy.NewCaddy(proxy.Config{
 			ACMEEmail: cfg.ACMEEmail, AdminURL: cfg.CaddyAdmin, PanelDomain: cfg.PanelDomain,
 			PanelUpstream: cfg.ListenAddr, ShieldUpstream: cfg.ListenAddr,
 			AccessLog: cfg.AccessLog, CaddyfilePath: cfg.CaddyfilePath,
 		}),
 	}
-	sh := shield.New(shield.Options{Secret: []byte(cfg.ShieldSecret), Sites: svc.ShieldLookup, Logger: log})
+	mailSvc := &mail.Service{
+		Cfg: mail.Config{DataDir: filepath.Join(cfg.DataDir, "mail"), CaddyDataDir: cfg.CaddyDataDir,
+			Network: cfg.DockerNetwork, MailImage: cfg.MailImage, WebmailImage: cfg.WebmailImage, WebmailPort: cfg.WebmailPort},
+		Store: st, Docker: &runtime.Docker{}, Sync: svc.Sync, Log: log,
+	}
+	if err := mailSvc.PrepareDirs(); err != nil {
+		return err
+	}
+	if err := mailSvc.Load(ctx); err != nil {
+		return err
+	}
+	svc.Mailer, svc.Webmail = mailSvc, mailSvc.Webmail
+	go mailSvc.Run(ctx)
+
+	sh := shield.New(shield.Options{Secret: []byte(cfg.ShieldSecret), Sites: svc.ShieldLookup, Logger: log,
+		HealthToken: healthToken})
 	go sh.Run(ctx)
 
 	// Caddy may still be starting (both come up at boot); retry the first sync.
@@ -137,13 +201,19 @@ func serve(cfg *config.Config) error {
 	}()
 
 	go svc.RunCron(ctx)
+	go svc.RunAutoscaler(ctx)
+	go svc.RunMaintenance(ctx)
+
+	upd := &updater.Updater{Current: version, Repo: cfg.UpdateRepo, StateDir: filepath.Join(cfg.DataDir, "updates")}
+	go upd.Run(ctx, 12*time.Hour)
 
 	ing := &analytics.Ingester{Path: cfg.AccessLog, Store: st, Secret: []byte(cfg.ShieldSecret), Logger: log}
 	go ing.Run(ctx)
 
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           (&api.Server{Token: cfg.APIToken, Sites: svc, Store: st, Shield: sh, Log: log}).Handler(),
+		Addr: cfg.ListenAddr,
+		Handler: (&api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
+			Updater: upd, Mail: mailSvc, Log: log}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Site creation and scaling run synchronously and can take minutes.
 		WriteTimeout: 5 * time.Minute,
@@ -160,14 +230,19 @@ func serve(cfg *config.Config) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	// Within systemd's default 90 s stop timeout.
+	if !svc.WaitUpdates(time.Minute) {
+		log.Warn("stopping with a WordPress update still running; it will be marked interrupted")
+	}
+	return err
 }
 
 // siteCmd is a thin client of the local API, so the CLI and the dashboard
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge")
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|smtp|events")
 	}
 	switch args[0] {
 	case "ls":
@@ -206,6 +281,12 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return scaleCmd(cfg, args[1:])
 	case "cache":
 		return cacheCmd(cfg, args[1:])
+	case "autoscale":
+		return autoscaleCmd(cfg, args[1:])
+	case "shield":
+		return shieldCmd(cfg, args[1:])
+	case "updates", "update", "auto-update", "scan", "smtp", "events":
+		return siteOpsCmd(cfg, args[0], args[1:])
 	case "purge":
 		if len(args) != 2 {
 			return errors.New("usage: wpgenie site purge <site-id>")
@@ -299,6 +380,10 @@ func (v *onOff) Set(s string) error {
 }
 
 func call(cfg *config.Config, method, path string, body, out any) error {
+	return callCtx(context.Background(), cfg, 5*time.Minute, method, path, body, out)
+}
+
+func callCtx(ctx context.Context, cfg *config.Config, timeout time.Duration, method, path string, body, out any) error {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -307,13 +392,13 @@ func call(cfg *config.Config, method, path string, body, out any) error {
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, "http://"+cfg.ListenAddr+"/api/v1"+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+cfg.ListenAddr+"/api/v1"+path, rd)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		return fmt.Errorf("is the daemon running? %w", err)
 	}
@@ -327,4 +412,72 @@ func call(cfg *config.Config, method, path string, body, out any) error {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func updateCmd(cfg *config.Config, args []string) error {
+	sub := "now"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "now":
+		var out struct{ Version string }
+		if err := call(cfg, "POST", "/system/update", nil, &out); err != nil {
+			return err
+		}
+		fmt.Printf("Installing %s. WPGenie restarts when it is ready; follow with `wpgenie update status`.\n", out.Version)
+		return nil
+	case "check", "status":
+		var in updater.Info
+		method, path := "GET", "/system"
+		if sub == "check" {
+			method, path = "POST", "/system/update/check"
+		}
+		if err := call(cfg, method, path, nil, &in); err != nil {
+			return err
+		}
+		fmt.Printf("Running:  %s\n", in.Current)
+		switch {
+		case in.CheckErr != "":
+			fmt.Printf("Latest:   unknown (%s)\n", in.CheckErr)
+		case in.Latest != nil:
+			fmt.Printf("Latest:   %s (%s)\n", in.Latest.Version, in.Latest.URL)
+		}
+		if in.Available {
+			fmt.Println("An update is available: run `wpgenie update`.")
+		}
+		if !in.Signed {
+			fmt.Println("This build has no release signing key: self-update is disabled.")
+		}
+		if st := in.Status; st != nil {
+			fmt.Printf("Last update: %s → %s: %s (%s)\n", st.From, st.To, st.Phase, st.Message)
+		}
+		return nil
+	case "apply":
+		if len(args) != 2 {
+			return errors.New("usage: wpgenie update apply <staged-dir> (run by systemd, not by hand)")
+		}
+		return applyUpdate(cfg, args[1])
+	}
+	return fmt.Errorf("unknown update command %q", sub)
+}
+
+// applyUpdate is the self-update applier, started by the daemon as a
+// transient systemd unit. It is a copy of the old binary, so version is
+// the version being replaced.
+func applyUpdate(cfg *config.Config, staged string) error {
+	paths := updater.DefaultPaths()
+	paths.StateDir = filepath.Join(cfg.DataDir, "updates")
+	a := &updater.Applier{
+		Staged: staged, From: version, Paths: paths, PHPImage: cfg.PHPImage, Run: updater.ExecRun, Log: os.Stderr,
+		Version: func(ctx context.Context) (string, error) {
+			var out struct{ Version string }
+			err := callCtx(ctx, cfg, 5*time.Second, "GET", "/system/version", nil, &out)
+			return out.Version, err
+		},
+		RollSites: func(ctx context.Context) error {
+			return callCtx(ctx, cfg, 30*time.Second, "POST", "/system/roll-sites", nil, nil)
+		},
+	}
+	return a.Apply(context.Background())
 }

@@ -22,10 +22,29 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -X main.version=$V" -o wpgenie ./cmd/wpgenie
-            tar -czf "dist/wpgenie_${V}_linux_${arch}.tar.gz" wpgenie LICENSE README.md
+            # One signed artifact is a whole update: the binary plus the
+            # compose stack and PHP image sources it expects.
+            tar -czf "dist/wpgenie_${V}_linux_${arch}.tar.gz" wpgenie LICENSE README.md deploy images
             rm wpgenie
           done
           (cd dist && sha256sum *.tar.gz > checksums.txt)
+      - name: sign
+        # Installed WPGenie refuses releases whose checksums.txt doesn't carry
+        # a valid signature from the key in internal/updater/release.pub.
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -eu
+          if [ -z "${RELEASE_SIGNING_KEY}" ]; then
+            echo "::error::RELEASE_SIGNING_KEY secret is not set (see docs/RELEASING.md)"; exit 1
+          fi
+          umask 077
+          printf '%s\n' "${RELEASE_SIGNING_KEY}" > "${RUNNER_TEMP}/release.key"
+          openssl pkeyutl -sign -rawin -inkey "${RUNNER_TEMP}/release.key" -in dist/checksums.txt -out dist/checksums.txt.sig
+          rm -f "${RUNNER_TEMP}/release.key"
+          # Fail the release rather than publish one installs would reject.
+          openssl pkeyutl -verify -pubin -inkey internal/updater/release.pub -rawin \
+            -in dist/checksums.txt -sigfile dist/checksums.txt.sig
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}

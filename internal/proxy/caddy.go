@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
@@ -32,6 +33,9 @@ type Site struct {
 	ShieldEnabled bool
 	BlockXMLRPC   bool
 	PageCache     bool
+	// Proxy, if set, makes this a plain reverse-proxied app (webmail)
+	// instead of a WordPress site: no docroot, PHP or page cache.
+	Proxy string
 }
 
 type Config struct {
@@ -63,10 +67,10 @@ var tmpl = template.Must(template.New("Caddyfile").
 
 func (c *Caddy) Render(sites []Site) ([]byte, error) {
 	for _, s := range sites {
-		if len(s.Upstreams) == 0 {
+		if len(s.Upstreams) == 0 && s.Proxy == "" {
 			return nil, fmt.Errorf("site %s: no PHP-FPM upstreams", s.ID)
 		}
-		for _, u := range s.Upstreams {
+		for _, u := range append(slices.Clone(s.Upstreams), s.Proxy) {
 			if strings.ContainsAny(u, " \t\n{}#\"") {
 				return nil, fmt.Errorf("site %s: unsafe upstream %q", s.ID, u)
 			}

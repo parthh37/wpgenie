@@ -62,6 +62,22 @@ if ( is_file( '/usr/local/share/wpgenie/object-cache.php' ) ) {
 
 // SetCache turns the page cache and object cache on or off.
 func (s *Service) SetCache(ctx context.Context, id string, c CacheSettings) (*store.Site, error) {
+	retire, err := s.setCacheLocked(ctx, id, c)
+	if err != nil {
+		return nil, err
+	}
+	retire()
+	return s.Store.GetSite(ctx, id)
+}
+
+func (s *Service) setCacheLocked(ctx context.Context, id string, c CacheSettings) (func(), error) {
+	// A rollback during an update rewrites the cache wrappers; don't race it.
+	lock := s.maintLock(id)
+	if !lock.TryLock() {
+		return nil, fmt.Errorf("%w: an update or scan is running on this site; try again when it finishes", ErrConflict)
+	}
+	// Released before the caller runs retire, which takes it too.
+	defer lock.Unlock()
 	s.opsMu.Lock()
 	defer s.opsMu.Unlock()
 	st, err := s.Store.GetSite(ctx, id)
@@ -100,10 +116,11 @@ func (s *Service) SetCache(ctx context.Context, id string, c CacheSettings) (*st
 	// Replicas from an image without the cache code would ignore the new
 	// wrappers; roll any that are out of date (a no-op when all are current).
 	st.PageCache, st.ObjectCache = c.PageCache, c.ObjectCache
-	if err := s.reconcile(ctx, st); err != nil {
+	retire, err := s.reconcile(ctx, st)
+	if err != nil {
 		return nil, fmt.Errorf("cache settings saved, but refreshing the site's PHP containers failed: %w", err)
 	}
-	return s.Store.GetSite(ctx, id)
+	return retire, nil
 }
 
 // Purge empties the page cache and this site's object cache keys.

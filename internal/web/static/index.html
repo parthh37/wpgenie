@@ -6,10 +6,17 @@
 <title>WPGenie</title>
 <link rel="stylesheet" href="/style.css">
 <script src="/app.js" defer></script>
+<script src="/panels.js" defer></script>
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="logo">◆</span> WPGenie</div>
+  <nav id="tabs" hidden>
+    <button class="tab active" data-tab="sites">Sites</button>
+    <button class="tab" data-tab="mail">Mail</button>
+    <button class="tab" data-tab="security">Security</button>
+    <button class="tab" data-tab="system">System <span id="update-dot" class="dot" hidden></span></button>
+  </nav>
   <button id="logout" class="ghost" hidden>Sign out</button>
 </header>
 
@@ -23,7 +30,10 @@
     </form>
   </section>
 
-  <section id="app" hidden>
+  <div id="error" class="card error" hidden></div>
+  <div id="creds" class="card notice" hidden></div>
+
+  <section id="app" class="panel" data-panel="sites" hidden>
     <div class="bar">
       <h1>Sites</h1>
       <button id="new-site-btn">New site</button>
@@ -44,10 +54,75 @@
       </div>
     </form>
 
-    <div id="creds" class="card notice" hidden></div>
-    <div id="error" class="card error" hidden></div>
     <div id="sites" class="sites"></div>
     <p id="empty" class="muted center" hidden>No sites yet. Create your first one.</p>
+  </section>
+
+  <section class="panel" data-panel="mail" hidden>
+    <div class="bar"><h1>Mail</h1></div>
+    <div id="mail-status" class="card"></div>
+    <div id="mail-body" hidden>
+      <div class="card">
+        <h2>Domains</h2>
+        <form id="mail-domain-form" class="inline">
+          <input name="domain" placeholder="example.com" required>
+          <button type="submit">Add domain</button>
+        </form>
+        <div id="mail-domains"></div>
+      </div>
+      <div class="card">
+        <h2>Mailboxes</h2>
+        <form id="mailbox-form" class="inline">
+          <input name="address" placeholder="jane@example.com" required>
+          <input name="quota_mb" type="number" min="0" placeholder="Quota MB (0 = unlimited)">
+          <button type="submit">Create mailbox</button>
+        </form>
+        <div id="mailboxes"></div>
+      </div>
+      <div class="card">
+        <h2>Aliases (forwarding)</h2>
+        <form id="alias-form" class="inline">
+          <input name="alias" placeholder="info@example.com" required>
+          <input name="target" placeholder="jane@example.com or any address" required>
+          <button type="submit">Add alias</button>
+        </form>
+        <div id="aliases"></div>
+      </div>
+      <div class="card">
+        <h2>Outbound relay</h2>
+        <p class="muted small">Many clouds block outbound port 25. Relay through a provider (Amazon SES, Postmark, Mailgun, …) for delivery and reputation.</p>
+        <form id="relay-form" class="grid">
+          <label>SMTP host<input name="host" placeholder="email-smtp.eu-west-1.amazonaws.com"></label>
+          <label>Port<input name="port" type="number" placeholder="587"></label>
+          <label>Username<input name="user" autocomplete="off"></label>
+          <label>Password<input name="password" type="password" autocomplete="new-password" placeholder="unchanged if empty"></label>
+          <div class="actions"><button type="button" class="ghost" id="relay-clear">Remove relay</button><button type="submit">Save relay</button></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="security" hidden>
+    <div class="bar"><h1>Security</h1></div>
+    <div class="card">
+      <h2>Banned addresses</h2>
+      <p class="muted small">Clients that send attacks (SQL injection, scanners, brute force) are banned on every site automatically: 1 hour, doubling for repeat offenders.</p>
+      <form id="ban-form" class="inline">
+        <input name="addr" placeholder="IP address" required>
+        <input name="hours" type="number" min="1" placeholder="Hours (default 24)">
+        <button type="submit">Ban</button>
+      </form>
+      <div id="bans"></div>
+    </div>
+    <div class="card">
+      <h2>Recent blocks</h2>
+      <div id="sec-events"></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="system" hidden>
+    <div class="bar"><h1>System</h1></div>
+    <div id="system" class="card"></div>
   </section>
 </main>
 
@@ -66,6 +141,7 @@
       <div><dt>Bandwidth</dt><dd data-k="bytes_out">–</dd></div>
       <div><dt>Blocked</dt><dd data-k="blocked">–</dd></div>
       <div><dt>Bot hits</dt><dd data-k="bot_hits">–</dd></div>
+      <div class="cpu"><dt>CPU now</dt><dd data-k="cpu">–</dd></div>
     </dl>
     <div class="controls">
       <label>Shield
@@ -88,10 +164,51 @@
       </div>
       <p class="muted small">Replicas are rolled one set at a time with no downtime. Each replica gets the full memory and CPU shown.</p>
       <div class="controls">
+        <label class="check"><input type="checkbox" class="autoscale"> Autoscale on CPU</label>
+        <label>Min<input type="number" class="as-min" min="1"></label>
+        <label>Max<input type="number" class="as-max" min="1"></label>
+        <label>Target CPU %<input type="number" class="as-target" min="20" max="95"></label>
+        <button class="ghost as-save">Save autoscaling</button>
+      </div>
+      <p class="muted small cpu-line"></p>
+      <div class="controls">
         <label class="check"><input type="checkbox" class="page-cache"> Page cache</label>
         <label class="check"><input type="checkbox" class="object-cache"> Object cache (Redis)</label>
         <button class="ghost purge">Purge cache</button>
       </div>
+    </details>
+    <details class="perf sec">
+      <summary>Security <span class="muted small sec-summary"></span></summary>
+      <div class="controls">
+        <label class="check"><input type="checkbox" class="waf"> Web application firewall</label>
+      </div>
+      <div class="grid">
+        <label>Admin allowlist <span class="muted">(only these IPs/CIDRs reach wp-admin; empty = anyone)</span><input class="admin-allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
+        <label>Trusted IPs <span class="muted">(bypass the shield: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
+      </div>
+      <div class="actions"><button class="ghost sec-save">Save security</button><button class="scan">Scan now</button></div>
+      <div class="scan-report"></div>
+    </details>
+    <details class="perf upd">
+      <summary>Updates <span class="muted small upd-summary"></span></summary>
+      <div class="controls">
+        <label>Automatic updates
+          <select class="auto-update">
+            <option value="off">Off</option>
+            <option value="security">Security fixes only</option>
+            <option value="all">Everything</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" class="smtp"> Send WordPress mail through the mail server</label>
+        <button class="ghost check-updates">Check for updates</button>
+      </div>
+      <p class="muted small">Every update takes a snapshot first; if the site stops working afterwards it is restored automatically.</p>
+      <div class="upd-list"></div>
+      <div class="upd-history"></div>
+    </details>
+    <details class="perf log">
+      <summary>Activity</summary>
+      <div class="events"></div>
     </details>
   </article>
 </template>

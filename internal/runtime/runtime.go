@@ -76,9 +76,17 @@ type Runtime interface {
 	// WP runs a WP-CLI command inside a running replica. stdin may be nil;
 	// use it (with --prompt) for secrets so they never appear in argv.
 	WP(ctx context.Context, id string, stdin io.Reader, args ...string) ([]byte, error)
+	// Exec runs a command as the site user in a running replica, streaming
+	// stdin (may be nil) in and stdout out. Stderr ends up in the error. Use
+	// WPArgs to run WP-CLI this way (e.g. for JSON output that warnings on
+	// stderr must not corrupt).
+	Exec(ctx context.Context, id string, stdin io.Reader, stdout io.Writer, args ...string) error
 	// RunCron runs WordPress's due cron events in a running replica, under
 	// the same PHP jail as web requests.
 	RunCron(ctx context.Context, spec SiteSpec) ([]byte, error)
+	// CPUUsage samples every running site replica's CPU use, keyed by
+	// container name, in percent of one core (200 = two cores busy).
+	CPUUsage(ctx context.Context) (map[string]float64, error)
 }
 
 func ContainerName(id string, port int) string { return "wpg-" + id + "-" + strconv.Itoa(port) }
@@ -94,6 +102,39 @@ func (d *Docker) bin() string {
 		return "docker"
 	}
 	return d.Bin
+}
+
+// Run runs any docker command and returns its combined output. For
+// components managed outside the site Runtime (the mail stack).
+func (d *Docker) Run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
+	return d.run(ctx, stdin, args...)
+}
+
+// stream runs docker with stdout going to w; stderr (bounded) goes into
+// the error. For large outputs (snapshots) that must not sit in memory.
+func (d *Docker) stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	cmd := exec.CommandContext(ctx, d.bin(), args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = w
+	stderr := &capped{max: 8 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// capped keeps the first max bytes written to it.
+type capped struct {
+	bytes.Buffer
+	max int
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if room := c.max - c.Len(); room > 0 {
+		c.Buffer.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }
 
 func (d *Docker) run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
@@ -288,20 +329,41 @@ func (d *Docker) WP(ctx context.Context, id string, stdin io.Reader, args ...str
 	if err != nil {
 		return nil, err
 	}
-	// Plugins and themes are not loaded: a compromised plugin must not be
-	// able to hijack maintenance commands run by the panel.
 	full := []string{"exec"}
 	if stdin != nil {
 		full = append(full, "-i")
 	}
-	full = append(full, name, "wp", "--skip-themes", "--skip-plugins")
-	out, err := d.run(ctx, stdin, append(full, args...)...)
+	full = append(full, name)
+	out, err := d.run(ctx, stdin, append(full, WPArgs(args...)...)...)
 	if err != nil && stdin != nil {
 		// `wp --prompt` echoes the values it read (i.e. the secret) back to
 		// stdout. Never let that reach error messages, logs or API responses.
 		return nil, fmt.Errorf("wp %s failed: %s", args[0], errorLines(out))
 	}
 	return out, err
+}
+
+// WPArgs is the command line for WP-CLI as the panel runs it. Plugins and
+// themes are not loaded: a compromised plugin must not be able to hijack
+// maintenance commands run by the panel.
+func WPArgs(args ...string) []string {
+	return append([]string{"wp", "--skip-themes", "--skip-plugins"}, args...)
+}
+
+func (d *Docker) Exec(ctx context.Context, id string, stdin io.Reader, stdout io.Writer, args ...string) error {
+	name, err := d.running(ctx, id)
+	if err != nil {
+		return err
+	}
+	full := []string{"exec"}
+	if stdin != nil {
+		full = append(full, "-i")
+	}
+	full = append(full, name)
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	return d.stream(ctx, stdin, stdout, append(full, args...)...)
 }
 
 const (
@@ -335,6 +397,35 @@ func (d *Docker) RunCron(ctx context.Context, s SiteSpec) ([]byte, error) {
 		return nil, ErrNoJail
 	}
 	return out, err
+}
+
+// CPUUsage asks the daemon for one stats sample of every running container
+// (it measures over about a second) and keeps the site replicas. Listing
+// all containers rather than naming them means a replica stopping between
+// the listing and the sample can't fail the whole call.
+func (d *Docker) CPUUsage(ctx context.Context) (map[string]float64, error) {
+	out, err := d.run(ctx, nil, "stats", "--no-stream", "--format", "{{.Name}}|{{.CPUPerc}}")
+	if err != nil {
+		return nil, err
+	}
+	return parseCPUStats(out), nil
+}
+
+func parseCPUStats(out []byte) map[string]float64 {
+	usage := map[string]float64{}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, perc, ok := strings.Cut(strings.TrimSpace(line), "|")
+		if !ok || !strings.HasPrefix(name, "wpg-") {
+			continue
+		}
+		// "--" while a container is starting: no sample yet, not zero.
+		v, err := strconv.ParseFloat(strings.TrimSuffix(perc, "%"), 64)
+		if err != nil {
+			continue
+		}
+		usage[name] = v
+	}
+	return usage
 }
 
 // errorLines keeps only WP-CLI's "Error:" lines from combined output.
