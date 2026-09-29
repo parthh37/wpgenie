@@ -64,15 +64,17 @@ function table(headers, rows) {
 const status = (s) => h('span', { class: 'st-' + s }, s.replace(/_/g, ' '));
 const splitList = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
 
+// showError shows a failure as a toast that stays until it's dismissed;
+// showError(null) clears them (switching tabs does). toast() is in ux.js.
 function showError(err) {
-  const box = $('#error');
-  box.textContent = err ? String(err.message || err) : '';
-  box.hidden = !err;
+  if (err) toast(String(err.message || err), 'error');
+  else clearToasts('error');
 }
 
 // hideApp shows one of the signed-out screens.
 function hideApp(screen) {
   ME = null;
+  document.body.classList.remove('authed');
   document.querySelectorAll('.panel').forEach((p) => { p.hidden = true; });
   $('#tabs').hidden = true;
   $('#who').hidden = true;
@@ -99,7 +101,6 @@ function openTab(name) {
 }
 
 async function load() {
-  showError(null);
   await loadNodes();
   const sites = await api('GET', '/sites');
   SITES = new Map(sites.map((x) => [x.id, x]));
@@ -111,6 +112,7 @@ async function load() {
     if (open.has(d.closest('[data-id]').dataset.id + '|' + d.className)) d.open = true; // fires 'toggle' itself
   });
   $('#empty').hidden = sites.length > 0;
+  afterSitesRender();
   sites.filter((s) => s.status === 'active').forEach(loadStats);
 }
 
@@ -153,11 +155,18 @@ function renderSite(site) {
   log.addEventListener('toggle', () => { if (log.open) loadEvents(el, site); });
 
   $('.delete', el).addEventListener('click', async () => {
-    const typed = prompt(`This permanently deletes ${site.primary_domain}, its files and database ` +
-      `(its backups stay in their destinations and can be restored as a new site).\nType the domain to confirm:`);
+    const typed = await askText(`This permanently deletes ${site.primary_domain}, its files and database ` +
+      '(its backups stay in their destinations and can be restored as a new site).',
+    { title: `Delete ${site.primary_domain}?`, label: 'Type the domain to confirm', match: site.primary_domain, ok: 'Delete site' });
     if (typed !== site.primary_domain) return;
-    try { await api('DELETE', `/sites/${site.id}`); await load(); } catch (e) { showError(e); }
+    try {
+      await api('DELETE', `/sites/${site.id}`);
+      notify(`${site.primary_domain} deleted`);
+      focusSite(null);
+      await load();
+    } catch (e) { showError(e); }
   });
+  decorateSite(el, site);
   return el;
 }
 
@@ -236,7 +245,7 @@ function renderPerf(el, site) {
   const purge = $('.purge', el);
   purge.addEventListener('click', async () => {
     purge.disabled = true;
-    try { await api('POST', `/sites/${site.id}/cache/purge`); purge.textContent = 'Purged ✓'; }
+    try { await api('POST', `/sites/${site.id}/cache/purge`); purge.textContent = 'Purged ✓'; notify(`Cache purged on ${site.primary_domain}`); }
     catch (e) { showError(e); }
     finally { setTimeout(() => { purge.disabled = false; purge.textContent = 'Purge cache'; }, 1500); }
   });
@@ -324,7 +333,7 @@ function renderCDN(el, site) {
     const msg = current.provider === 'cloudflare'
       ? 'Stop purging Cloudflare\'s cache for this site? The stored API token is deleted (and the edge cache rule removed). Cloudflare keeps serving the site.'
       : 'Stop using the CDN? Static files are served from this server again; stored keys are deleted.';
-    if (!confirm(msg)) return;
+    if (!await ask(msg)) return;
     try { show(await api('PUT', `/sites/${site.id}/cdn`, { provider: '' })); } catch (e) { showError(e); }
   });
 }
@@ -340,6 +349,7 @@ async function loadStats(site) {
     set('bytes_out', fmtBytes(s.totals.bytes_out));
     set('blocked', fmtNum(s.totals.blocked));
     set('bot_hits', fmtNum(s.totals.bot_hits));
+    siteStatsLoaded(site.id, s, el);
   } catch (e) { /* stats are best-effort */ }
   loadCPU(site);
 }
@@ -380,6 +390,7 @@ function renderAutoscale(el, site) {
         enabled: on.checked, min_replicas: Number(min.value), max_replicas: Number(max.value), target_cpu: Number(target.value),
         target_workers: Number(workers.value || 0), target_response_ms: Number(ms.value || 0),
       });
+      notify(on.checked ? `Autoscaling ${min.value}–${max.value} replicas` : 'Autoscaling off');
       await load();
     } catch (e) { showError(e); save.disabled = false; }
   });
@@ -420,6 +431,7 @@ function renderSecurity(el, site) {
         rate_rps: Number(f('rate').value || 0), rate_burst: Number(f('burst').value || 0),
         login_per_min: Number(f('login-rate').value || 0), challenge_bits: Number(f('difficulty').value || 0),
       });
+      notify(`Security settings saved for ${site.primary_domain}`);
       await load();
     } catch (e) { showError(e); save.disabled = false; }
   });
@@ -635,7 +647,7 @@ function init() {
     } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
   $('#logout').addEventListener('click', signOut);
-  $('#new-site-btn').addEventListener('click', () => { $('#new-site').hidden = false; });
+  $('#new-site-btn').addEventListener('click', () => { $('#new-site').hidden = false; $('#new-site').domain.focus(); });
   $('#cancel-new').addEventListener('click', () => { $('#new-site').hidden = true; });
   $('#new-site').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -648,6 +660,7 @@ function init() {
       const res = await api('POST', '/sites', body);
       form.reset();
       form.hidden = true;
+      notify(`Creating ${res.site.primary_domain}: progress is in the jobs panel`);
       followJob(res.job_id, async (v) => {
         if (v.secret) showCredentials(res.site, v.secret, res.job_id);
         else if (v.job.status === 'failed') showError(new Error(`Creating ${res.site.primary_domain} failed: ${v.job.error}`));
@@ -674,11 +687,13 @@ async function start() {
 // requires two-factor authentication they haven't set up.
 function signedIn(user, require2fa) {
   ME = user;
+  document.body.classList.add('authed');
   $('#login').hidden = true;
   $('#setup').hidden = true;
   $('#tabs').hidden = false;
   $('#who').hidden = false;
-  $('#me-tab').textContent = `${user.username} · ${user.role}`;
+  $('#me-tab').replaceChildren(h('span', { class: 'avatar', 'aria-hidden': 'true' }, user.username.slice(0, 1).toUpperCase()),
+    h('span', { class: 'me-text' }, h('strong', {}, user.username), h('span', { class: 'muted small' }, user.role)));
   document.body.classList.toggle('is-admin', isAdmin());
   // Users of customer and reseller accounts get a reduced navigation.
   const tenant = isTenant();
@@ -686,7 +701,7 @@ function signedIn(user, require2fa) {
   document.body.classList.toggle('is-reseller', user.role === 'reseller');
   document.body.classList.toggle('is-staff', !tenant);
   if (require2fa && !user.totp_enabled) { openTab('account'); return; }
-  openTab('sites');
+  applyRoute();
   if (!tenant && typeof checkSystem === 'function') checkSystem();
   if (typeof pollJobs === 'function') pollJobs();
 }

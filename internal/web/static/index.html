@@ -4,8 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WPGenie</title>
+<meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 <script src="/app.js" defer></script>
+<script src="/ux.js" defer></script>
 <script src="/panels.js" defer></script>
 <script src="/environments.js" defer></script>
 <script src="/insights.js" defer></script>
@@ -15,61 +18,142 @@
 <script src="/accounts.js" defer></script>
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="logo">◆</span> WPGenie</div>
+<a class="skip" href="#main">Skip to content</a>
+<!-- Icons (Lucide, ISC licence), referenced with <svg class="i"><use href="#i-…"/></svg>. -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M12 2.5l2.2 6.3 6.3 2.2-6.3 2.2L12 19.5l-2.2-6.3L3.5 11l6.3-2.2z"/><path d="M19 17.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/></symbol>
+  <symbol id="i-building" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M12 6h.01M12 10h.01M12 14h.01M16 10h.01M16 14h.01M8 10h.01M8 14h.01"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="i-card" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
+  <symbol id="i-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></symbol>
+</svg>
+
+<aside class="side" id="side" aria-label="Navigation">
+  <div class="brand"><span class="logo"><svg class="i"><use href="#i-logo"/></svg></span> WPGenie</div>
+  <button type="button" class="search-trigger" id="palette-open">
+    <svg class="i"><use href="#i-search"/></svg><span>Search or jump to…</span><kbd class="kbd-mod">⌘K</kbd>
+  </button>
   <nav id="tabs" hidden>
-    <button class="tab active" data-tab="sites">Sites</button>
-    <button class="tab staff-only" data-tab="backups">Backups</button>
-    <button class="tab staff-only" data-tab="mail">Mail</button>
-    <button class="tab staff-only" data-tab="security">Security</button>
-    <button class="tab staff-only" data-tab="servers">Servers</button>
-    <button class="tab accounts-tab" data-tab="accounts">Accounts</button>
-    <button class="tab staff-only" data-tab="plans">Plans</button>
-    <button class="tab admin-only" data-tab="billing">Billing</button>
-    <button class="tab staff-only" data-tab="monitoring">Monitoring <span id="alert-dot" class="dot bad" hidden></span></button>
-    <button class="tab admin-only" data-tab="users">Users</button>
-    <button class="tab staff-only" data-tab="system">System <span id="update-dot" class="dot" hidden></span></button>
+    <div class="nav-group">
+      <button class="tab active" data-tab="sites"><svg class="i"><use href="#i-globe"/></svg>Sites</button>
+    </div>
+    <div class="nav-group staff-only">
+      <p class="nav-label">Operate</p>
+      <button class="tab staff-only" data-tab="backups"><svg class="i"><use href="#i-archive"/></svg>Backups</button>
+      <button class="tab staff-only" data-tab="mail"><svg class="i"><use href="#i-mail"/></svg>Mail</button>
+      <button class="tab staff-only" data-tab="security"><svg class="i"><use href="#i-shield"/></svg>Security</button>
+      <button class="tab staff-only" data-tab="monitoring"><svg class="i"><use href="#i-activity"/></svg>Monitoring <span id="alert-dot" class="dot bad" hidden><span class="sr-only">(alerts firing)</span></span></button>
+    </div>
+    <div class="nav-group accounts-tab">
+      <p class="nav-label">Business</p>
+      <button class="tab accounts-tab" data-tab="accounts"><svg class="i"><use href="#i-building"/></svg>Accounts</button>
+      <button class="tab staff-only" data-tab="plans"><svg class="i"><use href="#i-layers"/></svg>Plans</button>
+      <button class="tab admin-only" data-tab="billing"><svg class="i"><use href="#i-card"/></svg>Billing</button>
+    </div>
+    <div class="nav-group staff-only">
+      <p class="nav-label">Infrastructure</p>
+      <button class="tab staff-only" data-tab="servers"><svg class="i"><use href="#i-server"/></svg>Servers</button>
+      <button class="tab admin-only" data-tab="users"><svg class="i"><use href="#i-users"/></svg>Users</button>
+      <button class="tab staff-only" data-tab="system"><svg class="i"><use href="#i-sliders"/></svg>System <span id="update-dot" class="dot" hidden><span class="sr-only">(update available)</span></span></button>
+    </div>
   </nav>
   <div class="who" id="who" hidden>
-    <button class="tab" data-tab="account" id="me-tab"></button>
-    <button id="logout" class="ghost">Sign out</button>
+    <button class="tab me" data-tab="account" id="me-tab"></button>
+    <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch to light theme" title="Switch theme">
+      <svg class="i theme-dark"><use href="#i-sun"/></svg><svg class="i theme-light"><use href="#i-moon"/></svg></button>
+    <button type="button" id="logout" class="icon-btn" aria-label="Sign out" title="Sign out"><svg class="i"><use href="#i-logout"/></svg></button>
   </div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<header class="mobile-top">
+  <button type="button" class="icon-btn" id="nav-open" aria-label="Open navigation" aria-controls="side" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
+  <div class="brand"><span class="logo"><svg class="i"><use href="#i-logo"/></svg></span> WPGenie</div>
+  <button type="button" class="icon-btn" id="palette-open-m" aria-label="Search"><svg class="i"><use href="#i-search"/></svg></button>
 </header>
 
-<main>
-  <section id="login" class="card narrow" hidden>
-    <h1>Sign in</h1>
-    <form id="login-form">
-      <label>Username<input name="username" autocomplete="username" required></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-      <label class="code-step" hidden>Code from your authenticator app (or a recovery code)
-        <input name="code" autocomplete="one-time-code" inputmode="numeric"></label>
-      <button type="submit">Sign in</button>
-    </form>
-    <p id="login-error" class="st-failed small" hidden></p>
+<main id="main" tabindex="-1">
+  <section id="login" class="auth" hidden>
+    <div class="auth-card">
+      <div class="brand"><span class="logo"><svg class="i"><use href="#i-logo"/></svg></span> WPGenie</div>
+      <h1>Sign in</h1>
+      <p class="muted">Manage your sites, backups and security.</p>
+      <form id="login-form">
+        <label>Username<input name="username" autocomplete="username" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <label class="code-step" hidden>Code from your authenticator app (or a recovery code)
+          <input name="code" autocomplete="one-time-code" inputmode="numeric"></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="login-error" class="st-failed small" role="alert" hidden></p>
+    </div>
+    <ul class="auth-aside" aria-label="What WPGenie does">
+      <li><svg class="i"><use href="#i-box"/></svg><div><strong>Every site in its own container</strong><span>Unprivileged, read-only PHP with automatic HTTPS.</span></div></li>
+      <li><svg class="i"><use href="#i-shield"/></svg><div><strong>A shield in front of WordPress</strong><span>Bot and AI-crawler blocking, WAF, and a CAPTCHA with no third party.</span></div></li>
+      <li><svg class="i"><use href="#i-archive"/></svg><div><strong>Backups you can trust</strong><span>Encrypted, deduplicated, restored in one click.</span></div></li>
+      <li><svg class="i"><use href="#i-lock"/></svg><div><strong>Yours, on your server</strong><span>Visitor data never leaves it.</span></div></li>
+    </ul>
   </section>
 
-  <section id="setup" class="card narrow" hidden>
-    <h1>Welcome to WPGenie</h1>
-    <p class="muted">Create the first administrator. To prove you own this server, paste the API token the installer printed
-      (it is in <code>/etc/wpgenie/config.json</code>).</p>
-    <form id="setup-form">
-      <label>API token<input name="token" type="password" autocomplete="off" required></label>
-      <label>Username<input name="username" autocomplete="username" required></label>
-      <label>Password <span class="muted">(12+ characters)</span><input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
-      <button type="submit">Create account</button>
-    </form>
-    <p id="setup-error" class="st-failed small" hidden></p>
+  <section id="setup" class="auth" hidden>
+    <div class="auth-card">
+      <div class="brand"><span class="logo"><svg class="i"><use href="#i-logo"/></svg></span> WPGenie</div>
+      <h1>Welcome to WPGenie</h1>
+      <p class="muted">Create the first administrator. To prove you own this server, paste the API token the installer printed
+        (it is in <code>/etc/wpgenie/config.json</code>).</p>
+      <form id="setup-form">
+        <label>API token<input name="token" type="password" autocomplete="off" required></label>
+        <label>Username<input name="username" autocomplete="username" required></label>
+        <label>Password <span class="muted">(12+ characters)</span><input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+        <button type="submit">Create account</button>
+      </form>
+      <p id="setup-error" class="st-failed small" role="alert" hidden></p>
+    </div>
   </section>
 
-  <div id="error" class="card error" hidden></div>
   <div id="creds" class="card notice" hidden></div>
-  <div id="jobs" class="card jobs" hidden></div>
 
   <section id="app" class="panel" data-panel="sites" hidden>
     <div class="bar">
-      <h1>Sites</h1>
-      <button id="new-site-btn" class="can-create">New site</button>
+      <div>
+        <h1>Sites</h1>
+        <p class="muted small bar-sub" id="fleet-sub"></p>
+      </div>
+      <div class="bar-actions">
+        <label class="filter"><svg class="i"><use href="#i-search"/></svg>
+          <input type="search" id="site-filter" placeholder="Filter sites" aria-label="Filter sites" autocomplete="off"></label>
+        <button id="new-site-btn" class="can-create"><svg class="i"><use href="#i-plus"/></svg>New site</button>
+      </div>
+    </div>
+
+    <div class="fleet" id="fleet" hidden>
+      <div class="tile"><span class="tile-k">Live sites</span><span class="tile-v" data-f="live">–</span><span class="tile-s" data-f="live-sub"></span></div>
+      <div class="tile tile-wide"><span class="tile-k">Page views · 24 h</span><span class="tile-v" data-f="views">–</span><span class="tile-chart" data-f="chart"></span></div>
+      <div class="tile"><span class="tile-k">Visitors · 24 h</span><span class="tile-v" data-f="visitors">–</span><span class="tile-s" data-f="bandwidth"></span></div>
+      <div class="tile tile-shield"><span class="tile-k">Threats blocked · 24 h</span><span class="tile-v" data-f="blocked">–</span><span class="tile-s" data-f="attack"></span></div>
     </div>
 
     <form id="new-site" class="card" hidden>
@@ -89,7 +173,13 @@
     </form>
 
     <div id="sites" class="sites"></div>
-    <p id="empty" class="muted center" hidden>No sites yet. Create your first one.</p>
+    <p id="no-match" class="muted center" hidden>No sites match the filter.</p>
+    <div id="empty" class="empty" hidden>
+      <span class="empty-icon"><svg class="i"><use href="#i-globe"/></svg></span>
+      <h2>No sites yet</h2>
+      <p class="muted">A site is ready in about a minute: WordPress, HTTPS, the shield and nightly backups included.</p>
+      <button type="button" class="can-create" id="empty-new"><svg class="i"><use href="#i-plus"/></svg>Create your first site</button>
+    </div>
   </section>
 
   <section class="panel" data-panel="backups" hidden>
@@ -449,31 +539,52 @@
 
 <template id="site-tpl">
   <article class="card site">
+    <button type="button" class="ghost back"><svg class="i"><use href="#i-back"/></svg>All sites</button>
     <div class="site-head">
-      <div>
-        <a class="domain" target="_blank" rel="noopener"></a>
-        <div class="muted small id"></div>
+      <div class="site-title">
+        <span class="health" aria-hidden="true"></span>
+        <div>
+          <a class="domain" target="_blank" rel="noopener"></a>
+          <div class="muted small id"></div>
+        </div>
       </div>
-      <span class="pill status"></span>
+      <div class="site-badges">
+        <span class="chip shield-chip"></span>
+        <span class="pill status"></span>
+      </div>
+      <div class="site-links">
+        <a class="button ghost visit" target="_blank" rel="noopener"><svg class="i"><use href="#i-external"/></svg>Visit</a>
+        <a class="button ghost wp-admin" target="_blank" rel="noopener"><svg class="i"><use href="#i-dashboard"/></svg>WP Admin</a>
+      </div>
     </div>
-    <dl class="stats">
-      <div><dt>Visitors 24h</dt><dd data-k="visitors">–</dd></div>
-      <div><dt>Page views</dt><dd data-k="page_views">–</dd></div>
-      <div><dt>Bandwidth</dt><dd data-k="bytes_out">–</dd></div>
-      <div><dt>Blocked</dt><dd data-k="blocked">–</dd></div>
-      <div><dt>Bot hits</dt><dd data-k="bot_hits">–</dd></div>
-      <div class="cpu"><dt>CPU now</dt><dd data-k="cpu">–</dd></div>
-    </dl>
-    <div class="controls">
-      <label>Shield
-        <select class="mode">
-          <option value="off">Off</option>
-          <option value="standard">Standard</option>
-          <option value="under_attack">Under attack</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
-      <button class="danger ghost delete can-create">Delete</button>
+    <button type="button" class="ghost open">Manage<svg class="i"><use href="#i-chevron"/></svg></button>
+    <nav class="site-rail" aria-label="Site sections"></nav>
+    <div class="site-body">
+    <div class="overview">
+      <dl class="stats">
+        <div><dt>Visitors 24h</dt><dd data-k="visitors">–</dd></div>
+        <div><dt>Page views</dt><dd data-k="page_views">–</dd></div>
+        <div><dt>Bandwidth</dt><dd data-k="bytes_out">–</dd></div>
+        <div><dt>Blocked</dt><dd data-k="blocked">–</dd></div>
+        <div><dt>Bot hits</dt><dd data-k="bot_hits">–</dd></div>
+        <div class="cpu"><dt>CPU now</dt><dd data-k="cpu">–</dd></div>
+      </dl>
+      <div class="spark"></div>
+      <div class="ov-controls">
+        <h2>Protection</h2>
+        <div class="controls">
+          <label>Shield
+            <select class="mode">
+              <option value="off">Off</option>
+              <option value="standard">Standard</option>
+              <option value="under_attack">Under attack</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
+          <button class="danger ghost delete can-create">Delete site</button>
+        </div>
+        <p class="muted small"><em>Under attack</em> challenges every visitor with a proof-of-work page a browser solves in about a second; scripts can't.</p>
+      </div>
     </div>
     <details class="perf">
       <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
@@ -720,7 +831,38 @@
       <summary>Activity</summary>
       <div class="events"></div>
     </details>
+    </div>
   </article>
 </template>
+
+<!-- Background jobs and notifications float over the page, so they're seen wherever you are. -->
+<div class="dock">
+  <div id="jobs" class="card jobs" role="region" aria-label="Background jobs" hidden></div>
+  <div id="toasts" class="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
+</div>
+
+<dialog id="ask" class="modal" aria-labelledby="ask-title">
+  <form method="dialog">
+    <h2 id="ask-title"></h2>
+    <div class="ask-body"></div>
+    <label class="ask-field" hidden><span class="ask-label"></span><input autocomplete="off" spellcheck="false"></label>
+    <label class="check ask-check" hidden><input type="checkbox"><span></span></label>
+    <div class="actions">
+      <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
+      <button type="submit" value="ok" class="ask-ok">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="palette" class="palette" aria-label="Search and commands">
+  <div class="palette-input">
+    <svg class="i"><use href="#i-search"/></svg>
+    <input type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list"
+      placeholder="Search sites, pages and actions…" autocomplete="off" spellcheck="false">
+    <kbd>esc</kbd>
+  </div>
+  <ul id="palette-list" role="listbox" aria-label="Results"></ul>
+  <p class="palette-foot muted small"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>↵</kbd> to open · type a domain then a section, e.g. <em>north back</em></p>
+</dialog>
 </body>
 </html>

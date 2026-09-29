@@ -20,7 +20,7 @@ function renderInsights(el, site) {
   hours.addEventListener('change', load);
   refresh.addEventListener('click', load);
   clear.addEventListener('click', async () => {
-    if (!confirm('Forget this site\'s PHP errors? New ones are collected from now on.')) return;
+    if (!await ask('Forget this site\'s PHP errors? New ones are collected from now on.')) return;
     try { await api('DELETE', `/sites/${site.id}/insights/errors`); await load(); } catch (e) { showError(e); }
   });
 }

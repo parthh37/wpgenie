@@ -63,7 +63,7 @@ function webhookRow(w = {}) {
 function showMetricsToken(info) {
   const rotate = h('button', { class: 'ghost' }, info.set ? 'Replace token' : 'Create token');
   rotate.addEventListener('click', async () => {
-    if (info.set && !confirm('Replace the scrape token? Prometheus stops getting metrics until it has the new one.')) return;
+    if (info.set && !await ask('Replace the scrape token? Prometheus stops getting metrics until it has the new one.')) return;
     try {
       const r = await api('POST', '/monitoring/metrics-token');
       showSecret('Prometheus scrape token', [r.token]);

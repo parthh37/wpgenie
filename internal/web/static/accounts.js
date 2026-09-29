@@ -49,7 +49,7 @@ async function loadTokens() {
   $('#account-tokens').replaceChildren(table(['Name', 'Token', 'Created', 'Expires', 'Last used', ''], list.map((t) => {
     const del = h('button', { class: 'ghost danger' }, 'Revoke');
     del.addEventListener('click', async () => {
-      if (!confirm(`Revoke the token "${t.name}"? Anything using it stops working at once.`)) return;
+      if (!await ask(`Revoke the token "${t.name}"? Anything using it stops working at once.`)) return;
       try { await api('DELETE', `/account/tokens/${t.id}`); await loadTokens(); } catch (e) { showError(e); }
     });
     return [t.name, h('td', {}, h('code', {}, t.hint)), fmtTime(t.created_at), t.expires_at ? fmtTime(t.expires_at) : 'never',
@@ -160,22 +160,24 @@ async function showAccountDetail(id) {
   if (canManage) {
     if (a.status === 'active') {
       actions.push(act('Suspend', async () => {
-        if (!confirm(`Suspend ${a.name}? Its sites show a "temporarily unavailable" page until it is unsuspended; nothing is deleted.`)) throw new Error('Cancelled');
+        if (!await ask(`Suspend ${a.name}? Its sites show a "temporarily unavailable" page until it is unsuspended; nothing is deleted.`)) throw new Error('Cancelled');
         await api('POST', `/accounts/${id}/suspend`, {});
       }, 'ghost danger'));
     } else if (a.status === 'suspended' || isAdmin()) {
       actions.push(act(a.status === 'terminated' ? 'Reactivate' : 'Unsuspend', () => api('POST', `/accounts/${id}/unsuspend`)));
     }
     actions.push(act('Terminate…', async () => {
-      const del = confirm(`Terminate ${a.name}: its users can no longer sign in and its sites are suspended.\n\n` +
-        'OK also DELETES its sites (files and databases; their backups stay). Cancel keeps them.');
-      const typed = prompt(`Type the account's ID (${id}) to terminate it${del ? ' and delete its sites' : ''}:`);
-      if (typed !== String(id)) throw new Error('Cancelled');
+      const res = await askText(`Its users can no longer sign in and its sites are suspended.`, {
+        title: `Terminate ${a.name}?`, label: `Type the account's ID (${id}) to confirm`, match: String(id), ok: 'Terminate',
+        check: 'Also delete its sites (files and databases; their backups stay)',
+      });
+      if (!res || res.value !== String(id)) throw new Error('Cancelled');
+      const typed = res.value, del = res.checked;
       await api('POST', `/accounts/${id}/terminate`, { confirm: typed, delete_sites: del });
     }, 'ghost danger'));
     if (isAdmin() && a.status === 'terminated') {
       actions.push(act('Delete account', async () => {
-        if (!confirm(`Delete ${a.name} and its users for good?`)) throw new Error('Cancelled');
+        if (!await ask(`Delete ${a.name} and its users for good?`)) throw new Error('Cancelled');
         await api('DELETE', `/accounts/${id}`);
         box.replaceChildren();
       }, 'ghost danger'));
@@ -247,7 +249,7 @@ async function loadPlans() {
     edit.addEventListener('click', () => fillPlanForm(p));
     const del = h('button', { class: 'ghost danger admin-only' }, 'Delete');
     del.addEventListener('click', async () => {
-      if (!confirm(`Delete plan ${p.id}?`)) return;
+      if (!await ask(`Delete plan ${p.id}?`)) return;
       try { await api('DELETE', `/plans/${encodeURIComponent(p.id)}`); await loadPlans(); } catch (e) { showError(e); }
     });
     return [p.id, p.name, h('td', { class: 'small' }, planSummary(p)), p.overage, p.resellable ? 'yes' : 'no', h('td', {}, edit, del)];
@@ -308,11 +310,11 @@ async function loadBilling() {
         act('Test', () => api('POST', `/billing/webhooks/${ep.id}/test`)),
         act(ep.enabled ? 'Disable' : 'Enable', () => api('PUT', `/billing/webhooks/${ep.id}`, { enabled: !ep.enabled })),
         act('New secret', async () => {
-          if (!confirm('Issue a new signing secret? The old one stops working at once.')) return;
+          if (!await ask('Issue a new signing secret? The old one stops working at once.')) return;
           const r = await api('PUT', `/billing/webhooks/${ep.id}`, { rotate_secret: true });
           showSecret('Webhook signing secret', [r.secret]);
         }),
-        act('Delete', async () => { if (confirm(`Delete ${ep.url}?`)) await api('DELETE', `/billing/webhooks/${ep.id}`); }, 'ghost danger'))];
+        act('Delete', async () => { if (await ask(`Delete ${ep.url}?`)) await api('DELETE', `/billing/webhooks/${ep.id}`); }, 'ghost danger'))];
   })));
   $('#deliveries').replaceChildren(table(['Time', 'Event', 'Endpoint', 'State', 'Attempts', 'Last answer', ''], deliveries.map((d) => {
     const retry = h('button', { class: 'ghost' }, 'Retry');

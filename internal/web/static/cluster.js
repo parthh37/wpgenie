@@ -48,7 +48,7 @@ async function loadServers() {
       };
       if (n.status === 'active') {
         act('Drain', async () => {
-          if (!confirm(`Move every site off ${n.name}, one after the other? New sites won't be placed on it.`)) return;
+          if (!await ask(`Move every site off ${n.name}, one after the other? New sites won't be placed on it.`)) return;
           const r = await api('POST', `/nodes/${n.id}/drain`);
           followJob(r.job_id, () => { load(); loadServers(); });
         });
@@ -60,8 +60,8 @@ async function loadServers() {
       }
       act('Remove', async () => {
         const force = n.sites > 0;
-        if (force && !confirm(`${n.sites} site(s) still live on ${n.name}. Removing it leaves them running there, out of the panel's reach. Remove anyway?`)) return;
-        if (!force && !confirm(`Remove ${n.name} from the cluster?`)) return;
+        if (force && !await ask(`${n.sites} site(s) still live on ${n.name}. Removing it leaves them running there, out of the panel's reach. Remove anyway?`)) return;
+        if (!force && !await ask(`Remove ${n.name} from the cluster?`)) return;
         await api('DELETE', `/nodes/${n.id}` + (force ? '?force=1' : ''));
       }, 'ghost danger');
     }
@@ -114,7 +114,7 @@ function renderCluster(el, site) {
     const go = h('button', { class: 'ghost' }, 'Move');
     go.disabled = !others.length;
     go.addEventListener('click', async () => {
-      if (!confirm(`Move ${site.primary_domain} to ${nodeName(target.value)}? Files and database are copied while the site runs; ` +
+      if (!await ask(`Move ${site.primary_domain} to ${nodeName(target.value)}? Files and database are copied while the site runs; ` +
         'it shows a maintenance page only during the final copy. Its old server then passes visitors on until DNS points at the new one.')) return;
       go.disabled = true;
       try {
@@ -152,7 +152,7 @@ function renderCluster(el, site) {
       const finish = h('button', { class: 'ghost' }, 'Finish move');
       finish.hidden = !admin;
       finish.addEventListener('click', async () => {
-        if (!confirm(`Delete the old copy on ${nodeName(move.from)} now? Do this once the domains point at ${move.point_dns_to || 'the new server'}.`)) return;
+        if (!await ask(`Delete the old copy on ${nodeName(move.from)} now? Do this once the domains point at ${move.point_dns_to || 'the new server'}.`)) return;
         try { await api('POST', `/sites/${site.id}/move/finish`); await load(); } catch (e) { showError(e); }
       });
       fill(moveBox, h('p', { class: 'small' }, `Moved from ${nodeName(move.from)} ${fmtTime(move.at)}. `,

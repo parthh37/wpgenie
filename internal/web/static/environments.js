@@ -148,7 +148,7 @@ async function showBackups(el, site) {
     const restore = h('button', { class: 'ghost' }, 'Restore');
     restore.addEventListener('click', async () => {
       const label = what.options[what.selectedIndex].textContent.toLowerCase();
-      if (!confirm(`Restore ${label} of ${site.primary_domain} to ${fmtTime(b.time)}?\n\n` +
+      if (!await ask(`Restore ${label} of ${site.primary_domain} to ${fmtTime(b.time)}?\n\n` +
         'The site as it is now is backed up first (kept 7 days), so this can be undone.')) return;
       restore.disabled = true;
       try {
@@ -159,7 +159,7 @@ async function showBackups(el, site) {
     const dl = h('a', { href: `/api/v1/sites/${site.id}/backups/${encodeURIComponent(b.repo_id)}/${b.id}/download`, class: 'small' }, 'Download');
     const del = h('button', { class: 'ghost danger admin-only' }, 'Delete');
     del.addEventListener('click', async () => {
-      if (!confirm(`Delete the backup of ${fmtTime(b.time)}? This can't be undone.`)) return;
+      if (!await ask(`Delete the backup of ${fmtTime(b.time)}? This can't be undone.`)) return;
       try { await api('DELETE', `/sites/${site.id}/backups/${encodeURIComponent(b.repo_id)}/${b.id}`); await showBackups(el, site); } catch (e) { showError(e); }
     });
     return [fmtTime(b.time), h('td', {}, status(b.kind || 'manual')), repoName(b.repo_id), fmtBytes(b.size),
@@ -204,7 +204,7 @@ function showStaging(el, site) {
       const tables = boxes.filter((b) => b.checked).map((b) => b.value);
       const what = [files.value && files.options[files.selectedIndex].textContent, db.checked && (tables.length ? `${tables.length} table(s)` : 'the whole database')].filter(Boolean);
       if (!what.length) { showError(new Error('Choose files, the database or both.')); return; }
-      if (!confirm(`Push ${what.join(' and ')} to the LIVE site ${siteLabel(site.parent_id)}?\n\nThe live site is backed up first, so this can be undone from its Backups.`)) return;
+      if (!await ask(`Push ${what.join(' and ')} to the LIVE site ${siteLabel(site.parent_id)}?\n\nThe live site is backed up first, so this can be undone from its Backups.`)) return;
       push.disabled = true;
       try { await startJob('POST', `/sites/${site.id}/push`, { files: files.value, database: db.checked, tables }); } catch (e) { showError(e); }
       finally { push.disabled = false; }
@@ -249,11 +249,11 @@ async function showDomains(el, site) {
   };
   const refresh = async () => { await load(); };
   const makePrimary = (d) => act('Make primary', async () => {
-    if (!confirm(`Make ${d} the primary domain? Links in the database are rewritten to it and ${site.primary_domain} redirects to it.`)) return;
+    if (!await ask(`Make ${d} the primary domain? Links in the database are rewritten to it and ${site.primary_domain} redirects to it.`)) return;
     await startJob('PUT', `/sites/${site.id}/primary-domain`, { domain: d });
   });
   const remove = (d) => act('Remove', async () => {
-    if (!confirm(`Stop answering on ${d}?`)) return;
+    if (!await ask(`Stop answering on ${d}?`)) return;
     await api('DELETE', `/sites/${site.id}/domains/${encodeURIComponent(d)}`); await refresh();
   }, 'ghost danger');
   const rows = [[h('td', {}, h('strong', {}, site.primary_domain), ' ', h('span', { class: 'badge' }, 'primary')), 'serves the site', '']];
@@ -293,7 +293,7 @@ async function showDomains(el, site) {
       h('dt', {}, 'Expires'), h('dd', { class: days < 14 ? 'st-failed' : '' }, `${fmtTime(cert.not_after)} (${days} days) — not renewed automatically`),
       h('dt', {}, 'Trusted by browsers'), h('dd', {}, cert.trusted ? 'yes' : 'no (fine behind Cloudflare with an origin certificate)')),
     h('div', { class: 'actions' }, act('Use automatic certificates', async () => {
-      if (!confirm('Remove the uploaded certificate? Caddy obtains one from Let\'s Encrypt again.')) return;
+      if (!await ask('Remove the uploaded certificate? Caddy obtains one from Let\'s Encrypt again.')) return;
       await api('DELETE', `/sites/${site.id}/certificate`); await showDomains(el, site);
     }, 'ghost danger')));
   } else {
@@ -321,7 +321,7 @@ async function showPHP(el, site) {
   const apply = h('button', {}, 'Apply');
   apply.addEventListener('click', async () => {
     const switching = version.value !== site.php_version;
-    if (switching && !confirm(`Switch ${site.primary_domain} to PHP ${version.value}? Replicas are replaced with no downtime; ` +
+    if (switching && !await ask(`Switch ${site.primary_domain} to PHP ${version.value}? Replicas are replaced with no downtime; ` +
       'if the site stops working on the new version, it is switched back automatically.')) return;
     apply.disabled = true;
     try {
@@ -359,13 +359,14 @@ async function showAccess(el, site) {
     });
     const keys = h('button', { class: 'ghost' }, 'Keys');
     keys.addEventListener('click', async () => {
-      const v = prompt(`Public keys for ${u.username} (authorized_keys lines, separated by ";"):`, u.public_keys.join(' ; '));
+      const v = await askText('One authorized_keys line per key, separated by ";".',
+        { title: `SFTP keys for ${u.username}`, label: 'Public keys', value: u.public_keys.join(' ; '), ok: 'Save keys' });
       if (v === null) return;
       try { await api('PUT', `/sites/${site.id}/sftp/${u.username}/keys`, { public_keys: v.split(';') }); await showAccess(el, site); } catch (e) { showError(e); }
     });
     const del = h('button', { class: 'ghost danger' }, 'Delete');
     del.addEventListener('click', async () => {
-      if (!confirm(`Delete the SFTP login ${u.username}? Its open sessions end now.`)) return;
+      if (!await ask(`Delete the SFTP login ${u.username}? Its open sessions end now.`)) return;
       try { await api('DELETE', `/sites/${site.id}/sftp/${u.username}`); await showAccess(el, site); } catch (e) { showError(e); }
     });
     return [u.username, u.password ? 'yes' : 'no', String(u.public_keys.length), h('td', {}, h('div', { class: 'actions' }, pw, nopw, keys, del))];
@@ -433,7 +434,7 @@ async function loadBackups() {
           'Needed to restore these backups anywhere else (another server, or restic by hand).']);
       }) : null,
       isAdmin() && r.id !== 'local' ? act('Remove', async () => {
-        if (!confirm(`Forget the destination ${r.name}? Its backups stay where they are.`)) return;
+        if (!await ask(`Forget the destination ${r.name}? Its backups stay where they are.`)) return;
         await api('DELETE', `/backups/repos/${r.id}`); await loadBackups();
       }, 'ghost danger') : null)),
   ])));
@@ -450,14 +451,14 @@ async function browseRepo(repoID) {
     const exists = SITES.has(b.site_id);
     const restore = h('button', { class: 'ghost admin-only' }, 'Restore as new site');
     restore.addEventListener('click', async () => {
-      const domain = prompt(`New site from the backup of ${b.domain} (${fmtTime(b.time)}).\nDomain for the new site (its DNS must point here):`,
-        exists ? '' : b.domain);
+      const domain = await askText(`A new site from the backup of ${b.domain} (${fmtTime(b.time)}). Its DNS must point here.`,
+        { title: 'Restore as a new site', label: 'Domain for the new site', value: exists ? '' : b.domain, placeholder: 'example.com', ok: 'Restore' });
       if (!domain) return;
       try { await startJob('POST', '/backups/restore-new', { repo_id: repoID, backup_id: b.id, domain }); openTab('sites'); } catch (e) { showError(e); }
     });
     const del = h('button', { class: 'ghost danger admin-only' }, 'Delete');
     del.addEventListener('click', async () => {
-      if (!confirm(`Delete the backup of ${b.domain} from ${fmtTime(b.time)}? This can't be undone.`)) return;
+      if (!await ask(`Delete the backup of ${b.domain} from ${fmtTime(b.time)}? This can't be undone.`)) return;
       try { await api('DELETE', `/backups/repos/${encodeURIComponent(repoID)}/backups/${b.id}`); await browseRepo(repoID); } catch (e) { showError(e); }
     });
     return [fmtTime(b.time), exists ? b.site_id : h('td', {}, b.site_id, h('span', { class: 'badge' }, 'deleted')), b.domain,

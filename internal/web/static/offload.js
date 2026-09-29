@@ -76,16 +76,16 @@ function renderOffload(el, site) {
     finally { sync.disabled = false; }
   });
   download.addEventListener('click', async () => {
-    if (!confirm(`Copy the ${current.removed_local} uploads that only exist in the bucket back to this server?`)) return;
+    if (!await ask(`Copy the ${current.removed_local} uploads that only exist in the bucket back to this server?`)) return;
     try { await startJob('POST', `/sites/${site.id}/offload/download`, null, refresh); } catch (e) { showError(e); }
   });
   off.addEventListener('click', async () => {
     let force = false;
     if (current.removed_local) {
-      if (!confirm(`${current.removed_local} uploads only exist in the bucket. Turning offload off makes them unavailable on the site ` +
+      if (!await ask(`${current.removed_local} uploads only exist in the bucket. Turning offload off makes them unavailable on the site ` +
         '(use "Copy back" first to keep them). Turn it off anyway?')) return;
       force = true;
-    } else if (!confirm('Stop copying uploads to the bucket? The objects already there stay (delete them from the bucket if they\'re no longer needed).')) return;
+    } else if (!await ask('Stop copying uploads to the bucket? The objects already there stay (delete them from the bucket if they\'re no longer needed).')) return;
     try { show(await api('PUT', `/sites/${site.id}/offload`, { enabled: false, force })); } catch (e) { showError(e); }
   });
 }
