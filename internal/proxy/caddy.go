@@ -22,13 +22,16 @@ import (
 )
 
 type Site struct {
-	ID            string
-	Name          string
-	Domains       []string
-	Root          string
-	FPMPort       int
+	ID      string
+	Name    string
+	Domains []string
+	Root    string
+	// Upstreams are the PHP-FPM replicas ("host:port"). Addresses rather
+	// than ports so replicas on other nodes can be added later.
+	Upstreams     []string
 	ShieldEnabled bool
 	BlockXMLRPC   bool
+	PageCache     bool
 }
 
 type Config struct {
@@ -60,6 +63,14 @@ var tmpl = template.Must(template.New("Caddyfile").
 
 func (c *Caddy) Render(sites []Site) ([]byte, error) {
 	for _, s := range sites {
+		if len(s.Upstreams) == 0 {
+			return nil, fmt.Errorf("site %s: no PHP-FPM upstreams", s.ID)
+		}
+		for _, u := range s.Upstreams {
+			if strings.ContainsAny(u, " \t\n{}#\"") {
+				return nil, fmt.Errorf("site %s: unsafe upstream %q", s.ID, u)
+			}
+		}
 		for _, d := range s.Domains {
 			if strings.ContainsAny(d, " \t\n{}#\"") {
 				return nil, fmt.Errorf("site %s: unsafe domain %q", s.ID, d)

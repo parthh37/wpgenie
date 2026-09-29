@@ -72,6 +72,19 @@ var migrations = []string{
 		inode  INTEGER NOT NULL,
 		offset INTEGER NOT NULL
 	);`,
+	// v2: per-site resources, replicas and caching. A site now has one
+	// loopback port per PHP-FPM replica (site_upstreams); sites.fpm_port stays
+	// as a reserved port so its UNIQUE constraint keeps holding.
+	`ALTER TABLE sites ADD COLUMN memory_mb INTEGER NOT NULL DEFAULT 512;
+	ALTER TABLE sites ADD COLUMN cpus REAL NOT NULL DEFAULT 1;
+	ALTER TABLE sites ADD COLUMN replicas INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE sites ADD COLUMN page_cache INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN object_cache INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE site_upstreams (
+		port    INTEGER PRIMARY KEY,
+		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE
+	);
+	INSERT INTO site_upstreams (port, site_id) SELECT fpm_port, id FROM sites;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

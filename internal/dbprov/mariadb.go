@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strconv"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -66,5 +67,17 @@ func (m *MariaDB) DropSiteDB(ctx context.Context, name, user string) error {
 		return err
 	}
 	_, err := m.db.ExecContext(ctx, "DROP USER IF EXISTS '"+user+"'@'%'")
+	return err
+}
+
+// SetConnectionLimit caps how many MariaDB connections a site's user may
+// hold at once. Every site shares one server, so without this a single busy
+// (or attacked) site can take all max_connections and knock every other
+// site offline with "Error establishing a database connection".
+func (m *MariaDB) SetConnectionLimit(ctx context.Context, user string, n int) error {
+	if !identRe.MatchString(user) || n < 1 {
+		return fmt.Errorf("invalid connection limit for %q", user)
+	}
+	_, err := m.db.ExecContext(ctx, "ALTER USER '"+user+"'@'%' WITH MAX_USER_CONNECTIONS "+strconv.Itoa(n))
 	return err
 }

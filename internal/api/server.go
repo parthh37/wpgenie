@@ -42,6 +42,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/sites/{id}", s.auth(s.deleteSite))
 	mux.Handle("PUT /api/v1/sites/{id}/shield", s.auth(s.setShield))
 	mux.Handle("GET /api/v1/sites/{id}/stats", s.auth(s.siteStats))
+	mux.Handle("PUT /api/v1/sites/{id}/resources", s.auth(s.setResources))
+	mux.Handle("PUT /api/v1/sites/{id}/cache", s.auth(s.setCache))
+	mux.Handle("POST /api/v1/sites/{id}/cache/purge", s.auth(s.purgeCache))
 
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("GET /", http.FileServerFS(static))
@@ -64,7 +67,7 @@ func (s *Server) auth(h handlerFunc) http.Handler {
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				status = http.StatusNotFound
-			case errors.Is(err, site.ErrDomainTaken):
+			case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict):
 				status = http.StatusConflict
 			case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest):
 				status = http.StatusBadRequest
@@ -131,6 +134,40 @@ func (s *Server) setShield(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return s.getSite(w, r)
+}
+
+// setResources scales a site (memory/CPU per replica, replica count). It
+// runs a rolling replacement synchronously: expect a few seconds per replica.
+func (s *Server) setResources(w http.ResponseWriter, r *http.Request) error {
+	var in site.Resources
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.Sites.Scale(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) setCache(w http.ResponseWriter, r *http.Request) error {
+	var in site.CacheSettings
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	st, err := s.Sites.SetCache(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) purgeCache(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Sites.Purge(r.Context(), r.PathValue("id")); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 func (s *Server) siteStats(w http.ResponseWriter, r *http.Request) error {

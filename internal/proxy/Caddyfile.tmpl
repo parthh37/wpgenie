@@ -22,6 +22,7 @@
 		path /wp-admin/install.php /wp-admin/setup-config.php
 		path /wp-content/uploads/*.php /wp-content/uploads/*.phtml /wp-content/uploads/*.phar
 		path *.sql *.sql.gz *.bak *.old *.orig *.swp *.log *.ini
+		path /wp-content/cache/wpgenie/* /wp-content/cache/wpgenie.*
 	}
 	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode)
 }
@@ -51,6 +52,19 @@
 	@wpg_xmlrpc path /xmlrpc.php
 	{{- end}}
 	@wpg_dynamic not path *.css *.js *.mjs *.map *.png *.jpg *.jpeg *.gif *.webp *.avif *.svg *.ico *.woff *.woff2 *.ttf *.otf *.eot *.mp4 *.webm *.mp3 *.pdf
+	{{- if .PageCache}}
+	# Page cache hit: the same checks the PHP side applies before storing a
+	# page (images/php/page-cache.php); the cookie rule here is a stricter
+	# substring match.
+	@wpg_cached {
+		method GET HEAD
+		path */
+		expression `{query} == ""`
+		not header_regexp Cookie (wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session_|edd_items_in_cart|PHPSESSID)
+		not header Authorization *
+		file /wp-content/cache/wpgenie{path}index.html
+	}
+	{{- end}}
 
 	# Directive order inside route is exactly as written.
 	route {
@@ -68,7 +82,26 @@
 			header_up {{$.SiteHeader}} {{.ID}}
 		}
 		{{- end}}
-		php_fastcgi 127.0.0.1:{{.FPMPort}}
+		{{- if .PageCache}}
+		# After the shield: cached pages still get bot blocking and rate limits.
+		route @wpg_cached {
+			header X-WPGenie-Cache HIT
+			rewrite * {file_match.relative}
+			file_server
+		}
+		{{- end}}
+		php_fastcgi {{join .Upstreams " "}} {
+			lb_policy least_conn
+			# Retries only happen when the connection fails (nothing was sent),
+			# which is what makes draining a replica invisible to visitors.
+			lb_try_duration 5s
+			{{- if gt (len .Upstreams) 1}}
+			# Passive health checks only with somewhere else to send traffic: on
+			# a single replica, one timed-out request would 503 the whole site.
+			fail_duration 10s
+			max_fails 3
+			{{- end}}
+		}
 		file_server
 	}
 }
