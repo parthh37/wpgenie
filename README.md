@@ -29,7 +29,9 @@ with one command.
 | 🔄 | Update manager with pre-update snapshot + health check + auto-rollback | 🚧 Phase 1 |
 | 💾 | Backups (files + DB) to local/S3 with one-click restore | 🚧 Phase 2 |
 | 🧪 | Staging environments, SFTP, PHP version switching | 🚧 Phase 2 |
-| ⚡ | Full-page cache, Redis object cache, image optimisation | 🚧 Phase 3 |
+| ⚡ | Full-page cache served by Caddy, Redis object cache, system cron | ✅ |
+| 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
+| 🖼️ | Image optimisation, CDN integration | 🚧 Phase 3 |
 | ✉️ | Mailboxes (Stalwart), DKIM/SPF/DMARC, transactional mail | 🚧 Phase 4 |
 | 🌐 | Multi-server clusters | 🚧 Phase 5 |
 
@@ -51,6 +53,17 @@ Create a site (point the domain's DNS at the server first, so the certificate ca
 ```bash
 wpgenie site create example.com you@example.com
 ```
+
+Scale it when it gets busy — no downtime, the old containers drain before they are removed:
+
+```bash
+wpgenie site scale <site-id> --replicas 3 --memory 1024 --cpus 2
+wpgenie site cache <site-id> --page on --object on
+wpgenie site purge <site-id>
+```
+
+After upgrading WPGenie (which rebuilds the PHP image), `wpgenie site scale <site-id>` with no
+flags rolls a site onto the new image.
 
 ## How it works
 

@@ -58,3 +58,10 @@ button.danger { color: var(--bad); }
 .controls .check { display: flex; align-items: center; gap: .5rem; color: var(--text); padding-bottom: .55rem; }
 .controls .check input { width: auto; margin: 0; }
 .controls .delete { margin-left: auto; }
+
+.perf { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: .75rem; }
+.perf summary { cursor: pointer; font-weight: 550; }
+.perf .controls { margin-top: .75rem; }
+.perf .controls label:first-child { min-width: 0; }
+.perf label:not(.check) { min-width: 130px; }
+.perf p { margin: .4rem 0 0; }

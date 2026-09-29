@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -20,7 +21,8 @@ func newTestServer(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	svc := &site.Service{Store: st, Log: slog.Default()}
+	cfg := config.Default()
+	svc := &site.Service{Cfg: cfg, Store: st, Log: slog.Default()}
 	sh := shield.New(shield.Options{Secret: []byte("k"), Sites: svc.ShieldLookup})
 	// Building the handler also catches ServeMux pattern conflicts (they panic).
 	return (&Server{Token: "tok", Sites: svc, Store: st, Shield: sh, Log: slog.Default()}).Handler()
@@ -41,6 +43,14 @@ func TestRoutesAndAuth(t *testing.T) {
 		{"POST", "/api/v1/sites", "tok", `{"domain":"not a domain","admin_email":"a@b.co"}`, 400},
 		{"POST", "/api/v1/sites", "tok", `{"domain":"a.com","evil":1}`, 400},
 		{"GET", "/api/v1/sites/x/stats?hours=abc", "tok", "", 400},
+		{"PUT", "/api/v1/sites/x/resources", "", `{"memory_mb":1024,"cpus":1,"replicas":2}`, 401},
+		{"PUT", "/api/v1/sites/x/resources", "tok", `{"memory_mb":64,"cpus":1,"replicas":1}`, 400},
+		{"PUT", "/api/v1/sites/x/resources", "tok", `{"memory_mb":1024,"cpus":1,"replicas":0}`, 400},
+		{"PUT", "/api/v1/sites/x/resources", "tok", `{"memory_mb":1024,"cpus":1,"replicas":2}`, 404},
+		{"PUT", "/api/v1/sites/x/cache", "tok", `{"page_cache":true,"object_cache":true}`, 404},
+		{"PUT", "/api/v1/sites/x/cache", "tok", `{"page_cache":"yes"}`, 400},
+		{"POST", "/api/v1/sites/x/cache/purge", "", "", 401},
+		{"POST", "/api/v1/sites/x/cache/purge", "tok", "", 404},
 		{"GET", "/_shield/check", "", "", 200}, // unknown site fails open
 	}
 	for _, c := range cases {

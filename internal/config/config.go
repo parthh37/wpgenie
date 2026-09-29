@@ -32,6 +32,13 @@ type Config struct {
 	PHPImage      string `json:"php_image"`
 	// SitePortBase is the first loopback port handed to a site's PHP-FPM.
 	SitePortBase int `json:"site_port_base"`
+	// MaxReplicas bounds how many PHP-FPM containers one site may run.
+	MaxReplicas int `json:"max_replicas"`
+	// DBMaxConnections must match MariaDB's max_connections. One site may use
+	// at most half of it, so a traffic spike can't starve every other site.
+	DBMaxConnections int `json:"db_max_connections"`
+	// CronConcurrency is how many sites run WP-Cron at the same time.
+	CronConcurrency int `json:"cron_concurrency"`
 
 	// MariaDBDSN is a root DSN used only to create per-site databases/users.
 	MariaDBDSN  string `json:"mariadb_dsn"`
@@ -44,16 +51,19 @@ type Config struct {
 
 func Default() *Config {
 	return &Config{
-		DataDir:       "/var/lib/wpgenie",
-		ListenAddr:    "127.0.0.1:8088",
-		CaddyAdmin:    "http://127.0.0.1:2019",
-		CaddyfilePath: "/etc/wpgenie/caddy/Caddyfile",
-		AccessLog:     "/var/log/wpgenie/access.log",
-		DockerNetwork: "wpgenie",
-		PHPImage:      "wpgenie/php:8.3",
-		SitePortBase:  19000,
-		MariaDBHost:   "wpgenie-mariadb",
-		RedisHost:     "wpgenie-redis",
+		DataDir:          "/var/lib/wpgenie",
+		ListenAddr:       "127.0.0.1:8088",
+		CaddyAdmin:       "http://127.0.0.1:2019",
+		CaddyfilePath:    "/etc/wpgenie/caddy/Caddyfile",
+		AccessLog:        "/var/log/wpgenie/access.log",
+		DockerNetwork:    "wpgenie",
+		PHPImage:         "wpgenie/php:8.3",
+		SitePortBase:     19000,
+		MaxReplicas:      8,
+		DBMaxConnections: 300,
+		CronConcurrency:  4,
+		MariaDBHost:      "wpgenie-mariadb",
+		RedisHost:        "wpgenie-redis",
 	}
 }
 
@@ -84,6 +94,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.ShieldSecret) < 32 {
 		errs = append(errs, errors.New("shield_secret must be at least 32 characters"))
+	}
+	if c.MaxReplicas < 1 || c.DBMaxConnections < 20 || c.CronConcurrency < 1 {
+		errs = append(errs, errors.New("max_replicas and cron_concurrency must be >= 1, db_max_connections >= 20"))
 	}
 	if c.MariaDBDSN == "" {
 		errs = append(errs, errors.New("mariadb_dsn is required"))

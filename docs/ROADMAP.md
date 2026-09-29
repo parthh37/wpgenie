@@ -38,8 +38,15 @@ issue candidate once its phase starts.
 - [ ] Job queue for long operations (create/backup/restore) with progress in the UI
 
 ## Phase 3 — Performance
-- [ ] Full-page cache in Caddy (Souin cache-handler) + mu-plugin for purge on publish
-- [ ] Auto-enable Redis object cache drop-in
+- [x] Full-page cache: WordPress writes static HTML, Caddy serves it; purge on content change
+      (disk-based rather than Souin: no custom Caddy build, and every replica shares it)
+- [x] Redis object cache drop-in, graceful + selective flush on the shared Valkey
+- [x] Per-site resources (memory/CPU), FPM workers sized from memory
+- [x] Replicas with zero-downtime blue/green rollouts; rolling PHP image upgrades
+- [x] System cron (jailed) instead of page-view WP-Cron
+- [x] Per-site MariaDB connection limits
+- [ ] Admin-bar "purge cache" button; purge on WP-CLI content changes (runs with `--skip-plugins`)
+- [ ] Mobile/device cache variants for themes that serve different markup
 - [ ] WebP/AVIF conversion, lazy-loading, Brotli/zstd (zstd done)
 - [ ] CDN integration (Cloudflare/Bunny) with automatic purge
 - [ ] Per-site slow-request / PHP error insights
@@ -52,8 +59,9 @@ issue candidate once its phase starts.
 - Note: many clouds block outbound port 25 — relay-through-provider (SES, Postmark, …) must be a
   first-class option.
 
-## Phase 5 — Scale
+## Phase 5 — Multi-server
 - [ ] `wpgenie agent` + mTLS control channel; `runtime.RemoteAgent`
+- [ ] Uploads offload to S3-compatible storage (prerequisite for replicas across nodes)
 - [ ] Node placement, site migration between nodes
 - [ ] Postgres store for multi-node control plane
 - [ ] Prometheus metrics, alerting (uptime, cert expiry, disk)

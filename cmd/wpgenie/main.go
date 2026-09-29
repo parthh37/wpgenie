@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -37,6 +38,12 @@ Usage:
   wpgenie site ls                       list sites
   wpgenie site create <domain> <email>  create a WordPress site
   wpgenie site rm <site-id>             delete a site (irreversible)
+  wpgenie site scale <site-id> [--memory MB] [--cpus N] [--replicas N]
+                                        resize a site with no downtime; with no
+                                        flags, rolls it onto the current PHP image
+  wpgenie site cache <site-id> [--page on|off] [--object on|off]
+                                        toggle the page / object cache
+  wpgenie site purge <site-id>          empty the site's caches
   wpgenie version
 
 Flags:
@@ -101,6 +108,8 @@ func serve(cfg *config.Config) error {
 
 	svc := &site.Service{
 		Cfg: cfg, Store: st, Runtime: &runtime.Docker{}, DB: db, Log: log,
+		// redis_host is also the Valkey container's name (deploy/docker-compose.yml).
+		Cache: &runtime.Valkey{Container: cfg.RedisHost},
 		Proxy: proxy.NewCaddy(proxy.Config{
 			ACMEEmail: cfg.ACMEEmail, AdminURL: cfg.CaddyAdmin, PanelDomain: cfg.PanelDomain,
 			PanelUpstream: cfg.ListenAddr, ShieldUpstream: cfg.ListenAddr,
@@ -127,6 +136,8 @@ func serve(cfg *config.Config) error {
 		}
 	}()
 
+	go svc.RunCron(ctx)
+
 	ing := &analytics.Ingester{Path: cfg.AccessLog, Store: st, Secret: []byte(cfg.ShieldSecret), Logger: log}
 	go ing.Run(ctx)
 
@@ -134,8 +145,8 @@ func serve(cfg *config.Config) error {
 		Addr:              cfg.ListenAddr,
 		Handler:           (&api.Server{Token: cfg.APIToken, Sites: svc, Store: st, Shield: sh, Log: log}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		// Site creation runs synchronously and can take ~1 minute.
-		WriteTimeout: 3 * time.Minute,
+		// Site creation and scaling run synchronously and can take minutes.
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  2 * time.Minute,
 	}
 	errc := make(chan error, 1)
@@ -156,7 +167,7 @@ func serve(cfg *config.Config) error {
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm")
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge")
 	}
 	switch args[0] {
 	case "ls":
@@ -165,9 +176,10 @@ func siteCmd(cfg *config.Config, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tDOMAIN\tSTATUS\tSHIELD\tAI-BLOCK")
+		fmt.Fprintln(w, "ID\tDOMAIN\tSTATUS\tSHIELD\tAI-BLOCK\tREPLICAS\tMEMORY\tCPUS\tPAGE-CACHE\tOBJ-CACHE")
 		for _, s := range sites {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\n", s.ID, s.PrimaryDomain, s.Status, s.ShieldMode, s.BlockAIBots)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%d\t%dM\t%g\t%v\t%v\n", s.ID, s.PrimaryDomain, s.Status,
+				s.ShieldMode, s.BlockAIBots, s.Replicas, s.MemoryMB, s.CPUs, s.PageCache, s.ObjectCache)
 		}
 		return w.Flush()
 	case "create":
@@ -190,8 +202,100 @@ func siteCmd(cfg *config.Config, args []string) error {
 			return errors.New("usage: wpgenie site rm <site-id>")
 		}
 		return call(cfg, "DELETE", "/sites/"+args[1], nil, nil)
+	case "scale":
+		return scaleCmd(cfg, args[1:])
+	case "cache":
+		return cacheCmd(cfg, args[1:])
+	case "purge":
+		if len(args) != 2 {
+			return errors.New("usage: wpgenie site purge <site-id>")
+		}
+		if err := call(cfg, "POST", "/sites/"+args[1]+"/cache/purge", nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("Caches purged.")
+		return nil
 	}
 	return fmt.Errorf("unknown site command %q", args[0])
+}
+
+// siteFlags parses "<site-id> [flags]", starting from the site's current
+// settings so unspecified flags keep their values.
+func siteFlags(cfg *config.Config, args []string, usage string, define func(*flag.FlagSet, *store.Site)) (*store.Site, error) {
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		return nil, errors.New(usage)
+	}
+	var st store.Site
+	if err := call(cfg, "GET", "/sites/"+args[0], nil, &st); err != nil {
+		return nil, err
+	}
+	fs := flag.NewFlagSet("site", flag.ContinueOnError)
+	define(fs, &st)
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 {
+		return nil, errors.New(usage)
+	}
+	return &st, nil
+}
+
+func scaleCmd(cfg *config.Config, args []string) error {
+	st, err := siteFlags(cfg, args, "usage: wpgenie site scale <site-id> [--memory MB] [--cpus N] [--replicas N]",
+		func(fs *flag.FlagSet, st *store.Site) {
+			fs.IntVar(&st.MemoryMB, "memory", st.MemoryMB, "memory per replica, in MB")
+			fs.Float64Var(&st.CPUs, "cpus", st.CPUs, "CPU cores per replica")
+			fs.IntVar(&st.Replicas, "replicas", st.Replicas, "number of PHP-FPM containers")
+		})
+	if err != nil {
+		return err
+	}
+	var out store.Site
+	in := site.Resources{MemoryMB: st.MemoryMB, CPUs: st.CPUs, Replicas: st.Replicas}
+	if err := call(cfg, "PUT", "/sites/"+st.ID+"/resources", in, &out); err != nil {
+		return err
+	}
+	fmt.Printf("Site %s: %d replica(s) × %d MB / %g CPU, serving on ports %v\n",
+		out.ID, out.Replicas, out.MemoryMB, out.CPUs, out.Upstreams)
+	return nil
+}
+
+func cacheCmd(cfg *config.Config, args []string) error {
+	var page, object onOff
+	st, err := siteFlags(cfg, args, "usage: wpgenie site cache <site-id> [--page on|off] [--object on|off]",
+		func(fs *flag.FlagSet, st *store.Site) {
+			page, object = onOff(st.PageCache), onOff(st.ObjectCache)
+			fs.Var(&page, "page", "full-page cache (on|off)")
+			fs.Var(&object, "object", "Redis object cache (on|off)")
+		})
+	if err != nil {
+		return err
+	}
+	var out store.Site
+	in := site.CacheSettings{PageCache: bool(page), ObjectCache: bool(object)}
+	if err := call(cfg, "PUT", "/sites/"+st.ID+"/cache", in, &out); err != nil {
+		return err
+	}
+	fmt.Printf("Site %s: page cache %v, object cache %v\n", out.ID, onOff(out.PageCache), onOff(out.ObjectCache))
+	return nil
+}
+
+type onOff bool
+
+func (v onOff) String() string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
+func (v *onOff) Set(s string) error {
+	switch s {
+	case "on", "true", "1":
+		*v = true
+	case "off", "false", "0":
+		*v = false
+	default:
+		return errors.New("want on or off")
+	}
+	return nil
 }
 
 func call(cfg *config.Config, method, path string, body, out any) error {
@@ -209,7 +313,7 @@ func call(cfg *config.Config, method, path string, body, out any) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 3 * time.Minute}).Do(req)
+	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
 		return fmt.Errorf("is the daemon running? %w", err)
 	}
