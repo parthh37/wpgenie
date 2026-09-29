@@ -50,6 +50,16 @@ type Signals struct {
 	// CrossSite: a browser sent this because a page on another site told it
 	// to (Sec-Fetch-Site), e.g. an <img> pointing at an attack URL.
 	CrossSite bool
+	// Denied: the site's or the server's deny list covers the client.
+	Denied bool
+	// Country is what the site's country rules do with the client's
+	// country: Allow (no rule applies), Challenge or Block.
+	Country     Verdict
+	CountryCode string // for the security log
+	// Reputation is what the site does with a client on an IP blocklist:
+	// Allow (not listed, or the site ignores lists), Challenge or Block.
+	Reputation     Verdict
+	ReputationList string // which list, for the security log
 }
 
 // Decide turns signals into a verdict. It is pure — no I/O, no clock — so
@@ -64,12 +74,13 @@ type Signals struct {
 //  3. Clients that can't run JavaScript (search crawlers, uptime monitors,
 //     payment webhooks) are throttled rather than challenged when a limit is
 //     hit: a challenge they can't solve would silently turn into a block,
-//     and challenging Googlebot de-indexes the site.
+//     and challenging Googlebot de-indexes the site. For the same reason,
+//     verified search engines are exempt from country and reputation rules.
 func Decide(s Signals) Verdict {
 	if s.Mode == ModeOff || s.Trusted {
 		return Allow
 	}
-	if s.Banned || s.Threat != ThreatNone || s.AdminDenied {
+	if s.Banned || s.Threat != ThreatNone || s.AdminDenied || s.Denied {
 		return Block
 	}
 	switch s.Class {
@@ -80,6 +91,10 @@ func Decide(s Signals) Verdict {
 			return Block
 		}
 	}
+	crawler := s.Class == ClassVerifiedCrawler
+	if !crawler && (s.Country == Block || s.Reputation == Block) {
+		return Block
+	}
 	if s.RateExceeded {
 		// Brute force gets a 429 even from a browser: a login form that
 		// accepted a challenge would let a solver keep guessing.
@@ -88,7 +103,8 @@ func Decide(s Signals) Verdict {
 		}
 		return Challenge
 	}
-	if s.Mode == ModeUnderAttack && !s.HasPass && s.Class != ClassVerifiedCrawler {
+	if !s.HasPass && !crawler &&
+		(s.Mode == ModeUnderAttack || s.Country == Challenge || s.Reputation == Challenge) {
 		// Deliberately includes scripts and AI bots the site allows: during
 		// an incident, only proven browsers and verified search engines get
 		// through. Webhooks fail until the mode is switched back.
@@ -104,7 +120,9 @@ func Decide(s Signals) Verdict {
 // Nobody must be able to get someone else banned: requests a browser makes
 // on another site's behalf (an attack URL in an <img> tag, an auto-submitted
 // login form) are blocked but never counted, and a browser's search that
-// merely looks like SQL or HTML is blocked without a strike.
+// merely looks like SQL or HTML is blocked without a strike. Deny lists,
+// country rules and blocklists describe where a client is, not what it
+// did, so they never count either.
 func strikes(s Signals, v Verdict) int {
 	if v == Allow || s.Trusted || s.Banned || s.CrossSite || s.Class == ClassVerifiedCrawler {
 		// Search engines sometimes crawl spam links that carry attack

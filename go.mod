@@ -6,6 +6,7 @@ require (
 	github.com/axiomhq/hyperloglog v0.3.0
 	github.com/go-sql-driver/mysql v1.10.1
 	modernc.org/sqlite v1.60.0
+	rsc.io/qr v0.2.0
 )
 
 require (

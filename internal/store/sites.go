@@ -41,6 +41,25 @@ type Site struct {
 	WAF        bool     `json:"waf"`
 	AdminAllow []string `json:"admin_allow"`
 	TrustedIPs []string `json:"trusted_ips"`
+	DenyIPs    []string `json:"deny_ips"`
+	// XMLRPC lets requests reach xmlrpc.php (Jetpack, the mobile apps).
+	XMLRPC bool `json:"xmlrpc"`
+	// Per-IP rate limits and the challenge's proof-of-work difficulty
+	// (leading zero bits); 0 means the server default.
+	RateRPS       float64 `json:"rate_rps"`
+	RateBurst     int     `json:"rate_burst"`
+	LoginPerMin   float64 `json:"login_per_min"`
+	ChallengeBits int     `json:"challenge_bits"`
+	// Reputation is what clients on IP blocklists get: off, challenge, block.
+	Reputation string `json:"reputation"`
+	// Country rules: mode off, block (the listed countries) or allow (only
+	// them); the others get CountryAction (block or challenge).
+	CountryMode   string   `json:"country_mode"`
+	Countries     []string `json:"countries"`
+	CountryAction string   `json:"country_action"`
+	// BodyWAF is request-body inspection (Coraza + OWASP CRS): off, detect
+	// (log matches only) or block.
+	BodyWAF string `json:"body_waf"`
 	// CPU autoscaling between MinReplicas and MaxReplicas, aiming to keep
 	// each replica's CPU use near TargetCPU percent of its allowance.
 	Autoscale   bool `json:"autoscale"`
@@ -57,23 +76,27 @@ type Site struct {
 
 const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, status, shield_mode, block_ai_bots,
 	memory_mb, cpus, replicas, page_cache, object_cache, waf, admin_allow, trusted_ips,
-	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp, created_at, updated_at`
+	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp,
+	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
+	country_mode, countries, country_action, body_waf, created_at, updated_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated int64
-	var adminAllow, trusted string
+	var adminAllow, trusted, deny, countries string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
-		&s.SMTP, &created, &updated)
+		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
+		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	s.AdminAllow, s.TrustedIPs = splitList(adminAllow), splitList(trusted)
+	s.AdminAllow, s.TrustedIPs, s.DenyIPs = splitList(adminAllow), splitList(trusted), splitList(deny)
+	s.Countries = splitList(countries)
 	s.CreatedAt, s.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return &s, nil
 }
@@ -104,12 +127,27 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if site.AutoUpdate == "" {
 		site.AutoUpdate = "security"
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if site.Reputation == "" {
+		site.Reputation = "challenge"
+	}
+	if site.CountryMode == "" {
+		site.CountryMode = "off"
+	}
+	if site.CountryAction == "" {
+		site.CountryAction = "block"
+	}
+	if site.BodyWAF == "" {
+		site.BodyWAF = "off"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 35)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
 		site.WAF, strings.Join(site.AdminAllow, ","), strings.Join(site.TrustedIPs, ","),
-		site.Autoscale, site.MinReplicas, site.MaxReplicas, site.TargetCPU, site.AutoUpdate, site.SMTP, now, now)
+		site.Autoscale, site.MinReplicas, site.MaxReplicas, site.TargetCPU, site.AutoUpdate, site.SMTP,
+		site.XMLRPC, site.RateRPS, site.RateBurst, site.LoginPerMin, site.ChallengeBits,
+		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
+		site.CountryAction, site.BodyWAF, now, now)
 	if err != nil {
 		return err
 	}
@@ -298,18 +336,40 @@ func (s *Store) SetSiteStatus(ctx context.Context, id string, st SiteStatus) err
 
 // ShieldSettings is the stored per-site shield configuration.
 type ShieldSettings struct {
-	Mode        string
-	BlockAIBots bool
-	WAF         bool
-	AdminAllow  []string
-	TrustedIPs  []string
+	Mode          string
+	BlockAIBots   bool
+	WAF           bool
+	AdminAllow    []string
+	TrustedIPs    []string
+	DenyIPs       []string
+	XMLRPC        bool
+	RateRPS       float64
+	RateBurst     int
+	LoginPerMin   float64
+	ChallengeBits int
+	Reputation    string
+	CountryMode   string
+	Countries     []string
+	CountryAction string
+	BodyWAF       string
+}
+
+// ShieldSettings returns the shield part of a site record.
+func (st *Site) ShieldSettings() ShieldSettings {
+	return ShieldSettings{Mode: st.ShieldMode, BlockAIBots: st.BlockAIBots, WAF: st.WAF,
+		AdminAllow: st.AdminAllow, TrustedIPs: st.TrustedIPs, DenyIPs: st.DenyIPs, XMLRPC: st.XMLRPC,
+		RateRPS: st.RateRPS, RateBurst: st.RateBurst, LoginPerMin: st.LoginPerMin, ChallengeBits: st.ChallengeBits,
+		Reputation: st.Reputation, CountryMode: st.CountryMode, Countries: st.Countries,
+		CountryAction: st.CountryAction, BodyWAF: st.BodyWAF}
 }
 
 func (s *Store) SetShield(ctx context.Context, id string, c ShieldSettings) error {
 	return s.exec1(ctx, `UPDATE sites SET shield_mode = ?, block_ai_bots = ?, waf = ?, admin_allow = ?, trusted_ips = ?,
-		updated_at = ? WHERE id = ?`,
+		deny_ips = ?, xmlrpc = ?, rate_rps = ?, rate_burst = ?, login_per_min = ?, challenge_bits = ?, reputation = ?,
+		country_mode = ?, countries = ?, country_action = ?, body_waf = ?, updated_at = ? WHERE id = ?`,
 		c.Mode, c.BlockAIBots, c.WAF, strings.Join(c.AdminAllow, ","), strings.Join(c.TrustedIPs, ","),
-		time.Now().Unix(), id)
+		strings.Join(c.DenyIPs, ","), c.XMLRPC, c.RateRPS, c.RateBurst, c.LoginPerMin, c.ChallengeBits, c.Reputation,
+		c.CountryMode, strings.Join(c.Countries, ","), c.CountryAction, c.BodyWAF, time.Now().Unix(), id)
 }
 
 func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU int) error {

@@ -54,6 +54,7 @@ jobs:
           docker exec php wp --version
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
           docker exec php php -l /usr/local/share/wpgenie/smtp.php
+          docker exec php php -l /usr/local/share/wpgenie/profile.php
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php
           # WPG_MAX_CHILDREN reaches the pool; the cron jail applies open_basedir.
           docker exec php php-fpm -tt 2>&1 | grep -q "pm.max_children = 7"
@@ -61,3 +62,17 @@ jobs:
       - name: container logs
         if: failure()
         run: docker ps -a --filter name=php && docker logs php 2>&1 | tail -50
+
+  caddy-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The Dockerfile checks the Coraza module is in; the test then runs the
+      # rendered WAF config against request bodies in that image.
+      - run: docker build -t wpgenie/caddy:test images/caddy
+      - run: go test -count=1 -run WAF ./internal/proxy
+        env:
+          WPGENIE_TEST_DOCKER: "1"

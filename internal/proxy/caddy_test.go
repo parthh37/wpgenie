@@ -97,10 +97,11 @@ func TestRenderClientIP(t *testing.T) {
 		t.Errorf("global options must trust Cloudflare's ranges for CF-Connecting-IP:\n%s", global)
 	}
 	// Every call to the shield (checks and challenge verification, which
-	// must agree on the address) carries the resolved client IP.
-	shieldCalls := strings.Count(s, "header_up X-WPGenie-Site ")
-	if n := strings.Count(s, "header_up X-Forwarded-For {client_ip}"); n != shieldCalls || n == 0 {
-		t.Errorf("%d shield calls but %d pass {client_ip}", shieldCalls, n)
+	// must agree on the address) carries the resolved client IP, and so
+	// does the panel (its sign-in limits and audit log key on it).
+	calls := strings.Count(s, "header_up X-WPGenie-Site ") + strings.Count(s, "header_up -X-WPGenie-Site")
+	if n := strings.Count(s, "header_up X-Forwarded-For {client_ip}"); n != calls || n == 0 {
+		t.Errorf("%d shield and panel proxies but %d pass {client_ip}", calls, n)
 	}
 
 	none, err := NewCaddy(Config{AdminURL: "http://127.0.0.1:2019", ShieldUpstream: "127.0.0.1:8088"}).Render(testSites)

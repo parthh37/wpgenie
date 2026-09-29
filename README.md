@@ -20,13 +20,18 @@ with one command.
 | 📦 | Per-site isolation: unprivileged, read-only, capability-less PHP-FPM containers | ✅ |
 | 🛡️ | **Shield**: bot classification, AI-crawler blocking, per-IP rate limiting, login brute-force limits | ✅ |
 | 🧱 | **WAF**: WordPress-tuned request inspection (SQLi, XSS, traversal, code injection, scanner probes, user enumeration) | ✅ |
+| 🧬 | **Request-body WAF**: Coraza + OWASP Core Rule Set with the CRS WordPress exclusions, per site (log-only or block) | ✅ |
+| 🌐 | **IP reputation**: Spamhaus DROP + blocklist.de, per-site country rules (DB-IP), server-wide allow/deny lists | ✅ |
+| 🎛️ | Per-site shield tuning: XML-RPC toggle, rate limits, login limits, challenge difficulty, deny lists | ✅ |
 | 🚫 | Automatic server-wide bans for attackers (escalating), manual bans, security log | ✅ |
 | 🔑 | Per-site wp-admin IP allowlist, trusted IPs | ✅ |
+| 👥 | **Panel users** with roles (admin / operator / viewer), TOTP two-factor with recovery codes, sessions, **audit log** | ✅ |
 | 🧩 | Self-hosted proof-of-work challenge (CAPTCHA without Google/Cloudflare, no tracking) | ✅ |
 | ✔️ | Search-engine verification (forward-confirmed reverse DNS) — fake "Googlebots" are caught | ✅ |
 | 📊 | Visitor counts (HyperLogLog, no raw IPs stored), page views, **bandwidth per site** | ✅ |
 | 🔐 | WordPress hardening: `wp-config.php` outside docroot & read-only, file editor disabled, PHP jailed with `open_basedir`, uploads can't execute PHP | ✅ |
 | 🔎 | Nightly security scans: known vulnerabilities ([WPVulnerability](https://www.wpvulnerability.net/)), modified core/plugin files, PHP in uploads | ✅ |
+| 🧩 | **Plugin analyser**: closed and abandoned plugins (wordpress.org), modified or nulled copies, load and hook time per plugin | ✅ |
 | 🔄 | **WordPress updates**: snapshot → update → health check → automatic rollback; nightly security auto-updates | ✅ |
 | ⬆️ | **One-click WPGenie updates**: signed releases, automatic rollback if the new version doesn't start | ✅ |
 | 🖥️ | Dashboard + REST API + CLI | ✅ |
@@ -84,11 +89,24 @@ wpgenie site auto-update <site-id> security    # off | security | all
 wpgenie site scan <site-id>                    # vulnerabilities + file integrity
 ```
 
-Lock down wp-admin and see who the shield stopped:
+Lock down wp-admin, inspect request bodies, keep out known-bad networks and see who the shield
+stopped:
 
 ```bash
 wpgenie site shield <site-id> --admin-allow 203.0.113.7,198.51.100.0/24
+wpgenie site shield <site-id> --body-waf block --reputation challenge --country-mode block --countries CN,RU
+wpgenie site plugins <site-id> --now           # closed/abandoned/nulled plugins, cost per plugin
 wpgenie security bans
+wpgenie security reputation
+```
+
+The dashboard asks for the installer's API token once, to create the first administrator. Add more
+people with roles, and turn on two-factor authentication under Account:
+
+```bash
+wpgenie user add jane@example.com --role operator   # prints a generated password
+wpgenie user require-2fa on
+wpgenie audit                                       # who changed what, from where
 ```
 
 Mail (point `mail.example.com`'s A record here and open ports 25, 465, 587, 993 first):
@@ -133,6 +151,7 @@ Requirements: Go 1.26+, Docker (for the integration tests and PHP image).
 make test               # unit tests
 make test-integration   # + validates generated Caddy config with real Caddy
 make php-image          # build the hardened PHP runtime image
+make caddy-image        # build Caddy with the Coraza WAF
 make build              # ./bin/wpgenie
 ```
 
@@ -141,15 +160,18 @@ Layout:
 ```
 cmd/wpgenie/        daemon + CLI entrypoint
 internal/shield/    bot classification, WAF rules, bans, rate limiting, PoW challenge, policy
+internal/iprep/     IP blocklists and the country database for the shield
+internal/auth/      panel passwords, TOTP, recovery codes, roles
 internal/analytics/ Caddy log tailing → visitors / bandwidth rollups
-internal/site/      site lifecycle (with rollback), autoscaling, WordPress updates, scans
+internal/site/      site lifecycle (with rollback), autoscaling, WordPress updates, scans, plugin analysis
 internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
 internal/updater/   WPGenie self-update (signed releases, applier with rollback)
-internal/proxy/     Caddyfile rendering + live reload
+internal/proxy/     Caddyfile rendering + live reload, Coraza WAF rules and audit log
 internal/runtime/   container runtime (the seam for multi-node)
 internal/store/     panel state (SQLite)
 internal/web/       embedded dashboard
-images/php/         hardened PHP-FPM + WP-CLI image
+images/php/         hardened PHP-FPM + WP-CLI image (page cache, SMTP, plugin profiler)
+images/caddy/       Caddy with the Coraza WAF module
 deploy/             installer, compose stack, systemd unit
 ```
 

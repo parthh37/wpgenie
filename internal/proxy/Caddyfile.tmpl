@@ -32,12 +32,28 @@
 	}
 	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode|wpgenie-restore)
 }
+{{- if .WAF}}
+
+# Request-body inspection: Coraza with the OWASP Core Rule Set and its
+# WordPress exclusions (internal/proxy/waf), for dynamic requests. Imported
+# with Coraza's engine mode: On (block) or DetectionOnly (log only).
+(wpgenie_waf) {
+	coraza_waf @wpg_dynamic {
+		load_owasp_crs
+		directives `
+{{.WAFDirectives}}SecRuleEngine {args[0]}
+`
+	}
+}
+{{- end}}
 {{if .PanelDomain}}
 {{.PanelDomain}} {
 	import wpgenie_hardening
 	encode zstd gzip
 	reverse_proxy {{.PanelUpstream}} {
 		header_up -{{.SiteHeader}}
+		# The panel's audit log and sign-in limits key on the client address.
+		header_up X-Forwarded-For {client_ip}
 	}
 }
 {{end}}
@@ -139,6 +155,11 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
+		{{- if ne .BodyWAF "off"}}
+		# After the shield (bans and rate limits come first), before the page
+		# cache and PHP.
+		import wpgenie_waf {{.BodyWAF.Engine}}
+		{{- end}}
 		respond @wpg_forbidden 404
 		respond @wpg_dotfiles 404
 		{{- if .BlockXMLRPC}}
@@ -166,6 +187,15 @@
 		}
 		file_server
 	}
+	{{- if eq .BodyWAF "block"}}
+	# Coraza refusing a request is an error: mark it like a shield block so
+	# analytics count it. Other errors keep Caddy's default response.
+	handle_errors {
+		@wpg_waf expression `{err.message} == "interruption triggered"`
+		header @wpg_waf {{$.VerdictHeader}} waf
+		respond @wpg_waf "Access denied" 403
+	}
+	{{- end}}
 }
 {{- end}}
 {{end -}}

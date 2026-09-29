@@ -75,21 +75,29 @@ func TestCrawlerVerification(t *testing.T) {
 }
 
 func TestRateLimiter(t *testing.T) {
-	rl := newRateLimiter(1, 3) // 1/s, burst 3
+	rl := newRateLimiter()
+	allow := func(key string, at time.Time) bool { return rl.allow(key, at, 1, 3) } // 1/s, burst 3
 	now := time.Unix(1000, 0)
 	for i := range 3 {
-		if !rl.allow("k", now) {
+		if !allow("k", now) {
 			t.Fatalf("request %d within burst denied", i)
 		}
 	}
-	if rl.allow("k", now) {
+	if allow("k", now) {
 		t.Fatal("4th request in same instant allowed")
 	}
-	if !rl.allow("other", now) {
+	if !allow("other", now) {
 		t.Fatal("keys must be independent")
 	}
-	if !rl.allow("k", now.Add(1100*time.Millisecond)) {
+	if !allow("k", now.Add(1100*time.Millisecond)) {
 		t.Fatal("token not refilled after 1.1s")
+	}
+	// A site that raises its limit refills at the new rate from then on.
+	if allow("k", now.Add(1200*time.Millisecond)) {
+		t.Fatal("empty bucket allowed")
+	}
+	if !rl.allow("k", now.Add(1300*time.Millisecond), 100, 100) {
+		t.Fatal("raised limit not applied")
 	}
 	rl.sweep(now.Add(time.Hour))
 	for i := range rl.shards {

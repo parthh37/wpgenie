@@ -14,10 +14,12 @@ import (
 	"errors"
 	"html/template"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,8 +45,41 @@ type SiteSettings struct {
 	AdminAllow []netip.Prefix
 	// Trusted networks bypass the shield entirely (office, uptime monitor).
 	Trusted []netip.Prefix
+	// Deny networks are blocked outright.
+	Deny []netip.Prefix
 	// Webmail marks Roundcube: its login is a POST to ?_task=login.
 	Webmail bool
+	// Per-site rate limits and challenge difficulty; zero values use the
+	// server defaults (Options).
+	RequestsPerSecond float64
+	Burst             float64
+	LoginPerMinute    float64
+	Difficulty        int
+	// Reputation is what clients on an IP blocklist get (Challenge or
+	// Block); Allow ignores the lists.
+	Reputation Verdict
+	// Country rules: CountryAction (Challenge or Block; Allow = no rule) is
+	// applied to clients from Countries, or with CountryAllow, to clients
+	// from anywhere else.
+	Countries     map[string]bool
+	CountryAllow  bool
+	CountryAction Verdict
+}
+
+// Reputation knows which addresses are on IP blocklists, and where they are.
+type Reputation interface {
+	// Listed returns the name of a blocklist that has the address.
+	Listed(a netip.Addr) (list string, ok bool)
+	// Country returns the address's ISO 3166 country code ("" if unknown);
+	// ok is false while no country database is loaded, which disables
+	// country rules rather than blocking everyone.
+	Country(a netip.Addr) (cc string, ok bool)
+}
+
+// Global is the server-wide configuration, applied on every site.
+type Global struct {
+	Allow []netip.Prefix // never challenged, blocked or banned
+	Deny  []netip.Prefix // blocked on every site
 }
 
 // SiteLookup returns the shield settings for a site ID.
@@ -65,6 +100,8 @@ type Options struct {
 	// HealthHeader. Not loopback: a local tunnel (cloudflared, ssh -L)
 	// makes every visitor it forwards look like loopback.
 	HealthToken string
+	// Reputation, if set, provides IP blocklists and country lookups.
+	Reputation Reputation
 
 	Logger *slog.Logger
 }
@@ -76,6 +113,7 @@ type Shield struct {
 	verifier *crawlerVerifier
 	bans     *banList
 	events   *eventLog
+	global   atomic.Pointer[Global]
 	now      func() time.Time
 }
 
@@ -97,14 +135,17 @@ func New(o Options) *Shield {
 	}
 	return &Shield{
 		o:        o,
-		limiter:  newRateLimiter(o.RequestsPerSecond, o.Burst),
-		login:    newRateLimiter(o.LoginPerMinute/60, o.LoginBurst),
+		limiter:  newRateLimiter(),
+		login:    newRateLimiter(),
 		verifier: newCrawlerVerifier(o.Resolver),
 		bans:     newBanList(),
 		events:   newEventLog(500),
 		now:      time.Now,
 	}
 }
+
+// SetGlobal replaces the server-wide allow and deny lists.
+func (s *Shield) SetGlobal(g Global) { s.global.Store(&g) }
 
 // Run sweeps idle rate-limit buckets until ctx is cancelled.
 func (s *Shield) Run(ctx context.Context) {
@@ -156,10 +197,14 @@ func (s *Shield) CheckHandler() http.Handler {
 		now := s.now()
 		banKey, _ := BanKey(ip)
 
+		global := s.global.Load()
+		if global == nil {
+			global = &Global{}
+		}
 		sig := Signals{
 			Mode:        site.Mode,
 			BlockAIBots: site.BlockAIBots,
-			Trusted:     s.isHealthCheck(r) || inAny(ip, site.Trusted),
+			Trusted:     s.isHealthCheck(r) || inAny(ip, site.Trusted) || inAny(ip, global.Allow),
 		}
 		if sig.Trusted || sig.Mode == ModeOff {
 			w.WriteHeader(http.StatusOK) // skip the DNS lookups and rate limit accounting
@@ -175,6 +220,8 @@ func (s *Shield) CheckHandler() http.Handler {
 		sig.AdminDenied = len(site.AdminAllow) > 0 && !inAny(ip, site.AdminAllow) &&
 			(isAdminPath(script) || isAuthenticatedAPI(r, script, uri))
 		sig.CrossSite = crossSite(r.Header.Get("Sec-Fetch-Site"))
+		sig.Denied = inAny(ip, site.Deny) || inAny(ip, global.Deny)
+		s.checkReputation(&sig, site, ip)
 		if site.Inspect {
 			sig.Threat = Inspect(Request{Method: method, URI: uri, UA: ua, Referer: r.Header.Get("Referer"),
 				Cookie: r.Header.Get("Cookie"), Browser: sig.Class == ClassHuman})
@@ -186,9 +233,11 @@ func (s *Shield) CheckHandler() http.Handler {
 			key = site.ID + "|" + ip
 		}
 		if sig.LoginPath {
-			sig.RateExceeded = !s.login.allow(key, now)
+			perMin, burst := s.loginLimit(site)
+			sig.RateExceeded = !s.login.allow(key, now, perMin/60, burst)
 		} else {
-			sig.RateExceeded = !s.limiter.allow(key, now)
+			rps, burst := s.rateLimit(site)
+			sig.RateExceeded = !s.limiter.allow(key, now, rps, burst)
 		}
 
 		v := Decide(sig)
@@ -221,6 +270,65 @@ func (s *Shield) CheckHandler() http.Handler {
 	})
 }
 
+// checkReputation fills in the country and blocklist signals. Only public
+// addresses are looked up: a private one (a local tunnel, the Docker
+// network) has no country and is on no list.
+func (s *Shield) checkReputation(sig *Signals, site SiteSettings, ip string) {
+	if s.o.Reputation == nil || (site.Reputation == Allow && site.CountryAction == Allow) {
+		return
+	}
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return
+	}
+	a = a.Unmap()
+	if !isPublic(a) {
+		return
+	}
+	if site.Reputation != Allow {
+		if list, ok := s.o.Reputation.Listed(a); ok {
+			sig.Reputation, sig.ReputationList = site.Reputation, list
+		}
+	}
+	if site.CountryAction != Allow {
+		if cc, ok := s.o.Reputation.Country(a); ok && site.Countries[cc] != site.CountryAllow {
+			if cc == "" {
+				cc = "unknown"
+			}
+			sig.Country, sig.CountryCode = site.CountryAction, cc
+		}
+	}
+}
+
+func isPublic(a netip.Addr) bool {
+	return a.IsGlobalUnicast() && !a.IsPrivate() && !cgnat.Contains(a)
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// rateLimit is a site's request budget per client: its own, or the
+// server's. A site that only sets a rate gets the default burst-to-rate
+// ratio (60 for 10/s).
+func (s *Shield) rateLimit(site SiteSettings) (perSecond, burst float64) {
+	perSecond, burst = s.o.RequestsPerSecond, s.o.Burst
+	if site.RequestsPerSecond > 0 {
+		perSecond, burst = site.RequestsPerSecond, max(1, site.RequestsPerSecond*s.o.Burst/s.o.RequestsPerSecond)
+	}
+	if site.Burst > 0 {
+		burst = site.Burst
+	}
+	return perSecond, burst
+}
+
+// loginLimit is the login budget: attempts per minute and a burst that
+// scales with it (10 for the default 6/min).
+func (s *Shield) loginLimit(site SiteSettings) (perMinute, burst float64) {
+	if site.LoginPerMinute <= 0 {
+		return s.o.LoginPerMinute, s.o.LoginBurst
+	}
+	return site.LoginPerMinute, min(max(2, math.Round(site.LoginPerMinute*s.o.LoginBurst/s.o.LoginPerMinute)), 100)
+}
+
 // reasonFor names the signal that produced a verdict, for the security log.
 func reasonFor(s Signals, v Verdict) string {
 	switch {
@@ -230,14 +338,35 @@ func reasonFor(s Signals, v Verdict) string {
 		return s.Threat.String()
 	case s.AdminDenied:
 		return "admin_allowlist"
-	case v == Block:
+	case s.Denied:
+		return "deny_list"
+	case v == Block && (s.Class == ClassAttackTool || s.Class == ClassSpoofedCrawler || s.Class == ClassAIBot):
 		return s.Class.String()
+	case v == Block && s.Country == Block:
+		return "country:" + s.CountryCode
+	case v == Block && s.Reputation == Block:
+		return "reputation:" + s.ReputationList
 	case s.RateExceeded && s.LoginPath:
 		return "login_rate_limit"
 	case s.RateExceeded:
 		return "rate_limit"
+	case s.Mode == ModeUnderAttack:
+		return "under_attack"
+	case s.Country != Allow:
+		return "country:" + s.CountryCode
+	case s.Reputation != Allow:
+		return "reputation:" + s.ReputationList
 	}
 	return "under_attack"
+}
+
+// Record adds an event decided elsewhere (request-body inspection in Caddy)
+// to the security log.
+func (s *Shield) Record(e Event) {
+	if e.Time.IsZero() {
+		e.Time = s.now()
+	}
+	s.events.add(e)
 }
 
 // Bans lists active bans, longest-lasting first.
@@ -334,6 +463,9 @@ var challengeTmpl = template.Must(template.New("challenge").Parse(challengeHTML)
 
 func (s *Shield) serveChallenge(w http.ResponseWriter, site SiteSettings, ip, returnTo string, now time.Time) {
 	difficulty := s.o.Difficulty
+	if site.Difficulty > 0 {
+		difficulty = site.Difficulty
+	}
 	if site.Mode == ModeUnderAttack {
 		difficulty += 2 // 4x the work per solve during an incident
 	}

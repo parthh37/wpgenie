@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-linux test test-integration lint php-image release-key clean
+.PHONY: build build-linux test test-integration lint php-image caddy-image release-key clean
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/wpgenie ./cmd/wpgenie
@@ -23,6 +23,10 @@ lint:
 
 php-image:
 	docker build -t wpgenie/php:8.3 images/php
+
+# Caddy with the Coraza WAF module (request-body inspection).
+caddy-image:
+	docker build -t wpgenie/caddy:2 images/caddy
 
 # Generates the Ed25519 release signing key pair (OpenSSL 3 in a container:
 # macOS ships LibreSSL). Commit internal/updater/release.pub; store

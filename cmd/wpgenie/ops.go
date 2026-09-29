@@ -64,31 +64,51 @@ func (l *listFlag) Set(s string) error {
 }
 
 func shieldCmd(cfg *config.Config, args []string) error {
-	var waf onOff
-	var admin, trusted listFlag
+	var waf, xmlrpc onOff
+	var admin, trusted, deny, countries listFlag
 	var mode string
-	st, err := siteFlags(cfg, args, "usage: wpgenie site shield <site-id> [--mode off|standard|under_attack] [--waf on|off] "+
-		"[--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...]  (an empty list clears it)",
+	st, err := siteFlags(cfg, args, "usage: wpgenie site shield <site-id> [--mode off|standard|under_attack] [--waf on|off]\n"+
+		"  [--body-waf off|detect|block] [--xmlrpc on|off] [--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...]\n"+
+		"  [--deny IP/CIDR,...] [--reputation off|challenge|block] [--country-mode off|block|allow]\n"+
+		"  [--countries CC,...] [--country-action block|challenge] [--rate N] [--burst N] [--login-rate N]\n"+
+		"  [--difficulty BITS]  (an empty list clears it; 0 restores a default)",
 		func(fs *flag.FlagSet, st *store.Site) {
-			mode, waf = st.ShieldMode, onOff(st.WAF)
-			admin.v, trusted.v = &st.AdminAllow, &st.TrustedIPs
+			mode, waf, xmlrpc = st.ShieldMode, onOff(st.WAF), onOff(st.XMLRPC)
+			admin.v, trusted.v, deny.v, countries.v = &st.AdminAllow, &st.TrustedIPs, &st.DenyIPs, &st.Countries
 			fs.StringVar(&mode, "mode", mode, "protection level")
-			fs.Var(&waf, "waf", "request inspection (on|off)")
+			fs.Var(&waf, "waf", "request inspection of URLs and headers (on|off)")
+			fs.StringVar(&st.BodyWAF, "body-waf", st.BodyWAF, "request-body inspection, OWASP CRS (off|detect|block)")
+			fs.Var(&xmlrpc, "xmlrpc", "allow xmlrpc.php (Jetpack, mobile apps)")
 			fs.Var(&admin, "admin-allow", "only these networks reach wp-admin / wp-login.php")
 			fs.Var(&trusted, "trusted", "networks that bypass the shield")
+			fs.Var(&deny, "deny", "networks blocked on this site")
+			fs.StringVar(&st.Reputation, "reputation", st.Reputation, "clients on IP blocklists (off|challenge|block)")
+			fs.StringVar(&st.CountryMode, "country-mode", st.CountryMode, "country rules (off|block the listed|allow only the listed)")
+			fs.Var(&countries, "countries", "ISO country codes for the country rule")
+			fs.StringVar(&st.CountryAction, "country-action", st.CountryAction, "what the rule does (block|challenge)")
+			fs.Float64Var(&st.RateRPS, "rate", st.RateRPS, "requests per second per client (0 = default)")
+			fs.IntVar(&st.RateBurst, "burst", st.RateBurst, "burst size (0 = default)")
+			fs.Float64Var(&st.LoginPerMin, "login-rate", st.LoginPerMin, "login attempts per minute per client (0 = default)")
+			fs.IntVar(&st.ChallengeBits, "difficulty", st.ChallengeBits, "challenge proof-of-work bits, 10-22 (0 = default)")
 		})
 	if err != nil {
 		return err
 	}
-	w := bool(waf)
-	in := site.ShieldInput{Mode: shield.Mode(mode), BlockAIBots: st.BlockAIBots, WAF: &w,
-		AdminAllow: &st.AdminAllow, TrustedIPs: &st.TrustedIPs}
+	w, x := bool(waf), bool(xmlrpc)
+	in := site.ShieldInput{Mode: shield.Mode(mode), BlockAIBots: st.BlockAIBots, WAF: &w, XMLRPC: &x,
+		AdminAllow: &st.AdminAllow, TrustedIPs: &st.TrustedIPs, DenyIPs: &st.DenyIPs,
+		RateRPS: &st.RateRPS, RateBurst: &st.RateBurst, LoginPerMin: &st.LoginPerMin, ChallengeBits: &st.ChallengeBits,
+		Reputation: &st.Reputation, CountryMode: &st.CountryMode, Countries: &st.Countries,
+		CountryAction: &st.CountryAction, BodyWAF: &st.BodyWAF}
 	var out store.Site
 	if err := call(cfg, "PUT", "/sites/"+st.ID+"/shield", in, &out); err != nil {
 		return err
 	}
-	fmt.Printf("Site %s: shield %s, WAF %v, admin allowlist %v, trusted %v\n",
-		out.ID, out.ShieldMode, onOff(out.WAF), out.AdminAllow, out.TrustedIPs)
+	fmt.Printf("Site %s: shield %s, WAF %v, body WAF %s, XML-RPC %v, reputation %s, country rules %s %v (%s)\n"+
+		"  admin allowlist %v, trusted %v, deny %v\n  rate %g/s burst %d, logins %g/min, difficulty %d (0 = default)\n",
+		out.ID, out.ShieldMode, onOff(out.WAF), out.BodyWAF, onOff(out.XMLRPC), out.Reputation, out.CountryMode,
+		out.Countries, out.CountryAction, out.AdminAllow, out.TrustedIPs, out.DenyIPs,
+		out.RateRPS, out.RateBurst, out.LoginPerMin, out.ChallengeBits)
 	return nil
 }
 
@@ -141,6 +161,8 @@ func siteOpsCmd(cfg *config.Config, op string, args []string) error {
 			return err
 		}
 		return printJSON(rep)
+	case "plugins":
+		return pluginsCmd(cfg, id, args[1:])
 	case "smtp":
 		if len(args) != 2 {
 			return errors.New("usage: wpgenie site smtp <site-id> on|off")
@@ -331,9 +353,13 @@ func printRecords(info mail.DomainInfo) error {
 
 func securityCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie security bans | ban <ip> [--hours N] | unban <ip>")
+		return errors.New("usage: wpgenie security bans | ban <ip> [--hours N] | unban <ip> | allow|deny [IP/CIDR,... | none] | reputation [refresh]")
 	}
 	switch args[0] {
+	case "allow", "deny":
+		return securityListsCmd(cfg, args[0], args[1:])
+	case "reputation":
+		return reputationCmd(cfg, args[1:])
 	case "bans":
 		var bans []shield.Ban
 		if err := call(cfg, "GET", "/security/bans", nil, &bans); err != nil {

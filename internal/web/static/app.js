@@ -1,21 +1,31 @@
 'use strict';
 
 const $ = (sel, el = document) => el.querySelector(sel);
-const TOKEN_KEY = 'wpgenie_token';
 
+// The signed-in user ({username, role, totp_enabled, ...}).
+let ME = null;
+const isAdmin = () => ME && ME.role === 'admin';
+
+// The session lives in an HttpOnly cookie the page can't read. The custom
+// header is what the server checks on every change: other sites can't set
+// it, so they can't act with your session.
 async function api(method, path, body) {
   const res = await fetch('/api/v1' + path, {
     method,
-    headers: {
-      Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY),
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
+    credentials: 'same-origin',
+    headers: { 'X-Requested-With': 'wpgenie', ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) { signOut(); throw new Error('Session expired'); }
+  if (res.status === 401 && !path.startsWith('/auth/')) { showSignIn(); throw new Error('Signed out: please sign in again'); }
   if (res.status === 204) return null;
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error((data && data.error) || res.statusText);
+    err.status = res.status;
+    err.data = data;
+    if (data && data.code === 'totp_required') openTab('account');
+    throw err;
+  }
   return data;
 }
 
@@ -57,13 +67,32 @@ function showError(err) {
   box.hidden = !err;
 }
 
-function signOut() {
-  localStorage.removeItem(TOKEN_KEY);
+// hideApp shows one of the signed-out screens.
+function hideApp(screen) {
+  ME = null;
   document.querySelectorAll('.panel').forEach((p) => { p.hidden = true; });
   $('#tabs').hidden = true;
-  $('#app').hidden = true;
-  $('#logout').hidden = true;
-  $('#login').hidden = false;
+  $('#who').hidden = true;
+  $('#login').hidden = screen !== 'login';
+  $('#setup').hidden = screen !== 'setup';
+}
+
+function showSignIn() {
+  hideApp('login');
+  const f = $('#login-form');
+  $('.code-step', f).hidden = true;
+  f.code.value = '';
+  f.password.value = '';
+}
+
+async function signOut() {
+  try { await api('POST', '/auth/logout'); } catch (e) { /* signed out either way */ }
+  showSignIn();
+}
+
+function openTab(name) {
+  const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+  if (tab) tab.click();
 }
 
 async function load() {
@@ -91,6 +120,7 @@ function renderSite(site) {
   pill.textContent = site.status;
   pill.classList.add(site.status);
 
+  if (ME && ME.role === 'viewer') el.classList.add('readonly');
   const mode = $('.mode', el), ai = $('.ai', el);
   mode.value = site.shield_mode;
   ai.checked = site.block_ai_bots;
@@ -105,6 +135,7 @@ function renderSite(site) {
   renderAutoscale(el, site);
   renderCDN(el, site);
   renderSecurity(el, site);
+  renderPlugins(el, site);
   renderUpdates(el, site);
   const log = $('.log', el);
   log.addEventListener('toggle', () => { if (log.open) loadEvents(el, site); });
@@ -278,23 +309,44 @@ function renderAutoscale(el, site) {
 }
 
 function renderSecurity(el, site) {
-  const waf = $('.waf', el), admin = $('.admin-allow', el), trusted = $('.trusted', el);
-  waf.checked = site.waf;
-  admin.value = (site.admin_allow || []).join(', ');
-  trusted.value = (site.trusted_ips || []).join(', ');
-  $('.sec-summary', el).textContent = `· WAF ${site.waf ? 'on' : 'off'}` + (site.admin_allow.length ? ' · admin allowlist' : '');
-  const save = $('.sec-save', el);
+  const f = (c) => $('.' + c, el);
+  f('waf').checked = site.waf;
+  f('body-waf').value = site.body_waf || 'off';
+  f('xmlrpc').checked = site.xmlrpc;
+  f('admin-allow').value = (site.admin_allow || []).join(', ');
+  f('trusted').value = (site.trusted_ips || []).join(', ');
+  f('deny').value = (site.deny_ips || []).join(', ');
+  f('reputation').value = site.reputation || 'challenge';
+  f('country-mode').value = site.country_mode || 'off';
+  f('countries').value = (site.countries || []).join(', ');
+  f('country-action').value = site.country_action || 'block';
+  f('rate').value = site.rate_rps || 0;
+  f('burst').value = site.rate_burst || 0;
+  f('login-rate').value = site.login_per_min || 0;
+  f('difficulty').value = site.challenge_bits || 0;
+  const parts = [`WAF ${site.waf ? 'on' : 'off'}`];
+  if (site.body_waf && site.body_waf !== 'off') parts.push(`bodies: ${site.body_waf === 'detect' ? 'log only' : 'block'}`);
+  if (site.admin_allow.length) parts.push('admin allowlist');
+  if (site.country_mode && site.country_mode !== 'off') parts.push(`countries: ${site.country_mode} ${site.countries.join(' ')}`);
+  f('sec-summary').textContent = '· ' + parts.join(' · ');
+  const note = f('waf-note');
+  if (site.body_waf === 'detect') note.textContent = 'Log only: matches appear under Security → Recent blocks as "detect". Switch to Block once nothing legitimate shows up there.';
+  const save = f('sec-save');
   save.addEventListener('click', async () => {
     save.disabled = true;
     try {
       await api('PUT', `/sites/${site.id}/shield`, {
-        mode: $('.mode', el).value, block_ai_bots: $('.ai', el).checked, waf: waf.checked,
-        admin_allow: splitList(admin.value), trusted_ips: splitList(trusted.value),
+        mode: f('mode').value, block_ai_bots: f('ai').checked, waf: f('waf').checked, body_waf: f('body-waf').value,
+        xmlrpc: f('xmlrpc').checked, admin_allow: splitList(f('admin-allow').value), trusted_ips: splitList(f('trusted').value),
+        deny_ips: splitList(f('deny').value), reputation: f('reputation').value, country_mode: f('country-mode').value,
+        countries: splitList(f('countries').value), country_action: f('country-action').value,
+        rate_rps: Number(f('rate').value || 0), rate_burst: Number(f('burst').value || 0),
+        login_per_min: Number(f('login-rate').value || 0), challenge_bits: Number(f('difficulty').value || 0),
       });
       await load();
     } catch (e) { showError(e); save.disabled = false; }
   });
-  const box = $('.scan-report', el), scan = $('.scan', el), details = $('.sec', el);
+  const box = f('scan-report'), scan = f('scan'), details = f('sec');
   details.addEventListener('toggle', async () => {
     if (!details.open || box.dataset.loaded) return;
     box.dataset.loaded = '1';
@@ -307,6 +359,57 @@ function renderSecurity(el, site) {
     catch (e) { showError(e); }
     finally { scan.disabled = false; scan.textContent = 'Scan now'; }
   });
+}
+
+function renderPlugins(el, site) {
+  const details = $('.plugins', el), box = $('.plugins-report', el), run = $('.analyse', el);
+  details.addEventListener('toggle', async () => {
+    if (!details.open || box.dataset.loaded) return;
+    box.dataset.loaded = '1';
+    try { showPlugins(el, await api('GET', `/sites/${site.id}/plugins`)); } catch (e) { showError(e); }
+  });
+  run.addEventListener('click', async () => {
+    run.disabled = true;
+    run.textContent = 'Analysing… (up to a minute)';
+    try { showPlugins(el, await api('POST', `/sites/${site.id}/plugins`)); }
+    catch (e) { showError(e); }
+    finally { run.disabled = false; run.textContent = 'Analyse now'; }
+  });
+}
+
+const DIRECTORY = { listed: 'listed', closed: 'CLOSED', not_listed: 'not listed', unknown: '?' };
+const CHECKSUMS = { verified: 'verified', modified: 'MODIFIED', unavailable: "can't verify", not_checked: '–' };
+const SECURITY_FLAG = /^(closed|contains code|\d+ known|\d+ file)/;
+
+function showPlugins(el, rep) {
+  const box = $('.plugins-report', el);
+  if (!rep) { box.replaceChildren(h('p', { class: 'muted small' }, 'Not analysed yet.')); return; }
+  const bad = rep.plugins.filter((p) => p.flags.some((f) => SECURITY_FLAG.test(f)));
+  $('.plugins-summary', el).textContent = `· ${rep.plugins.length} installed` + (bad.length ? ` · ${bad.length} need attention` : '');
+  const prof = rep.profile;
+  const age = (t) => { const d = (Date.now() - new Date(t)) / 864e5; return d > 365 ? `${(d / 365).toFixed(1)} y ago` : `${Math.round(d)} d ago`; };
+  const rows = rep.plugins.map((p) => [
+    h('td', {}, h('strong', {}, p.title || p.slug), h('div', { class: 'muted small' }, p.slug)),
+    p.version + (p.update_version ? ` → ${p.update_version}` : ''),
+    p.status,
+    h('td', { class: p.directory === 'closed' ? 'st-failed' : '' }, DIRECTORY[p.directory] || p.directory,
+      p.last_updated ? h('div', { class: 'muted small' }, 'updated ' + age(p.last_updated)) : null),
+    h('td', { class: p.checksums === 'modified' ? 'st-failed' : '', title: (p.modified || []).join('\n') }, CHECKSUMS[p.checksums] || p.checksums),
+    p.perf ? h('td', { title: `load ${p.perf.load_ms} ms (${p.perf.load_kb} KB), hooks ${p.perf.hook_ms} ms in ${p.perf.calls} calls, ${p.perf.queries} queries` },
+      `${(p.perf.load_ms + p.perf.hook_ms).toFixed(1)} ms`, h('div', { class: 'muted small' }, `${p.perf.queries} queries`)) : '–',
+    h('td', {}, p.flags.map((f) => h('div', { class: SECURITY_FLAG.test(f) ? 'st-failed small' : 'small' }, f)),
+      (p.signatures || []).map((sig) => h('div', { class: 'wrap small' }, sig))),
+  ]);
+  box.replaceChildren(
+    h('p', { class: 'small' }, `Analysed ${fmtTime(rep.analysed_at)}`,
+      prof ? `: front page rendered in ${prof.total_ms.toFixed(0)} ms with ${prof.queries} database queries and ${(prof.peak_memory_kb / 1024).toFixed(0)} MB of memory` : '',
+      prof && prof.status >= 400 ? h('span', { class: 'st-failed' }, ` (HTTP ${prof.status}: the page is broken)`) : ''),
+    table(['Plugin', 'Version', 'Status', 'wordpress.org', 'Files', 'Cost', 'Findings'], rows),
+    prof && Object.keys(prof.others || {}).length ? h('p', { class: 'muted small' }, 'Also: ',
+      Object.entries(prof.others).map(([k, v]) => `${k} ${(v.load_ms + v.hook_ms).toFixed(1)} ms, ${v.queries} queries`).join(' · ')) : null,
+    (rep.theme_signatures || []).length ? h('p', { class: 'st-failed small' }, 'Suspicious theme files: ' + rep.theme_signatures.join(', ')) : null,
+    rep.errors && rep.errors.length ? h('p', { class: 'muted small' }, 'Partial analysis: ' + rep.errors.join('; ')) : null,
+  );
 }
 
 function showScan(box, rep) {
@@ -427,10 +530,34 @@ function showCredentials(res) {
 }
 
 function init() {
-  $('#login-form').addEventListener('submit', async (e) => {
+  const login = $('#login-form');
+  login.addEventListener('submit', async (e) => {
     e.preventDefault();
-    localStorage.setItem(TOKEN_KEY, e.target.token.value.trim());
-    start();
+    const btn = $('button', login), err = $('#login-error');
+    btn.disabled = true;
+    err.hidden = true;
+    try {
+      const res = await api('POST', '/auth/login', { username: login.username.value.trim(), password: login.password.value, code: login.code.value.trim() });
+      signedIn(res.user);
+    } catch (ex) {
+      if (ex.data && ex.data.need_code) {
+        $('.code-step', login).hidden = false;
+        login.code.focus();
+      } else {
+        err.textContent = ex.message;
+        err.hidden = false;
+      }
+    } finally { btn.disabled = false; }
+  });
+  const setup = $('#setup-form');
+  setup.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = $('#setup-error');
+    err.hidden = true;
+    try {
+      const res = await api('POST', '/auth/setup', Object.fromEntries(new FormData(setup)));
+      signedIn(res.user);
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
   $('#logout').addEventListener('click', signOut);
   $('#new-site-btn').addEventListener('click', () => { $('#new-site').hidden = false; });
@@ -454,19 +581,32 @@ function init() {
 }
 
 async function start() {
-  if (!localStorage.getItem(TOKEN_KEY)) return signOut();
+  localStorage.removeItem('wpgenie_token'); // older versions kept the API token here
+  let st;
+  try { st = await api('GET', '/auth/state'); } catch (e) { showError(e); return; }
+  if (st.setup) { hideApp('setup'); return; }
+  if (!st.user) { showSignIn(); return; }
+  signedIn(st.user, st.require_2fa);
+}
+
+// signedIn shows the panel for a user, or only Account while the panel
+// requires two-factor authentication they haven't set up.
+function signedIn(user, require2fa) {
+  ME = user;
   $('#login').hidden = true;
-  $('#app').hidden = false;
-  $('#logout').hidden = false;
+  $('#setup').hidden = true;
   $('#tabs').hidden = false;
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === 'sites'));
-  try { await load(); } catch (e) { showError(e); }
+  $('#who').hidden = false;
+  $('#me-tab').textContent = `${user.username} · ${user.role}`;
+  document.body.classList.toggle('is-admin', isAdmin());
+  if (require2fa && !user.totp_enabled) { openTab('account'); return; }
+  openTab('sites');
   if (typeof checkSystem === 'function') checkSystem();
 }
 
 // Live CPU readings refresh with the autoscaler's sampling.
 setInterval(() => {
-  if ($('#app').hidden) return;
+  if ($('#app').hidden || !ME) return;
   document.querySelectorAll('#sites [data-id]').forEach((el) => loadCPU({ id: el.dataset.id }));
 }, 15000);
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +50,19 @@ func TestDecide(t *testing.T) {
 		{"under attack: googlebot allowed", Signals{Mode: ModeUnderAttack, Class: ClassVerifiedCrawler}, Allow},
 		{"under attack: scripts challenged", Signals{Mode: ModeUnderAttack, Class: ClassScript}, Challenge},
 		{"under attack: attack tool still blocked", Signals{Mode: ModeUnderAttack, Class: ClassAttackTool, HasPass: true}, Block},
+
+		{"deny list", std(func(s *Signals) { s.Denied = true }), Block},
+		{"deny list beats a pass", std(func(s *Signals) { s.Denied, s.HasPass = true, true }), Block},
+		{"deny list applies to crawlers too", std(func(s *Signals) { s.Denied, s.Class = true, ClassVerifiedCrawler }), Block},
+		{"country block", std(func(s *Signals) { s.Country = Block }), Block},
+		{"country challenge", std(func(s *Signals) { s.Country = Challenge }), Challenge},
+		{"country challenge: pass holder allowed", std(func(s *Signals) { s.Country, s.HasPass = Challenge, true }), Allow},
+		{"country rules never block googlebot", std(func(s *Signals) { s.Country, s.Class = Block, ClassVerifiedCrawler }), Allow},
+		{"blocklisted: challenged", std(func(s *Signals) { s.Reputation = Challenge }), Challenge},
+		{"blocklisted: blocked", std(func(s *Signals) { s.Reputation = Block }), Block},
+		{"blocklisted script can't solve, stays challenged", std(func(s *Signals) { s.Reputation, s.Class = Challenge, ClassScript }), Challenge},
+		{"blocklisted googlebot", std(func(s *Signals) { s.Reputation, s.Class = Block, ClassVerifiedCrawler }), Allow},
+		{"trusted beats deny and country", std(func(s *Signals) { s.Trusted, s.Denied, s.Country = true, true, Block }), Allow},
 	}
 	for _, c := range cases {
 		if got := Decide(c.sig); got != c.want {
@@ -70,6 +84,9 @@ func TestStrikes(t *testing.T) {
 		"rate limit":      {Mode: ModeStandard, RateExceeded: true},
 		"admin allowlist": {Mode: ModeStandard, AdminDenied: true},
 		"ai bot":          {Mode: ModeStandard, Class: ClassAIBot, BlockAIBots: true},
+		"deny list":       {Mode: ModeStandard, Class: ClassScript, Denied: true},
+		"country":         {Mode: ModeStandard, Class: ClassScript, Country: Block},
+		"blocklist":       {Mode: ModeStandard, Class: ClassScript, Reputation: Block},
 	} {
 		if n := strikes(s, Decide(s)); n != 0 {
 			t.Errorf("%s: %d strikes; an honest client can trigger it, so it must not ban", name, n)
@@ -295,5 +312,104 @@ func TestLoginLimitCannotBeBypassedWithPathInfo(t *testing.T) {
 	}
 	if codes[2] != http.StatusTooManyRequests || codes[3] != http.StatusTooManyRequests {
 		t.Fatalf("login attempts via path variants = %v, want the 3rd and 4th throttled", codes)
+	}
+}
+
+type fakeReputation struct {
+	listed    map[string]string
+	countries map[string]string
+	noGeo     bool
+}
+
+func (f fakeReputation) Listed(a netip.Addr) (string, bool) {
+	l, ok := f.listed[a.String()]
+	return l, ok
+}
+
+func (f fakeReputation) Country(a netip.Addr) (string, bool) {
+	if f.noGeo {
+		return "", false
+	}
+	return f.countries[a.String()], true
+}
+
+func TestCheckReputationCountriesAndDenyLists(t *testing.T) {
+	site := SiteSettings{ID: "s1", Mode: ModeStandard, Reputation: Challenge,
+		Countries: map[string]bool{"DE": true, "FR": true}, CountryAllow: true, CountryAction: Block,
+		Deny: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}}
+	rep := fakeReputation{
+		listed:    map[string]string{"198.51.100.66": "blocklist-de", "10.1.2.3": "junk"},
+		countries: map[string]string{"198.51.100.66": "DE", "198.51.100.1": "DE", "198.51.100.2": "US", "198.51.100.3": ""},
+	}
+	s := New(Options{Secret: []byte("0123456789abcdef0123456789abcdef"), Reputation: rep,
+		Sites: func(string) (SiteSettings, bool) { return site, true }})
+	s.SetGlobal(Global{Deny: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+		Allow: []netip.Prefix{netip.MustParsePrefix("198.51.100.2/32")}})
+
+	for _, c := range []struct {
+		ip     string
+		want   int
+		reason string
+	}{
+		{"198.51.100.1", http.StatusOK, ""},                       // allowed country
+		{"198.51.100.66", http.StatusForbidden, "challenge"},      // allowed country, but on a blocklist
+		{"198.51.100.3", http.StatusForbidden, "country:unknown"}, // allow mode: unknown countries are out
+		{"198.51.100.2", http.StatusOK, ""},                       // US, but on the server's allow list
+		{"203.0.113.9", http.StatusForbidden, "deny_list"},        // the site's deny list
+		{"192.0.2.1", http.StatusForbidden, "deny_list"},          // the server's deny list
+		{"10.1.2.3", http.StatusOK, ""},                           // private: no country, no lists
+	} {
+		rec := checkRequest(s, c.ip, "GET", "/", browserUA)
+		if rec.Code != c.want {
+			t.Errorf("%s: %d, want %d", c.ip, rec.Code, c.want)
+		}
+		if c.reason == "challenge" {
+			if rec.Header().Get(VerdictHeader) != "challenge" {
+				t.Errorf("%s: verdict %q, want a challenge", c.ip, rec.Header().Get(VerdictHeader))
+			}
+			continue
+		}
+		if c.reason != "" {
+			if ev := s.Events("s1", 1); len(ev) == 0 || ev[0].Reason != c.reason || ev[0].IP != c.ip {
+				t.Errorf("%s: event %+v, want reason %s", c.ip, ev, c.reason)
+			}
+		}
+	}
+	if len(s.Bans()) != 0 {
+		t.Error("where a client is must never get it banned")
+	}
+
+	// No country database yet: country rules are skipped, not applied to
+	// everyone.
+	s.o.Reputation = fakeReputation{noGeo: true}
+	if rec := checkRequest(s, "198.51.100.9", "GET", "/", browserUA); rec.Code != http.StatusOK {
+		t.Errorf("without a country database: %d", rec.Code)
+	}
+}
+
+func TestPerSiteLimitsAndDifficulty(t *testing.T) {
+	site := SiteSettings{ID: "s1", Mode: ModeStandard, RequestsPerSecond: 1, Burst: 2, LoginPerMinute: 1, Difficulty: 12}
+	s := New(Options{Secret: []byte("0123456789abcdef0123456789abcdef"),
+		Sites: func(string) (SiteSettings, bool) { return site, true }})
+	var codes []int
+	for range 3 {
+		codes = append(codes, checkRequest(s, "198.51.100.4", "GET", "/", browserUA).Code)
+	}
+	if codes[1] != http.StatusOK || codes[2] != http.StatusForbidden {
+		t.Fatalf("burst of 2: %v", codes)
+	}
+	// The third request got a challenge at the site's difficulty.
+	rec := checkRequest(s, "198.51.100.4", "GET", "/", browserUA)
+	if !strings.Contains(rec.Body.String(), "12") {
+		t.Error("challenge page doesn't carry the site's difficulty")
+	}
+	if pm, b := s.loginLimit(site); pm != 1 || b != 2 {
+		t.Errorf("login limit %v/min burst %v, want 1/min burst 2", pm, b)
+	}
+	if rps, b := s.rateLimit(SiteSettings{RequestsPerSecond: 50}); rps != 50 || b != 300 {
+		t.Errorf("rate %v burst %v: a site setting only a rate keeps the default ratio", rps, b)
+	}
+	if rps, b := s.rateLimit(SiteSettings{}); rps != 10 || b != 60 {
+		t.Errorf("defaults %v/%v", rps, b)
 	}
 }

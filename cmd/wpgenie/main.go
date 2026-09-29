@@ -28,6 +28,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/dbprov"
+	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
@@ -55,12 +56,19 @@ Usage:
   wpgenie site autoscale <site-id> [--on|--off] [--min N] [--max N] [--target PCT]
                                         scale replicas with CPU use
   wpgenie site shield <site-id> [--mode off|standard|under_attack] [--waf on|off]
-                          [--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...]
+                          [--body-waf off|detect|block] [--xmlrpc on|off]
+                          [--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...] [--deny IP/CIDR,...]
+                          [--reputation off|challenge|block] [--country-mode off|block|allow]
+                          [--countries CC,...] [--country-action block|challenge]
+                          [--rate N] [--burst N] [--login-rate N] [--difficulty BITS]
   wpgenie site updates <site-id>        list WordPress core/plugin/theme updates
   wpgenie site update <site-id> [--all] [--core] [--plugins a,b] [--themes c]
                                         snapshot, update, health-check, roll back on failure
   wpgenie site auto-update <site-id> off|security|all
   wpgenie site scan <site-id>           security scan (vulnerabilities, file integrity)
+  wpgenie site plugins <site-id> [--now] [--json]
+                                        plugin analysis: wordpress.org status, abandoned,
+                                        modified/nulled files, cost per plugin
   wpgenie site smtp <site-id> on|off    send WordPress mail through the mail server
   wpgenie site cdn <site-id> [status|cloudflare|off|purge]
                                         Cloudflare cache purging; "cloudflare" reads
@@ -71,6 +79,13 @@ Usage:
   wpgenie mail box add <address> [--quota MB] | passwd <address> | rm <address> | ls
   wpgenie mail alias add|rm <alias> <target>
   wpgenie security bans | unban <ip> | ban <ip> [--hours N]
+  wpgenie security allow|deny [IP/CIDR,... | none]
+                                        server-wide lists (every site)
+  wpgenie security reputation [refresh] IP blocklists and country database status
+  wpgenie user ls | add <name> [--role admin|operator|viewer] | role <name> <role>
+  wpgenie user disable|enable|passwd|reset-2fa|rm <name> | require-2fa on|off
+                                        panel accounts (sign in to the dashboard)
+  wpgenie audit [--limit N] [--user NAME] who changed what, from where
   wpgenie update [check|status]         update WPGenie to the latest signed release
                                         (verified, health-checked, rolled back on failure)
   wpgenie version
@@ -108,6 +123,10 @@ func main() {
 		err = mailCmd(cfg, args[1:])
 	case "security":
 		err = securityCmd(cfg, args[1:])
+	case "user":
+		err = userCmd(cfg, args[1:])
+	case "audit":
+		err = auditCmd(cfg, args[1:])
 	default:
 		fs.Usage()
 		os.Exit(2)
@@ -164,6 +183,7 @@ func serve(cfg *config.Config) error {
 		Dumper:    &runtime.MariaDB{Container: cfg.MariaDBHost, Password: rootDSN.Passwd},
 		Prober:    &site.HTTPProber{Token: healthToken},
 		Vulns:     &site.WPVulnerability{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
+		Directory: &site.WordPressOrg{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
 		CDN:       &cdn.Cloudflare{},
 		CDNRanges: cfRanges,
 		Proxy: proxy.NewCaddy(proxy.Config{
@@ -190,9 +210,48 @@ func serve(cfg *config.Config) error {
 	svc.Mailer, svc.Webmail = mailSvc, mailSvc.Webmail
 	go mailSvc.Run(ctx)
 
+	// IP reputation: blocklists (saved, so a restart without network keeps
+	// them) and the country database, downloaded once a site uses it.
+	repDir := filepath.Join(cfg.DataDir, "iprep")
+	lists := &iprep.Lists{Dir: repDir, Feeds: iprep.DefaultFeeds, Log: log}
+	lists.Load()
+	countries := &iprep.Countries{Dir: repDir, Log: log, Needed: svc.CountryRulesInUse}
+	if err := countries.Load(); err != nil {
+		log.Warn("country database unreadable; it will be downloaded again", "err", err)
+	}
+	go lists.Run(ctx, 6*time.Hour)
+	go countries.Run(ctx)
+
 	sh := shield.New(shield.Options{Secret: []byte(cfg.ShieldSecret), Sites: svc.ShieldLookup, Logger: log,
-		HealthToken: healthToken})
+		HealthToken: healthToken, Reputation: &iprep.Reputation{Lists: lists, Countries: countries}})
+	if g, err := svc.GlobalLists(ctx); err != nil {
+		return err
+	} else {
+		sh.SetGlobal(g.Shield())
+	}
 	go sh.Run(ctx)
+
+	// Request-body WAF matches (Coraza in Caddy) join the security log.
+	wafLog := &proxy.WAFLog{Path: filepath.Join(filepath.Dir(cfg.AccessLog), "waf.log"), Log: log,
+		Handle: func(events []proxy.WAFEvent) {
+			idx, err := st.DomainIndex(ctx)
+			if err != nil {
+				log.Warn("WAF events: domain index", "err", err)
+				return
+			}
+			for _, e := range events {
+				siteID, ok := idx[e.Host]
+				if !ok {
+					continue
+				}
+				verdict := "detect"
+				if e.Blocked {
+					verdict = "block"
+				}
+				sh.Record(shield.Event{Time: e.Time, Site: siteID, IP: e.IP, Verdict: verdict, Reason: e.Reason(), Path: e.Path})
+			}
+		}}
+	go wafLog.Run(ctx)
 
 	// Caddy may still be starting (both come up at boot); retry the first sync.
 	go func() {
@@ -226,7 +285,7 @@ func serve(cfg *config.Config) error {
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: (&api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
-			Updater: upd, Mail: mailSvc, Log: log}).Handler(),
+			Updater: upd, Mail: mailSvc, Lists: lists, Countries: countries, Log: log}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Site creation and scaling run synchronously and can take minutes.
 		WriteTimeout: 5 * time.Minute,
@@ -255,7 +314,7 @@ func serve(cfg *config.Config) error {
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|smtp|cdn|events")
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|plugins|smtp|cdn|events")
 	}
 	switch args[0] {
 	case "ls":
@@ -298,7 +357,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return autoscaleCmd(cfg, args[1:])
 	case "shield":
 		return shieldCmd(cfg, args[1:])
-	case "updates", "update", "auto-update", "scan", "smtp", "events", "cdn":
+	case "updates", "update", "auto-update", "scan", "plugins", "smtp", "events", "cdn":
 		return siteOpsCmd(cfg, args[0], args[1:])
 	case "purge":
 		if len(args) != 2 {
@@ -482,7 +541,8 @@ func applyUpdate(cfg *config.Config, staged string) error {
 	paths := updater.DefaultPaths()
 	paths.StateDir = filepath.Join(cfg.DataDir, "updates")
 	a := &updater.Applier{
-		Staged: staged, From: version, Paths: paths, PHPImage: cfg.PHPImage, Run: updater.ExecRun, Log: os.Stderr,
+		Staged: staged, From: version, Paths: paths, PHPImage: cfg.PHPImage, CaddyImage: cfg.CaddyImage,
+		Run: updater.ExecRun, Log: os.Stderr,
 		Version: func(ctx context.Context) (string, error) {
 			var out struct{ Version string }
 			err := callCtx(ctx, cfg, 5*time.Second, "GET", "/system/version", nil, &out)
