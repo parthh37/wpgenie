@@ -68,10 +68,11 @@ func TestCaddySeesSitesWithoutSymlinks(t *testing.T) {
 const fixture = `set -eu
 S=/srv/sites
 for id in sa sb; do
-	mkdir -p $S/$id/public/wp-content/uploads $S/$id/public/wp-content/themes/t
+	mkdir -p $S/$id/public/wp-content/uploads $S/$id/public/wp-content/themes/t $S/$id/public/wp-content/cache/wpgenie
 	echo "<?php define('DB_PASSWORD', 'db-secret-$id');" >$S/$id/wp-config.php
 	echo "static-$id" >$S/$id/public/wp-content/uploads/ok.txt
 	echo "theme-$id" >$S/$id/public/wp-content/themes/t/style.css
+	echo "cached-$id" >$S/$id/public/wp-content/cache/wpgenie/index.html
 	echo "backup-secret-$id" >$S/$id/public/wp-content/uploads/db-backup.sql
 	chown -R 82:82 $S/$id/public
 	chown 0:82 $S/$id $S/$id/wp-config.php
@@ -114,8 +115,10 @@ func TestStaticFilesDoNotFollowSymlinks(t *testing.T) {
 	}).Render([]Site{
 		// Plain HTTP so the test needs no certificates. PHP is unreachable
 		// on purpose: static files must never depend on it.
-		{ID: "sa", Name: "A", Domains: []string{"http://a.test:8080"}, Root: "/var/lib/wpgenie/sites/sa/public", FPMPort: 1},
-		{ID: "sb", Name: "B", Domains: []string{"http://b.test:8080"}, Root: "/var/lib/wpgenie/sites/sb/public", FPMPort: 1},
+		{ID: "sa", Name: "A", Domains: []string{"http://a.test:8080"}, Root: "/var/lib/wpgenie/sites/sa/public",
+			Upstreams: []string{"127.0.0.1:1"}, PageCache: true},
+		{ID: "sb", Name: "B", Domains: []string{"http://b.test:8080"}, Root: "/var/lib/wpgenie/sites/sb/public",
+			Upstreams: []string{"127.0.0.1:1"}, PageCache: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,11 +151,13 @@ func TestStaticFilesDoNotFollowSymlinks(t *testing.T) {
 				t.Errorf("GET a.test%s = %d, leaked %q", path, code, body)
 			}
 		}
-		// Regular files are still served, as the unprivileged user.
+		// Regular files and page-cache hits are still served, as the
+		// unprivileged user.
 		for _, c := range []struct{ host, path, want string }{
 			{"a.test", "/wp-content/uploads/ok.txt", "static-sa"},
 			{"b.test", "/wp-content/uploads/ok.txt", "static-sb"},
 			{"a.test", "/wp-content/themes/t/style.css", "theme-sa"},
+			{"a.test", "/", "cached-sa"}, // @wpg_cached rewrite to the cache file
 		} {
 			if code, body := get(t, base, c.host, c.path); code != 200 || strings.TrimSpace(body) != c.want {
 				t.Errorf("GET %s%s = %d %q, want 200 %q", c.host, c.path, code, body, c.want)
