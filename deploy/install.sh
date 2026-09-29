@@ -3,6 +3,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/parthh37/wpgenie/main/deploy/install.sh | sudo bash
 #
+# Another server for an existing panel (a node of a cluster):
+#
+#   curl -fsSL https://raw.githubusercontent.com/parthh37/wpgenie/main/deploy/install.sh | sudo bash -s -- --agent
+#
+# then add it in the panel (Servers) with the pairing code it prints.
+#
 # Optional environment:
 #   PANEL_DOMAIN=panel.example.com   serve the dashboard on this domain with TLS
 #   ACME_EMAIL=you@example.com       Let's Encrypt account / expiry notices
@@ -10,6 +16,14 @@
 #
 # Re-running is safe: secrets and data are preserved, binaries/images updated.
 set -Eeuo pipefail
+
+ROLE=panel
+for arg in "$@"; do
+  case "$arg" in
+    --agent) ROLE=agent ;;
+    *) printf 'unknown option %s (use --agent for a node)\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 REPO="${WPGENIE_REPO:-parthh37/wpgenie}"
 VERSION="${WPGENIE_VERSION:-latest}"
@@ -139,11 +153,18 @@ write_config() {
   cat >"${ETC}/infra.env" <<EOF
 MARIADB_ROOT_PASSWORD=${db_root}
 EOF
+  # Where other servers of a cluster reach this one's listener (7443):
+  # the address of the default route's interface.
+  local ip
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+  local panel_domain=$PANEL_DOMAIN
+  [[ $ROLE == agent ]] && panel_domain=""
   cat >"${ETC}/config.json" <<EOF
 {
-  "panel_domain": "${PANEL_DOMAIN}",
+  "panel_domain": "${panel_domain}",
   "acme_email": "${ACME_EMAIL}",
   "mariadb_dsn": "root:${db_root}@tcp(127.0.0.1:3306)/",
+  "cluster_address": "${ip:-127.0.0.1}:7443",
   "api_token": "${api_token}",
   "shield_secret": "${shield_secret}"
 }
@@ -220,6 +241,16 @@ start_stack() {
   [[ $(docker inspect -f '{{.State.Health.Status}}' wpgenie-mariadb) == healthy ]] || die "MariaDB did not become healthy"
 
   install -m 0644 "${SHARE}/deploy/wpgenie.service" /etc/systemd/system/wpgenie.service
+  # A node runs `wpgenie agent`. A drop-in, so self-updates (which replace
+  # the unit file) keep it a node.
+  if [[ $ROLE == agent ]]; then
+    install -d -m 0755 /etc/systemd/system/wpgenie.service.d
+    printf '[Unit]\nDescription=WPGenie node\n\n[Service]\nExecStart=\nExecStart=/usr/local/bin/wpgenie agent\n' \
+      >/etc/systemd/system/wpgenie.service.d/agent.conf
+    # The key and the one-time pairing secret exist before the daemon
+    # starts, so the code printed at the end is the one it expects.
+    PAIRING_CODE=$(/usr/local/bin/wpgenie agent pair-code 2>/dev/null || true)
+  fi
   systemctl daemon-reload
   systemctl enable wpgenie >/dev/null 2>&1
   systemctl restart wpgenie
@@ -231,10 +262,27 @@ open_firewall() {
     ufw allow 80/tcp >/dev/null
     ufw allow 443/tcp >/dev/null
     ufw allow 443/udp >/dev/null
+    # The cluster listener: mutual TLS, only the panel and other nodes get
+    # past the handshake.
+    log "Opening 7443/tcp (servers of a cluster) in ufw"
+    ufw allow 7443/tcp >/dev/null
   fi
 }
 
 summary() {
+  if [[ $ROLE == agent ]]; then
+    printf '\n\033[1;32mWPGenie is installed as a node.\033[0m\n\n'
+    if [[ -n ${PAIRING_CODE:-} ]]; then
+      printf '  In the panel, open Servers and add this server with:\n'
+      printf '    address:       %s\n' "$(sed -n 's/.*"cluster_address": *"\([^"]*\)".*/\1/p' "${ETC}/config.json")"
+      printf '    pairing code:  %s\n' "$PAIRING_CODE"
+      printf '  (it works once; port 7443 must be reachable from the panel)\n'
+    else
+      printf '  Already paired: wpgenie agent status\n'
+    fi
+    printf '  Logs:  journalctl -u wpgenie -f\n\n'
+    return
+  fi
   local token
   token=$(sed -n 's/.*"api_token": *"\([^"]*\)".*/\1/p' "${ETC}/config.json")
   printf '\n\033[1;32mWPGenie is installed.\033[0m\n\n'

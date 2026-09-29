@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/billing"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -28,6 +29,18 @@ func limitParam(r *http.Request, def, max int) (int, error) {
 func (s *Server) setAutoscale(w http.ResponseWriter, r *http.Request) error {
 	var in site.AutoscaleSettings
 	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	if t := tenantOf(r); t != nil && in.Enabled {
+		st, err := s.siteRecord(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		if err := billing.CheckResources(t.SiteLimits, in.MaxReplicas, st.MemoryMB, st.CPUs); err != nil {
+			return err
+		}
+	}
+	if done, err := s.forwardAfterChecks(w, r, in); done || err != nil {
 		return err
 	}
 	st, err := s.Sites.SetAutoscale(r.Context(), r.PathValue("id"), in)
@@ -64,8 +77,8 @@ func (s *Server) siteMetrics(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) listBans(w http.ResponseWriter, _ *http.Request) error {
-	bans := s.Shield.Bans()
+func (s *Server) listBans(w http.ResponseWriter, r *http.Request) error {
+	bans := s.clusterBans(r, s.Shield.Bans())
 	if bans == nil {
 		bans = []shield.Ban{}
 	}
@@ -89,6 +102,7 @@ func (s *Server) addBan(w http.ResponseWriter, r *http.Request) error {
 		return errors.Join(errBadRequest, err)
 	}
 	s.Log.Info("manual ban", "addr", key, "hours", in.Hours)
+	s.broadcast(r, http.MethodPost, "/api/v1/security/bans", in)
 	return writeJSON(w, http.StatusCreated, map[string]string{"addr": key})
 }
 
@@ -99,6 +113,9 @@ func (s *Server) removeBan(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return errors.Join(errBadRequest, err)
 	}
+	if s.broadcast(r, http.MethodDelete, "/api/v1/security/bans?"+r.URL.RawQuery, nil) > 0 {
+		ok = true
+	}
 	if !ok {
 		return writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active ban for that address"})
 	}
@@ -106,12 +123,36 @@ func (s *Server) removeBan(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// securityEvents is the shield's recent log: every site's for staff, only
+// their sites' for tenants.
 func (s *Server) securityEvents(w http.ResponseWriter, r *http.Request) error {
 	limit, err := limitParam(r, 100, 500)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, s.Shield.Events(r.URL.Query().Get("site"), limit))
+	siteID := r.URL.Query().Get("site")
+	if tenantOf(r) == nil {
+		return writeJSON(w, http.StatusOK, s.clusterEvents(r, s.Shield.Events(siteID, limit), limit))
+	}
+	owned, err := s.ownedSites(r.Context(), principalFrom(r.Context()))
+	if err != nil {
+		return err
+	}
+	if siteID != "" {
+		if _, ok := owned[siteID]; !ok {
+			return store.ErrNotFound
+		}
+	}
+	// Every server's events (sites on other servers included), then only
+	// the tenant's sites.
+	all := s.clusterEvents(r, s.Shield.Events(siteID, max(limit, 500)), max(limit, 500))
+	out := []shield.Event{}
+	for _, e := range all {
+		if _, ok := owned[e.Site]; ok && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return writeJSON(w, http.StatusOK, out)
 }
 
 // siteUpdates lists installed components and available updates, live from

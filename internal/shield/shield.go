@@ -115,6 +115,9 @@ type Shield struct {
 	events   *eventLog
 	global   atomic.Pointer[Global]
 	now      func() time.Time
+
+	// decisions counts verdicts since start, by Verdict (metrics).
+	decisions [4]atomic.Uint64
 }
 
 func New(o Options) *Shield {
@@ -207,6 +210,7 @@ func (s *Shield) CheckHandler() http.Handler {
 			Trusted:     s.isHealthCheck(r) || inAny(ip, site.Trusted) || inAny(ip, global.Allow),
 		}
 		if sig.Trusted || sig.Mode == ModeOff {
+			s.decisions[Allow].Add(1)
 			w.WriteHeader(http.StatusOK) // skip the DNS lookups and rate limit accounting
 			return
 		}
@@ -241,6 +245,7 @@ func (s *Shield) CheckHandler() http.Handler {
 		}
 
 		v := Decide(sig)
+		s.decisions[v].Add(1)
 		if v != Allow {
 			w.Header().Set(VerdictHeader, v.String())
 			path, _, _ := strings.Cut(uri, "?")
@@ -371,6 +376,16 @@ func (s *Shield) Record(e Event) {
 
 // Bans lists active bans, longest-lasting first.
 func (s *Shield) Bans() []Ban { return s.bans.list(s.now()) }
+
+// Decisions counts the verdicts given since the daemon started, by name
+// (allow, challenge, block, throttle).
+func (s *Shield) Decisions() map[string]uint64 {
+	out := make(map[string]uint64, len(s.decisions))
+	for v := range s.decisions {
+		out[Verdict(v).String()] = s.decisions[v].Load()
+	}
+	return out
+}
 
 // Events returns recent blocks, throttles and bans, newest first.
 func (s *Shield) Events(site string, limit int) []Event { return s.events.recent(site, limit) }

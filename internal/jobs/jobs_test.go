@@ -4,22 +4,18 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 func newQueue(t *testing.T, heavy int) *Queue {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	return &Queue{Store: st, Log: slog.New(slog.DiscardHandler), Heavy: heavy}
 }
 

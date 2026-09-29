@@ -11,6 +11,19 @@
 		client_ip_headers CF-Connecting-IP
 		{{- end}}
 	}
+	{{- if .IngressListen}}
+	# Visitors another server of the cluster passes on (a site that moved
+	# here, until DNS follows): loopback only (the cluster tunnel), with the
+	# visitor's address in a PROXY protocol header.
+	servers {{.IngressListen}} {
+		listener_wrappers {
+			proxy_protocol {
+				allow 127.0.0.1/32
+			}
+		}
+		protocols h1
+	}
+	{{- end}}
 }
 
 (wpgenie_hardening) {
@@ -85,13 +98,67 @@
 		reverse_proxy {{.Proxy}}
 	}
 }
-{{- else}}
-# site {{.ID}} — {{.Name}}
+{{- else if .Suspended}}
+# site {{.ID}} — {{.Name}}: suspended
 {{join .Domains ", "}} {
 	import wpgenie_hardening
 	{{- if .CustomCert}}
-	# The site's own certificate (uploaded in the panel; not renewed by Caddy).
 	tls {{$.CertDir}}/{{.ID}}/cert.pem {{$.CertDir}}/{{.ID}}/key.pem
+	{{- end}}
+	header Cache-Control "no-store"
+	header Retry-After "3600"
+	header Content-Type "text/html; charset=utf-8"
+	respond `{{$.SuspendedPage}}` 503
+}
+{{- else if .Forward}}
+# site {{.ID}} — {{.Name}}: moved to another server. Visitors DNS still sends
+# here go there through the cluster tunnel, with their address in a PROXY
+# protocol header; so do Let's Encrypt's HTTP challenges, so the new server
+# has certificates before DNS moves.
+{{join .Domains ", "}} {
+	reverse_proxy {{.Forward}} {
+		transport http {
+			proxy_protocol v2
+		}
+	}
+}
+{{.HTTPAddress}} {
+	handle /.well-known/acme-challenge/* {
+		reverse_proxy {{.ForwardHTTP}}
+	}
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}
+{{- else}}
+{{template "wpsite" .}}
+{{- if .IngressView}}
+{{template "wpsite" .IngressView}}
+{{- end}}
+{{- if .Redirects}}
+
+# site {{.ID}}: redirects to its primary domain
+{{join .Redirects ", "}} {
+	import wpgenie_hardening
+	redir https://{{index .Domains 0}}{uri} permanent
+}
+{{- end}}
+{{- end}}
+{{end -}}
+{{define "wpsite"}}
+{{- if .Ingress}}
+# site {{.ID}}: visitors its old server passes on (PROXY protocol, loopback only)
+{{- else}}
+# site {{.ID}} — {{.Name}}
+{{- end}}
+{{.Address}} {
+	import wpgenie_hardening
+	{{- if .Ingress}}
+	bind {{.Cfg.IngressHost}}
+	{{- end}}
+	{{- if and .CustomCert (not .Ingress)}}
+	# The site's own certificate (uploaded in the panel; not renewed by Caddy).
+	tls {{.Cfg.CertDir}}/{{.ID}}/cert.pem {{.Cfg.CertDir}}/{{.ID}}/key.pem
 	{{- end}}
 	{{- if .Staging}}
 	# A staging copy: keep it out of search results.
@@ -100,14 +167,22 @@
 	root * {{.Root}}
 	encode zstd gzip
 	log {
-		output file {{$.AccessLog}} {
+		output file {{.Cfg.AccessLog}} {
 			roll_size 100MiB
 			roll_keep 10
 		}
-		format json
+		# JSON, with the daemon's health-check token replaced by a short
+		# hash: the ingester recognises its probes by it, and the log never
+		# holds the token (it lets health checks past the shield).
+		format filter {
+			request>headers>X-Wpgenie-Health hash
+		}
 	}
 	{{- if .BlockXMLRPC}}
 	@wpg_xmlrpc path /xmlrpc.php
+	{{- end}}
+	{{- if .HomeUpstreams}}
+	@wpg_home expression `!({method} in ["GET", "HEAD"]) || {path}.startsWith("/wp-admin") || {path}.startsWith("/wp-login.php") || {path}.startsWith("/wp-cron.php")`
 	{{- end}}
 	# Everything but static files goes through the shield, and so does any
 	# path containing ".php": PHP runs the script up to the first ".php", so
@@ -163,6 +238,17 @@
 	}
 	{{- end}}
 	{{- end}}
+	{{- if .OffloadTo}}
+	# Uploads are offloaded to object storage: one missing on disk (its local
+	# copy removed after a while, or never on this server) is fetched from the
+	# storage's public URL. GET/HEAD only, never a PHP or dot path.
+	@wpg_offload {
+		method GET HEAD
+		path /wp-content/uploads/*
+		not path_regexp (?i)(?:\.php|/\.)
+		not file
+	}
+	{{- end}}
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
 	# page (images/php/page-cache.php); the cookie rule here is a stricter
@@ -173,23 +259,23 @@
 		method GET HEAD
 		path */
 		expression `{query} == ""`
-		not header_regexp Cookie ({{$.BypassCookies}})
+		not header_regexp Cookie ({{.Cfg.BypassCookies}})
 		not header Authorization *
 		file /wp-content/cache/wpgenie{path}index.html
 	}
 	@wpg_cached_mobile {
 		method GET HEAD
 		path */
-		expression `{query} == "" && {{$.MobileExpr}}`
-		not header_regexp Cookie ({{$.BypassCookies}})
+		expression `{query} == "" && {{.Cfg.MobileExpr}}`
+		not header_regexp Cookie ({{.Cfg.BypassCookies}})
 		not header Authorization *
 		file /wp-content/cache/wpgenie{path}index-mobile.html
 	}
 	@wpg_cached_desktop {
 		method GET HEAD
 		path */
-		expression `{query} == "" && !{{$.MobileExpr}}`
-		not header_regexp Cookie ({{$.BypassCookies}})
+		expression `{query} == "" && !{{.Cfg.MobileExpr}}`
+		not header_regexp Cookie ({{.Cfg.BypassCookies}})
 		not header Authorization *
 		file /wp-content/cache/wpgenie{path}index-desktop.html
 	}
@@ -197,23 +283,23 @@
 
 	# Directive order inside route is exactly as written.
 	route {
-		reverse_proxy /_shield/* {{$.ShieldUpstream}} {
-			header_up {{$.SiteHeader}} {{.ID}}
+		reverse_proxy /_shield/* {{.Cfg.ShieldUpstream}} {
+			header_up {{.Cfg.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}
 		}
 		# WPGenie tools served on the site's own origin (Adminer): the daemon
 		# checks their short-lived tokens. Before the WAF, which would take
 		# Adminer's SQL for an attack.
-		reverse_proxy /_wpgenie/* {{$.ShieldUpstream}} {
-			header_up {{$.SiteHeader}} {{.ID}}
+		reverse_proxy /_wpgenie/* {{.Cfg.ShieldUpstream}} {
+			header_up {{.Cfg.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}
 		}
 		{{- if .ShieldEnabled}}
 		# Before the hardening rules below: probes for /.env or
 		# wp-config.php.bak must reach the shield to count towards a ban.
-		forward_auth @wpg_dynamic {{$.ShieldUpstream}} {
+		forward_auth @wpg_dynamic {{.Cfg.ShieldUpstream}} {
 			uri /_shield/check
-			header_up {{$.SiteHeader}} {{.ID}}
+			header_up {{.Cfg.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
@@ -239,7 +325,7 @@
 			{{- if .EdgeHTML}}
 			# The CDN may keep this page (its rule only caches what says so);
 			# browsers revalidate.
-			header Cache-Control "public, max-age=0, s-maxage={{$.EdgeTTL}}"
+			header Cache-Control "public, max-age=0, s-maxage={{.Cfg.EdgeTTL}}"
 			{{- end}}
 			rewrite * {file_match.relative}
 			file_server {
@@ -263,7 +349,55 @@
 			}
 		}
 		{{- end}}
+		{{- with .OffloadTo}}
+		# The upload's path under the storage's public URL, without the query
+		# string (it could address the storage's own API, like ?acl). Nothing
+		# of the visitor's (cookies, credentials, addresses) goes along, and
+		# the storage's errors (XML naming the bucket) become a plain 404.
+		route @wpg_offload {
+			uri strip_prefix /wp-content/uploads
+			rewrite * {{.Path}}{path}?
+			reverse_proxy {{.Origin}} {
+				header_up Host {{.Host}}
+				header_up -Cookie
+				header_up -Authorization
+				header_up -Referer
+				header_up -X-Forwarded-For
+				header_up -X-Forwarded-Host
+				header_up -X-Forwarded-Proto
+				header_down -Set-Cookie
+				header_down -X-Amz-*
+				header_down Cache-Control "public, max-age=2592000"
+				{{- if .TLS}}
+				transport http {
+					tls_server_name {{.ServerName}}
+				}
+				{{- end}}
+				@wpg_offload_missing status 4xx
+				handle_response @wpg_offload_missing {
+					respond 404
+				}
+			}
+		}
+		{{- end}}
+		{{- if .HomeUpstreams}}
+		# Replicas on other servers only serve page views: anything that may
+		# write files (wp-admin, sign-in, uploads, any POST) runs where the
+		# files live.
+		php_fastcgi @wpg_home {{join .HomeUpstreams " "}} {
+			lb_policy least_conn
+			lb_try_duration 5s
+			{{- if .Ingress}}
+			env HTTPS on
+			{{- end}}
+		}
+		{{- end}}
 		php_fastcgi {{join .Upstreams " "}} {
+			{{- if .Ingress}}
+			# Arrived over plain HTTP through the cluster tunnel; the visitor
+			# used HTTPS to the old server.
+			env HTTPS on
+			{{- end}}
 			lb_policy least_conn
 			# Retries only happen when the connection fails (nothing was sent),
 			# which is what makes draining a replica invisible to visitors.
@@ -282,18 +416,9 @@
 	# analytics count it. Other errors keep Caddy's default response.
 	handle_errors {
 		@wpg_waf expression `{err.message} == "interruption triggered"`
-		header @wpg_waf {{$.VerdictHeader}} waf
+		header @wpg_waf {{.Cfg.VerdictHeader}} waf
 		respond @wpg_waf "Access denied" 403
 	}
 	{{- end}}
 }
-{{- if .Redirects}}
-
-# site {{.ID}}: redirects to its primary domain
-{{join .Redirects ", "}} {
-	import wpgenie_hardening
-	redir https://{{index .Domains 0}}{uri} permanent
-}
 {{- end}}
-{{- end}}
-{{end -}}

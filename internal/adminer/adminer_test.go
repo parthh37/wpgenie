@@ -10,7 +10,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +20,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/dbprov"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 type fakeAccounts struct {
@@ -206,8 +206,7 @@ func TestAdminerEndToEnd(t *testing.T) {
 	raw, _ := sql.Open("mysql", "root:"+dbPass+"@tcp("+dbName+":3306)/")
 	defer raw.Close()
 	raw.ExecContext(ctx, "CREATE TABLE wp_sadm.wp_secret_marker (id int)")
-	st, _ := store.Open(filepath.Join(t.TempDir(), "db"))
-	defer st.Close()
+	st := storetest.Open(t)
 	st.CreateSite(ctx, &store.Site{ID: "sadm", Name: "x", PrimaryDomain: "adm.test", PHPVersion: "8.3", FPMPort: 19000,
 		DBName: "wp_sadm", Status: store.StatusActive, ShieldMode: "standard", MemoryMB: 512, CPUs: 1, Replicas: 1})
 	s := &Service{Store: st, Docker: docker, Accounts: db, Log: slog.New(slog.DiscardHandler),

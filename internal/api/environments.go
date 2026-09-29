@@ -2,14 +2,17 @@ package api
 
 import (
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/billing"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -34,11 +37,32 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	list, err := s.Store.Jobs(r.Context(), r.URL.Query().Get("site"), r.URL.Query().Get("active") == "1", limit)
+	siteID, active := r.URL.Query().Get("site"), r.URL.Query().Get("active") == "1"
+	if tenantOf(r) != nil {
+		// Their sites' jobs, and those they started (a failed create).
+		p := principalFrom(r.Context())
+		owned, err := s.ownedSites(r.Context(), p)
+		if err != nil {
+			return err
+		}
+		ids, owner := sortedKeys(owned), p.owner()
+		if siteID != "" {
+			if _, ok := owned[siteID]; !ok {
+				return store.ErrNotFound
+			}
+			ids, owner = []string{siteID}, ""
+		}
+		list, err := s.Store.VisibleJobs(r.Context(), ids, owner, active, limit)
+		if err != nil {
+			return err
+		}
+		return writeJSON(w, http.StatusOK, list)
+	}
+	list, err := s.Store.Jobs(r.Context(), siteID, active, limit)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, list)
+	return writeJSON(w, http.StatusOK, s.clusterJobs(r, list, limit))
 }
 
 func jobID(r *http.Request) (int64, error) {
@@ -52,6 +76,9 @@ func jobID(r *http.Request) (int64, error) {
 // getJob returns a job, with its secret result (a new site's password)
 // for the user who started it.
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) error {
+	if remote, err := s.remoteJob(w, r); remote || err != nil {
+		return err
+	}
 	id, err := jobID(r)
 	if err != nil {
 		return err
@@ -68,6 +95,9 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) dropJobSecret(w http.ResponseWriter, r *http.Request) error {
+	if remote, err := s.remoteJob(w, r); remote || err != nil {
+		return err
+	}
 	id, err := jobID(r)
 	if err != nil {
 		return err
@@ -110,6 +140,8 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// Every server backs up its own sites: they all get the destination.
+	s.pushRepos(r.Context())
 	out := map[string]any{"repo": viewRepo(repo)}
 	if generated {
 		// Shown once here (and on an admin's request later): without it the
@@ -120,9 +152,15 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) deleteRepo(w http.ResponseWriter, r *http.Request) error {
+	if err := s.repoUnusedElsewhere(r.Context(), r.PathValue("id")); err != nil {
+		return err
+	}
 	if err := s.Sites.RemoveRepo(r.Context(), r.PathValue("id")); err != nil {
 		return err
 	}
+	s.eachNode(context.WithoutCancel(r.Context()), 20*time.Second, func(ctx context.Context, n *store.Node) error {
+		return s.Cluster.Call(ctx, n.ID, http.MethodDelete, "/cluster/v1/repos/"+r.PathValue("id"), nil, nil)
+	})
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
@@ -193,6 +231,12 @@ func (s *Server) siteBackups(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) setBackupPolicy(w http.ResponseWriter, r *http.Request) error {
 	var in site.PolicyInput
 	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	if t := tenantOf(r); t != nil && in.RepoID != "" && !slices.Contains(t.SiteLimits.BackupRepos, in.RepoID) {
+		return fmt.Errorf("%w: your plan doesn't include that backup destination", errForbidden)
+	}
+	if done, err := s.forwardAfterChecks(w, r, in); done || err != nil {
 		return err
 	}
 	p, err := s.Sites.SetBackupPolicy(r.Context(), r.PathValue("id"), in)
@@ -272,16 +316,58 @@ func (s *Server) createStaging(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
-	st, id, err := s.Sites.StartStaging(r.Context(), r.PathValue("id"), in)
+	// A staging copy belongs to the live site's account and counts as one
+	// of its sites.
+	ctx := r.Context()
+	if err := s.checkTenantDomain(r, in.Domain); err != nil {
+		return err
+	}
+	var acctID int64
+	if o, err := s.Store.SiteOwnerOf(ctx, r.PathValue("id")); err == nil && s.Billing != nil {
+		acctID = o.AccountID
+		unlock := s.Billing.LockQuota()
+		defer unlock()
+		if tenantOf(r) != nil {
+			if err := s.Billing.CheckNewSiteLocked(ctx, acctID); err != nil {
+				return err
+			}
+		}
+	}
+	st, id, remote, err := s.createStagingOnNode(r, in)
 	if err != nil {
 		return err
 	}
-	return jobAccepted(w, id, map[string]any{"site": st})
+	if !remote {
+		if st, id, err = s.Sites.StartStaging(ctx, r.PathValue("id"), in); err != nil {
+			return err
+		}
+	}
+	if acctID != 0 {
+		if err := s.assignNewSite(ctx, st.ID, acctID); err != nil {
+			return err
+		}
+	}
+	s.announceSite(id, st.ID, acctID)
+	return jobAccepted(w, id, map[string]any{"site": siteView{st, acctID}})
 }
 
 func (s *Server) pushStaging(w http.ResponseWriter, r *http.Request) error {
 	var in site.PushInput
 	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	if tenantOf(r) != nil {
+		// The push writes into the live site: it must be theirs too (an
+		// administrator may have moved one of the two).
+		stg, err := s.siteRecord(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		if _, ok := s.siteOwnerInScope(r.Context(), principalFrom(r.Context()), stg.ParentID); !ok {
+			return fmt.Errorf("%w: the live site isn't yours", errForbidden)
+		}
+	}
+	if done, err := s.forwardAfterChecks(w, r, in); done || err != nil {
 		return err
 	}
 	id, err := s.Sites.StartPush(r.Context(), r.PathValue("id"), in)
@@ -311,6 +397,41 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err := decode(w, r, &in); err != nil {
 		return err
+	}
+	if err := s.checkTenantDomain(r, in.Domain); err != nil {
+		return err
+	}
+	if t := tenantOf(r); t != nil && t.SiteLimits.MaxDomains > 0 {
+		// Counted and added under the quota lock: parallel adds can't
+		// overshoot the plan.
+		unlock := s.Billing.LockQuota()
+		defer unlock()
+		st, err := s.siteRecord(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		if len(st.Domains)+len(st.RedirectDomains) >= t.SiteLimits.MaxDomains {
+			return fmt.Errorf("%w: your plan allows %d domains per site", billing.ErrQuota, t.SiteLimits.MaxDomains)
+		}
+	}
+	if s.Cluster != nil {
+		// A site on another server: that server only knows its own sites, so
+		// the domain is checked against every server here first.
+		if node, remote, err := s.Cluster.SiteNode(r.Context(), r.PathValue("id")); err != nil {
+			return err
+		} else if remote {
+			mu := s.Cluster.CreateLock()
+			mu.Lock()
+			defer mu.Unlock()
+			if err := s.Sites.DomainFree(r.Context(), in.Domain); err != nil {
+				return err
+			}
+			rebody(r, in)
+			return s.forwardSite(w, r, node, r.PathValue("id"))
+		}
+		mu := s.Cluster.CreateLock()
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	st, err := s.Sites.AddDomain(r.Context(), r.PathValue("id"), in.Domain, in.Redirect)
 	if err != nil {

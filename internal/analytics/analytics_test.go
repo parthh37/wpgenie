@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 func logLine(ts time.Time, host, ip, ua, method string, status int, size int64, ctype, shieldHdr string) string {
@@ -82,11 +85,7 @@ func TestReadNewHandlesPartialLinesAndRotation(t *testing.T) {
 
 func TestIngestEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	st := storetest.Open(t)
 	ctx := context.Background()
 	if err := st.CreateSite(ctx, &store.Site{ID: "s1", Name: "x", PrimaryDomain: "example.com",
 		PHPVersion: "8.3", FPMPort: 19000, DBName: "wp_s1", Status: store.StatusActive, ShieldMode: "standard"}); err != nil {
@@ -116,5 +115,28 @@ func TestIngestEndToEnd(t *testing.T) {
 	stats, _ = st.SiteStats(ctx, "s1", now.Add(-time.Hour))
 	if stats.Totals.Requests != 2 {
 		t.Errorf("double counted: %d", stats.Totals.Requests)
+	}
+}
+
+// The daemon's own probes carry the health token and aren't traffic; the
+// same User-Agent without the token (or with a wrong one) is. Caddy logs
+// the token's hash, never the token.
+func TestHealthProbesAreNotTraffic(t *testing.T) {
+	ts := time.Date(2026, 9, 29, 10, 30, 0, 0, time.UTC)
+	a := newAggregator([]byte("secret"))
+	a.health = []byte(HealthTokenHash("tok123"))
+	probe := func(token string) string {
+		return strings.Replace(logLine(ts, "example.com", "127.0.0.1", "WPGenie-Health/1.0", "GET", 200, 500, "text/html", ""),
+			`"headers":{`, `"headers":{"X-Wpgenie-Health":[`+strconv.Quote(token)+`],`, 1)
+	}
+	for _, line := range []string{probe(HealthTokenHash("tok123")), probe(HealthTokenHash("tok123")), probe(HealthTokenHash("wrong"))} {
+		e, ok := parseLine([]byte(line))
+		if !ok {
+			t.Fatalf("parse failed: %s", line)
+		}
+		a.add("s1", e)
+	}
+	if c := a.hourly[store.HourKey{SiteID: "s1", Hour: ts.Truncate(time.Hour).Unix()}]; c == nil || c.Requests != 1 || c.BotHits != 1 {
+		t.Errorf("counters = %+v, want only the request without the token", c)
 	}
 }

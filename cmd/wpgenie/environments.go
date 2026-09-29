@@ -108,10 +108,18 @@ func truncate(s string, n int) string {
 }
 
 func createSiteCmd(cfg *config.Config, args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: wpgenie site create <domain> <admin-email>")
+	fs := flag.NewFlagSet("site create", flag.ContinueOnError)
+	node := fs.String("node", "", "server to create it on (default: the one with the most room; \"local\": the panel's)")
+	if err := fs.Parse(reorderFlags(args)); err != nil {
+		return err
 	}
-	v, out, err := startJob(cfg, "POST", "/sites", site.CreateInput{Domain: args[0], AdminEmail: args[1]})
+	if fs.NArg() != 2 {
+		return errors.New("usage: wpgenie site create <domain> <admin-email> [--node ID]")
+	}
+	v, out, err := startJob(cfg, "POST", "/sites", struct {
+		site.CreateInput
+		Node string `json:"node,omitempty"`
+	}{site.CreateInput{Domain: fs.Arg(0), AdminEmail: fs.Arg(1)}, *node})
 	if err != nil {
 		return err
 	}
@@ -121,6 +129,24 @@ func createSiteCmd(cfg *config.Config, args []string) error {
 		st["id"], c["url"], c["admin_url"], c["username"], c["password"])
 	call(cfg, "DELETE", fmt.Sprintf("/jobs/%d/secret", v.Job.ID), nil, nil)
 	return nil
+}
+
+// reorderFlags moves flags ahead of positional arguments, so they may come
+// last ("site create a.com me@a.com --node web-2") as the usage shows.
+func reorderFlags(args []string) []string {
+	var flags, rest []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			if !strings.Contains(args[i], "=") && i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	return append(flags, rest...)
 }
 
 // ---- Backups ----

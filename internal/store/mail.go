@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 )
 
@@ -26,10 +25,6 @@ type MailAlias struct {
 	Alias  string `json:"alias"`
 	Target string `json:"target"`
 	Domain string `json:"domain"`
-}
-
-func isUnique(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 func (s *Store) AddMailDomain(ctx context.Context, domain string) error {

@@ -1,6 +1,7 @@
-// Package runtime runs site workloads. Runtime is the seam for multi-node
-// scaling: today it is local Docker; a future implementation forwards the
-// same calls to a wpgenie agent on another server.
+// Package runtime runs site workloads on this server (Docker). Each server
+// of a cluster runs its own sites' workloads through its own daemon (see
+// internal/cluster); a spread site's replicas on other nodes are started by
+// those nodes at its home's request (site/spread.go).
 package runtime
 
 import (
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,6 +121,10 @@ func ContainerName(id string, port int) string { return "wpg-" + id + "-" + strc
 // binary small and makes every action reproducible by hand when debugging.
 type Docker struct {
 	Bin string // defaults to "docker"
+	// Scope, if set, labels the site containers this Docker starts and
+	// limits what it lists (and so stops, execs into) to them: several
+	// WPGenie servers sharing one Docker (tests of moves between servers).
+	Scope string
 }
 
 func (d *Docker) bin() string {
@@ -132,6 +138,21 @@ func (d *Docker) bin() string {
 // components managed outside the site Runtime (the mail stack).
 func (d *Docker) Run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
 	return d.run(ctx, stdin, args...)
+}
+
+// ContainerIP is a running container's address on its (first) network,
+// which this host can reach directly.
+func (d *Docker) ContainerIP(ctx context.Context, name string) (string, error) {
+	out, err := d.run(ctx, nil, "inspect", "-f", `{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}`, name)
+	if err != nil {
+		return "", err
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if net.ParseIP(f) != nil {
+			return f, nil
+		}
+	}
+	return "", fmt.Errorf("container %s has no address", name)
 }
 
 // Stream runs any docker command with stdout going to w; stderr (bounded)
@@ -254,7 +275,11 @@ func (d *Docker) ImageID(ctx context.Context, image string) (string, error) {
 }
 
 func (d *Docker) StartReplica(ctx context.Context, spec SiteSpec, port int) error {
-	_, err := d.run(ctx, nil, runArgs(spec, port)...)
+	args := runArgs(spec, port)
+	if d.Scope != "" {
+		args = append([]string{args[0], args[1], "--label", "wpgenie.scope=" + d.Scope}, args[2:]...)
+	}
+	_, err := d.run(ctx, nil, args...)
 	return err
 }
 
@@ -338,8 +363,12 @@ func (d *Docker) Replicas(ctx context.Context, siteID string) ([]Replica, error)
 	if siteID != "" {
 		filter += "=" + siteID
 	}
-	out, err := d.run(ctx, nil, "ps", "-a", "--filter", filter,
-		"--format", `{{.Names}}|{{.Label "wpgenie.port"}}|{{.Label "wpgenie.spec"}}|{{.State}}`)
+	args := []string{"ps", "-a", "--filter", filter}
+	if d.Scope != "" {
+		args = append(args, "--filter", "label=wpgenie.scope="+d.Scope)
+	}
+	out, err := d.run(ctx, nil, append(args,
+		"--format", `{{.Names}}|{{.Label "wpgenie.port"}}|{{.Label "wpgenie.spec"}}|{{.State}}`)...)
 	if err != nil {
 		return nil, err
 	}

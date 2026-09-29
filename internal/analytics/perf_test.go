@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 func perfLine(ts time.Time, method, uri string, status int, seconds float64, headers map[string]string) string {
@@ -68,11 +69,7 @@ func TestAggregatorPerf(t *testing.T) {
 
 func TestIngestPerfRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	st := storetest.Open(t)
 	if err := st.CreateSite(ctx, &store.Site{ID: "s1", Name: "x", PrimaryDomain: "example.com", PHPVersion: "8.3",
 		FPMPort: 19000, DBName: "wp_s1", Status: store.StatusActive, PHP: store.PHPSettings{}}); err != nil {
 		t.Fatal(err)
@@ -86,9 +83,16 @@ func TestIngestPerfRoundTrip(t *testing.T) {
 	}
 	os.WriteFile(log, []byte(lines), 0o644)
 	recent := &Recent{}
-	in := &Ingester{Path: log, Store: st, Secret: []byte("k"), Recent: recent}
+	var observed int64
+	in := &Ingester{Path: log, Store: st, Secret: []byte("k"), Recent: recent,
+		Observer: func(b *store.TrafficBatch) {
+			observed += b.Perf[store.HourKey{SiteID: "s1", Hour: now.Truncate(time.Hour).Unix()}].PHPRequests
+		}}
 	if _, err := in.tick(ctx, store.IngestState{Name: stateName}, newAggregator(in.Secret)); err != nil {
 		t.Fatal(err)
+	}
+	if observed != 100 {
+		t.Errorf("observer saw %d PHP requests", observed)
 	}
 	perf, err := st.SitePerf(ctx, "s1", now.Add(-time.Hour))
 	if err != nil {

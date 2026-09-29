@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,17 +15,13 @@ import (
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
-	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 	"github.com/parthh37/wpgenie/internal/updater"
 )
 
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	cfg := config.Default()
 	svc := &site.Service{Cfg: cfg, Store: st, Log: slog.Default()}
 	sh := shield.New(shield.Options{Secret: []byte("k"), Sites: svc.ShieldLookup})

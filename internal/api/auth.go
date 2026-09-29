@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/auth"
+	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -46,13 +47,26 @@ type Principal struct {
 	UserID    int64
 	Name      string
 	Role      string
-	SessionID string // "" for the API token
+	SessionID string // "" for the API token and users' API tokens
 	TOTP      bool   // the user has two-factor authentication on
+	// Forwarded: the panel forwarded this request to this node for Owner
+	// (job secrets) from IP (the audit log).
+	Forwarded bool
+	Owner     string
+	IP        string
+	// AccountID is the tenant account of a customer or reseller user (0 for
+	// staff); Role is then that account's tenant role.
+	AccountID int64
+	// TokenID is the user's API token the request came with (0: none).
+	TokenID int64
 }
 
 // owner is the stable identity job secrets are bound to: the user ID (a
 // name can be deleted and taken again), or the API token.
 func (p *Principal) owner() string {
+	if p.Owner != "" {
+		return p.Owner
+	}
 	if p.UserID == 0 {
 		return "api-token"
 	}
@@ -77,11 +91,23 @@ var (
 	errConflict     = errors.New("conflict")
 )
 
-// authenticate resolves the API token or a session cookie.
+// authenticate resolves the API token, a user's API token or a session
+// cookie; on a node, also the identity of a request the panel forwarded
+// (only ever set on a connection that presented the panel's cluster
+// certificate).
 func (s *Server) authenticate(r *http.Request) (*Principal, error) {
+	if id, ok := cluster.IdentityFrom(r.Context()); ok {
+		if !s.Node || !auth.ValidRole(id.Role) {
+			return nil, errUnauthorized
+		}
+		return &Principal{Name: id.Name, Role: id.Role, Forwarded: true, Owner: id.Owner, IP: id.IP}, nil
+	}
 	if h := r.Header.Get("Authorization"); h != "" {
 		if subtle.ConstantTimeCompare([]byte(h), []byte("Bearer "+s.Token)) == 1 {
 			return &Principal{Name: "api-token", Role: auth.RoleAdmin}, nil
+		}
+		if tok, ok := strings.CutPrefix(h, "Bearer "); ok && strings.HasPrefix(tok, apiTokenPrefix) {
+			return s.tokenPrincipal(r, tok)
 		}
 		return nil, errUnauthorized
 	}
@@ -103,16 +129,48 @@ func (s *Server) authenticate(r *http.Request) (*Principal, error) {
 	if err != nil || u.Disabled {
 		return nil, errUnauthorized
 	}
+	p, err := s.principalFor(ctx, u)
+	if err != nil {
+		return nil, err
+	}
 	if now.Sub(sess.LastSeenAt) > time.Minute { // don't write on every request
 		s.Store.TouchSession(ctx, sess.ID, now)
 	}
-	return &Principal{UserID: u.ID, Name: u.Username, Role: u.Role, SessionID: sess.ID, TOTP: u.TOTPEnabled}, nil
+	p.SessionID = sess.ID
+	return p, nil
+}
+
+// principalFor is who a user acts as. A user of an account always acts
+// with that account's tenant role, whatever the users table says, and not
+// at all once the account is terminated; a tenant role without an account
+// gets nothing. So a tenant can never end up with a staff role.
+func (s *Server) principalFor(ctx context.Context, u *store.User) (*Principal, error) {
+	p := &Principal{UserID: u.ID, Name: u.Username, Role: u.Role, TOTP: u.TOTPEnabled}
+	if u.AccountID == 0 {
+		if auth.IsTenant(u.Role) || !auth.ValidRole(u.Role) {
+			return nil, errUnauthorized
+		}
+		return p, nil
+	}
+	a, err := s.Store.GetAccount(ctx, u.AccountID)
+	if err != nil || a.Status == store.AccountTerminated {
+		return nil, errUnauthorized
+	}
+	if p.Role = auth.TenantRole(a.Kind); p.Role == "" {
+		return nil, errUnauthorized
+	}
+	p.AccountID = a.ID
+	return p, nil
 }
 
 // route registers an authenticated handler that needs at least role. It
 // also enforces the CSRF header on cookie requests, the panel's 2FA
-// requirement, and audits every request that changes something.
+// requirement, tenants' access (see tenancy.go), and audits every request
+// that changes something. Every pattern is recorded in s.routes, so the
+// route table can be enumerated (and tested route by route).
 func (s *Server) route(mux *http.ServeMux, pattern, role string, h handlerFunc) {
+	checkTenantRoute(pattern)
+	s.routes = append(s.routes, routeInfo{Pattern: pattern, Role: role})
 	mux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.authenticate(r)
 		if err != nil {
@@ -137,12 +195,28 @@ func (s *Server) route(mux *http.ServeMux, pattern, role string, h handlerFunc) 
 			deny(errCSRF)
 			return
 		}
-		accountRoute := strings.Contains(pattern, "/api/v1/account")
-		if p.SessionID != "" && !p.TOTP && !accountRoute && s.require2FA(r.Context()) {
+		// Until they enrol, users without two-factor authentication reach
+		// only their own user's routes (/api/v1/accounts, tenant accounts,
+		// is not one of them), and not their API tokens: a token made then
+		// would carry the session past the requirement. A user's API token
+		// is held to the same rule as their sessions.
+		accountRoute := routeScope(pattern) == scopeSelf && !strings.HasPrefix(pathOf(pattern), "/api/v1/account/tokens")
+		if (p.SessionID != "" || p.TokenID != 0) && !p.TOTP && !accountRoute && s.require2FA(r.Context()) {
 			deny(err2FARequired, "code", "totp_required")
 			return
 		}
-		if auth.Level(p.Role) < auth.Level(role) {
+		if auth.IsTenant(p.Role) {
+			ctx, status, err := s.authorizeTenant(r, pattern, p)
+			if err != nil {
+				if status == http.StatusForbidden {
+					deny(err)
+				} else {
+					writeJSON(w, status, map[string]string{"error": err.Error()})
+				}
+				return
+			}
+			r = r.WithContext(ctx)
+		} else if auth.Level(p.Role) < auth.Level(role) {
 			deny(errForbidden)
 			return
 		}
@@ -222,6 +296,11 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
+// Unwrap lets http.ResponseController reach the connection through the
+// recorder: flushing streamed answers, and the write deadline a long
+// download extends.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (s *Server) now() time.Time {
 	if s.Now != nil {
 		return s.Now()
@@ -239,6 +318,9 @@ func (s *Server) require2FA(ctx context.Context) bool {
 // address (resolved through Cloudflare when it is in front); anything
 // else is a local connection.
 func clientIP(r *http.Request) string {
+	if id, ok := cluster.IdentityFrom(r.Context()); ok && id.IP != "" {
+		return id.IP
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -401,7 +483,13 @@ func (s *Server) authState(w http.ResponseWriter, r *http.Request) error {
 	out := map[string]any{"setup": n == 0, "user": nil, "require_2fa": s.require2FA(r.Context())}
 	if p, err := s.authenticate(r); err == nil && p.SessionID != "" {
 		if u, err := s.Store.GetUser(r.Context(), p.UserID); err == nil {
+			u.Role = p.Role // a tenant's role follows their account
 			out["user"] = u
+		}
+		if p.AccountID != 0 {
+			if a, err := s.Store.GetAccount(r.Context(), p.AccountID); err == nil {
+				out["account"] = map[string]any{"id": a.ID, "name": a.Name, "kind": a.Kind, "status": a.Status}
+			}
 		}
 	}
 	return writeJSON(w, http.StatusOK, out)
@@ -409,9 +497,19 @@ func (s *Server) authState(w http.ResponseWriter, r *http.Request) error {
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@+-]{1,63}$`)
 
+// reservedNames are actors the audit log shows for things no user did: a
+// user by one of these names could pass their actions off as the API
+// token's or a billing system's.
+var reservedNames = []string{"api-token", "system", "scheduler", "sso", "stripe"}
+
 func validUsername(u string) error {
 	if !usernameRe.MatchString(u) {
 		return fmt.Errorf("%w: username must be 2-64 letters, digits or . _ @ + -", errBadRequest)
+	}
+	for _, r := range reservedNames {
+		if strings.EqualFold(u, r) {
+			return fmt.Errorf("%w: %s is a reserved name", errBadRequest, u)
+		}
 	}
 	if _, err := strconv.ParseInt(u, 10, 64); err == nil {
 		return fmt.Errorf("%w: username can't be only digits", errBadRequest)
@@ -513,6 +611,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	if u.Disabled {
 		return fail("account disabled")
 	}
+	if _, err := s.principalFor(ctx, u); err != nil {
+		return fail("account closed")
+	}
 	if u.TOTPEnabled {
 		code := strings.TrimSpace(in.Code)
 		if code == "" {
@@ -559,6 +660,9 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *store.U
 	u, err := s.Store.GetUser(r.Context(), u.ID)
 	if err != nil {
 		return err
+	}
+	if p, err := s.principalFor(r.Context(), u); err == nil {
+		u.Role = p.Role // a tenant's role follows their account
 	}
 	return writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }

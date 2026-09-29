@@ -40,11 +40,10 @@ func TestMigrationV8FromV7(t *testing.T) {
 }
 
 func TestSlowRequestsAreCapped(t *testing.T) {
-	st, err := Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
+	forEachBackend(t, testSlowRequestsAreCapped)
+}
+
+func testSlowRequestsAreCapped(t *testing.T, st *Store) {
 	slow := map[SlowKey]*SlowAgg{}
 	for i := range maxSlowRequests + 100 {
 		slow[SlowKey{"s1", "GET", "/made-up-" + strconv.Itoa(i) + "/"}] = &SlowAgg{Count: 1, TotalMS: 1500, MaxMS: 1500, LastStatus: 404, LastSeen: int64(i)}
@@ -53,7 +52,7 @@ func TestSlowRequestsAreCapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	st.db.QueryRow(`SELECT COUNT(*) FROM slow_requests WHERE site_id = 's1'`).Scan(&n)
+	st.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM slow_requests WHERE site_id = 's1'`).Scan(&n)
 	if n != maxSlowRequests {
 		t.Fatalf("%d slow URLs kept, want %d", n, maxSlowRequests)
 	}

@@ -60,7 +60,20 @@ services:
     restart: unless-stopped
     networks: [wpgenie]
     # Pure cache: no persistence, evict least-recently-used keys when full.
-    command: ["valkey-server", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    # Every site is its own ACL user, limited to its own keys; wpgenie writes
+    # users.acl (hashes only) and has Valkey reload it. Until it exists (the
+    # first start after an upgrade) Valkey runs without it, and wpgenie
+    # restarts it once the file is there.
+    command:
+      - sh
+      - -c
+      - >-
+        exec valkey-server --maxmemory "$$REDIS_MAXMEMORY" --maxmemory-policy allkeys-lru --save "" --appendonly no
+        $$([ -f /etc/valkey/users.acl ] && echo --aclfile /etc/valkey/users.acl)
+    environment:
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    volumes:
+      - /etc/wpgenie/valkey:/etc/valkey:ro
 
 networks:
   wpgenie:

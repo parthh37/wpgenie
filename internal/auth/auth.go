@@ -46,6 +46,31 @@ func Level(role string) int {
 
 func ValidRole(role string) bool { return Level(role) > 0 }
 
+// Tenant roles belong to users of a customer or reseller account (see
+// internal/billing). They have no staff level at all, so every route
+// that only checks Level refuses them: a tenant reaches only what the API
+// explicitly opens to tenants, for the sites and accounts they own.
+const (
+	RoleCustomer = "customer" // users of a customer account: its sites
+	RoleReseller = "reseller" // users of a reseller account: its sites, customer accounts and their sites
+)
+
+// IsTenant reports whether role is a tenant role.
+func IsTenant(role string) bool { return role == RoleCustomer || role == RoleReseller }
+
+// TenantRole is the role of the users of an account of kind ("customer" or
+// "reseller"), or "" for an unknown kind. A tenant user's role always
+// follows their account, never the users table.
+func TenantRole(kind string) string {
+	switch kind {
+	case "customer":
+		return RoleCustomer
+	case "reseller":
+		return RoleReseller
+	}
+	return ""
+}
+
 // Password hashing: PBKDF2-HMAC-SHA256 from the standard library, at
 // OWASP's 2023 iteration count. Stored as
 // "pbkdf2-sha256$<iterations>$<salt>$<hash>" (base64, unpadded), so the

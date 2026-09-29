@@ -170,6 +170,13 @@ func (q *Queue) Submit(ctx context.Context, spec Spec, fn func(ctx context.Conte
 	if err != nil {
 		return 0, err
 	}
+	// Who started it, so tenants can follow their jobs even after the
+	// site is gone (a failed create rolls the site back).
+	if owner := OwnerFrom(ctx); owner != "" {
+		if err := q.Store.SetJobOwner(ctx, id, owner); err != nil {
+			q.Log.Warn("recording job owner", "job", id, "err", err)
+		}
+	}
 	done := make(chan struct{})
 	q.done.Store(id, done)
 	q.wg.Add(1)

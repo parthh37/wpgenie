@@ -27,6 +27,7 @@ func (s *Server) setSecuritySettings(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 	s.Shield.SetGlobal(g.Shield())
+	s.broadcast(r, http.MethodPut, "/api/v1/security/settings", in)
 	return writeJSON(w, http.StatusOK, g)
 }
 

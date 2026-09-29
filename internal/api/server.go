@@ -3,21 +3,28 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/auth"
 	"github.com/parthh37/wpgenie/internal/backup"
+	"github.com/parthh37/wpgenie/internal/billing"
+	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/monitor"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
@@ -42,8 +49,35 @@ type Server struct {
 	Countries *iprep.Countries
 	Log       *slog.Logger
 	Now       func() time.Time // for tests
+	// Billing is accounts, plans and billing hooks (see internal/billing);
+	// without it tenants can reach nothing. PanelURL is the panel's public
+	// origin (https://panel.example.com), for sign-on links and the Stripe
+	// webhook's address.
+	Billing  *billing.Service
+	PanelURL string
+
+	// Cluster is the control plane's registry of other servers (nil on a
+	// node). Node is set on servers running `wpgenie agent`: the panel
+	// signs people in; a node only takes requests the panel forwards (and
+	// its local API token).
+	Cluster *cluster.Controller
+	Node    bool
+
+	// Monitor serves /metrics and the alert settings (optional).
+	Monitor *monitor.Service
 
 	guard loginGuard
+	// routes is every route registered through route(), in order.
+	routes []routeInfo
+	// measured: account ID -> last on-demand disk measurement.
+	measured sync.Map
+}
+
+// routeInfo is one authenticated route: its pattern and the staff role it
+// needs (tenants: see tenantRoutes).
+type routeInfo struct {
+	Pattern string
+	Role    string
 }
 
 // Roles a route needs (see auth.Role*).
@@ -69,13 +103,30 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
-	// Signing in.
-	mux.Handle("GET /api/v1/auth/state", s.publicAuth(s.authState))
-	mux.Handle("POST /api/v1/auth/setup", s.publicAuth(s.setup))
-	mux.Handle("POST /api/v1/auth/login", s.publicAuth(s.login))
-	mux.Handle("POST /api/v1/auth/logout", s.publicAuth(s.logout))
+	// Signing in (on the panel only: a node only takes what the panel
+	// forwards).
+	if !s.Node {
+		mux.Handle("GET /api/v1/auth/state", s.publicAuth(s.authState))
+		mux.Handle("POST /api/v1/auth/setup", s.publicAuth(s.setup))
+		mux.Handle("POST /api/v1/auth/login", s.publicAuth(s.login))
+		mux.Handle("POST /api/v1/auth/logout", s.publicAuth(s.logout))
+		mux.Handle("POST /api/v1/auth/sso", s.publicAuth(s.ssoLogin))
+		// Stripe's webhook: no session; authenticated by its signature.
+		mux.HandleFunc("POST /api/v1/billing/stripe/webhook", s.stripeWebhook)
+	}
 
-	r := func(pattern, role string, h handlerFunc) { s.route(mux, pattern, role, h) }
+	s.routes = nil
+
+	r := func(pattern, role string, h handlerFunc) {
+		if s.Node && panelOnly(pattern) {
+			return
+		}
+		s.route(mux, pattern, role, s.clustered(pattern, h))
+	}
+	if s.Cluster != nil {
+		s.clusterRoutes(r)
+	}
+	s.monitoringRoutes(mux, r)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.
@@ -88,6 +139,9 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/account/recovery-codes", viewer, s.newRecoveryCodes)
 	r("GET /api/v1/account/sessions", viewer, s.mySessions)
 	r("DELETE /api/v1/account/sessions/{id}", viewer, s.deleteMySession)
+	r("GET /api/v1/account/tokens", viewer, s.myTokens)
+	r("POST /api/v1/account/tokens", viewer, s.createMyToken)
+	r("DELETE /api/v1/account/tokens/{id}", viewer, s.deleteMyToken)
 
 	r("GET /api/v1/users", admin, s.listUsers)
 	r("POST /api/v1/users", admin, s.createUser)
@@ -100,6 +154,9 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/audit", admin, s.auditLog)
 	r("GET /api/v1/settings/auth", admin, s.authSettings)
 	r("PUT /api/v1/settings/auth", admin, s.setAuthSettings)
+	r("GET /api/v1/tokens", admin, s.allTokens)
+	r("DELETE /api/v1/tokens/{id}", admin, s.deleteAnyToken)
+	r("POST /api/v1/users/{id}/tokens", admin, s.createUserToken)
 
 	r("GET /api/v1/sites", viewer, s.listSites)
 	r("POST /api/v1/sites", admin, s.createSite)
@@ -122,6 +179,7 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/sites/{id}/scan", operator, s.runScan)
 	r("GET /api/v1/sites/{id}/scan", viewer, s.lastScan)
 	r("POST /api/v1/sites/{id}/plugins", operator, s.analysePlugins)
+	r("PUT /api/v1/sites/{id}/spread", admin, s.setSpread)
 	r("GET /api/v1/sites/{id}/plugins", viewer, s.pluginReport)
 
 	r("GET /api/v1/jobs", viewer, s.listJobs)
@@ -166,6 +224,10 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
 	r("PUT /api/v1/sites/{id}/cdn", operator, s.setCDN)
 	r("POST /api/v1/sites/{id}/cdn/purge", operator, s.purgeCDN)
+	r("GET /api/v1/sites/{id}/offload", viewer, s.offloadStatus)
+	r("PUT /api/v1/sites/{id}/offload", operator, s.setOffload)
+	r("POST /api/v1/sites/{id}/offload/sync", operator, s.syncOffload)
+	r("POST /api/v1/sites/{id}/offload/download", operator, s.downloadOffload)
 	r("PUT /api/v1/sites/{id}/images", operator, s.setImages)
 	r("POST /api/v1/sites/{id}/images/convert", operator, s.convertImages)
 	r("GET /api/v1/sites/{id}/insights", viewer, s.insights)
@@ -203,6 +265,41 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/security/reputation", viewer, s.reputationStatus)
 	r("POST /api/v1/security/reputation/refresh", admin, s.refreshReputation)
 
+	// Accounts, plans and billing (the provisioning API): see accounts.go.
+	r("GET /api/v1/accounts", viewer, s.listAccounts)
+	r("POST /api/v1/accounts", admin, s.createAccount)
+	r("GET /api/v1/accounts/{id}", viewer, s.getAccount)
+	r("PUT /api/v1/accounts/{id}", admin, s.updateAccount)
+	r("DELETE /api/v1/accounts/{id}", admin, s.deleteAccount)
+	r("POST /api/v1/accounts/{id}/suspend", admin, s.suspendAccount)
+	r("POST /api/v1/accounts/{id}/unsuspend", admin, s.unsuspendAccount)
+	r("POST /api/v1/accounts/{id}/terminate", admin, s.terminateAccount)
+	r("GET /api/v1/accounts/{id}/usage", viewer, s.accountUsage)
+	r("POST /api/v1/accounts/{id}/usage/measure", operator, s.measureUsage)
+	r("GET /api/v1/accounts/{id}/events", viewer, s.accountEvents)
+	r("GET /api/v1/accounts/{id}/users", viewer, s.accountUsers)
+	r("POST /api/v1/accounts/{id}/users", admin, s.createAccountUser)
+	r("PUT /api/v1/accounts/{id}/users/{user}", admin, s.updateAccountUser)
+	r("POST /api/v1/accounts/{id}/users/{user}/password", admin, s.accountUserPassword)
+	r("DELETE /api/v1/accounts/{id}/users/{user}", admin, s.deleteAccountUser)
+	r("POST /api/v1/accounts/{id}/sso", admin, s.accountSSO)
+	r("GET /api/v1/usage", viewer, s.usageReport)
+	r("GET /api/v1/plans", viewer, s.listPlans)
+	r("POST /api/v1/plans", admin, s.createPlan)
+	r("PUT /api/v1/plans/{id}", admin, s.updatePlan)
+	r("DELETE /api/v1/plans/{id}", admin, s.deletePlan)
+	r("PUT /api/v1/sites/{id}/account", admin, s.setSiteAccount)
+	r("GET /api/v1/sites/{id}/backups/destinations", viewer, s.backupDestinations)
+	r("GET /api/v1/billing/settings", admin, s.billingSettings)
+	r("PUT /api/v1/billing/settings", admin, s.setBillingSettings)
+	r("GET /api/v1/billing/webhooks", admin, s.webhookEndpoints)
+	r("POST /api/v1/billing/webhooks", admin, s.createWebhookEndpoint)
+	r("PUT /api/v1/billing/webhooks/{id}", admin, s.updateWebhookEndpoint)
+	r("DELETE /api/v1/billing/webhooks/{id}", admin, s.deleteWebhookEndpoint)
+	r("POST /api/v1/billing/webhooks/{id}/test", admin, s.testWebhookEndpoint)
+	r("GET /api/v1/billing/deliveries", admin, s.webhookDeliveries)
+	r("POST /api/v1/billing/deliveries/{id}/retry", admin, s.retryWebhookDelivery)
+
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("GET /", http.FileServerFS(static))
 
@@ -219,16 +316,18 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict),
 		errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled), errors.Is(err, errConflict),
-		errors.Is(err, sftp.ErrConflict),
-		errors.Is(err, errLastAdmin):
+		errors.Is(err, sftp.ErrConflict), errors.Is(err, store.ErrConflict),
+		errors.Is(err, errLastAdmin), errors.Is(err, billing.ErrConflict), errors.Is(err, store.ErrExists),
+		errors.Is(err, store.ErrInUse):
 		status = http.StatusConflict
 	case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
 		errors.Is(err, mail.ErrInvalid), errors.Is(err, sftp.ErrInvalid), errors.Is(err, adminer.ErrInvalid),
-		errors.Is(err, backup.ErrWrongPassword):
+		errors.Is(err, backup.ErrWrongPassword), errors.Is(err, billing.ErrInvalid), errors.Is(err, billing.ErrBadSignature),
+		errors.Is(err, cluster.ErrInvalid):
 		status = http.StatusBadRequest
 	case errors.Is(err, errUnauthorized), errors.Is(err, errBadLogin):
 		status = http.StatusUnauthorized
-	case errors.Is(err, errForbidden):
+	case errors.Is(err, errForbidden), errors.Is(err, billing.ErrForbidden), errors.Is(err, billing.ErrQuota):
 		status = http.StatusForbidden
 	case errors.Is(err, errTooMany):
 		status = http.StatusTooManyRequests
@@ -241,15 +340,53 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 
 var errBadRequest = errors.New("bad request")
 
+// listSites lists every site for staff, and only their own (their
+// customers' too, for a reseller) for tenants, with the owning account.
 func (s *Server) listSites(w http.ResponseWriter, r *http.Request) error {
 	sites, err := s.Store.ListSites(r.Context())
 	if err != nil {
 		return err
 	}
-	if sites == nil {
-		sites = []*store.Site{}
+	remote, err := s.clusterSites(r.Context())
+	if err != nil {
+		return err
 	}
-	return writeJSON(w, http.StatusOK, sites)
+	// A site on its way here, or gone from here, is listed where it lives
+	// (the registry), once.
+	sites = slices.DeleteFunc(sites, func(st *store.Site) bool {
+		return st.Status == store.StatusImporting || st.Status == store.StatusMoved
+	})
+	sites = append(sites, remote...)
+	owners, err := s.siteOwners(r)
+	if err != nil {
+		return err
+	}
+	out := make([]siteView, 0, len(sites))
+	for _, st := range sites {
+		acct, ok := owners[st.ID]
+		if !ok && tenantOf(r) != nil {
+			continue
+		}
+		out = append(out, siteView{st, acct})
+	}
+	return writeJSON(w, http.StatusOK, out)
+}
+
+// siteOwners maps sites to their accounts: the tenant's scope, or every
+// owned site for staff.
+func (s *Server) siteOwners(r *http.Request) (map[string]int64, error) {
+	if tenantOf(r) != nil {
+		return s.ownedSites(r.Context(), principalFrom(r.Context()))
+	}
+	all, err := s.Store.AllSiteOwners(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(all))
+	for _, o := range all {
+		out[o.SiteID] = o.AccountID
+	}
+	return out, nil
 }
 
 func (s *Server) getSite(w http.ResponseWriter, r *http.Request) error {
@@ -257,33 +394,175 @@ func (s *Server) getSite(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, st)
+	v := siteView{Site: st}
+	if o, err := s.Store.SiteOwnerOf(r.Context(), st.ID); err == nil {
+		v.AccountID = o.AccountID
+	}
+	return writeJSON(w, http.StatusOK, v)
 }
 
+// createSite provisions a site. ?account= makes an account own it: a
+// tenant's own account by default (or one of a reseller's customers),
+// within the plan's site count and disk space; staff may give any account
+// a site regardless of its plan.
 func (s *Server) createSite(w http.ResponseWriter, r *http.Request) error {
-	var in site.CreateInput
+	var in createSiteInput
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
-	// Provisioning runs as a job; the admin credentials are its secret,
-	// shown only to whoever created the site and never stored.
-	st, id, err := s.Sites.StartCreate(r.Context(), in)
+	ctx := r.Context()
+	if err := s.checkTenantDomain(r, in.Domain); err != nil {
+		return err
+	}
+	acctID, err := s.targetAccount(r)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusAccepted, map[string]any{"site": st, "job_id": id})
+	if acctID != 0 {
+		// The check, the reservation and the ownership are one step: two
+		// requests can't both take the last site of a plan.
+		unlock := s.Billing.LockQuota()
+		defer unlock()
+		if tenantOf(r) != nil {
+			if err := s.Billing.CheckNewSiteLocked(ctx, acctID); err != nil {
+				return err
+			}
+		}
+	}
+	// Provisioning runs as a job; the admin credentials are its secret,
+	// shown only to whoever created the site and never stored. On another
+	// server when placement (or the admin) says so.
+	st, id, remote, err := s.createOnNode(r, in)
+	if err != nil {
+		return err
+	}
+	if !remote {
+		// Checked and reserved under the cluster's lock, like creates on
+		// other servers: no two servers take one domain at once.
+		if s.Cluster != nil {
+			mu := s.Cluster.CreateLock()
+			mu.Lock()
+			st, id, err = s.Sites.StartCreate(ctx, in.CreateInput)
+			mu.Unlock()
+		} else {
+			st, id, err = s.Sites.StartCreate(ctx, in.CreateInput)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if acctID != 0 {
+		if err := s.assignNewSite(ctx, st.ID, acctID); err != nil {
+			return err
+		}
+	}
+	s.announceSite(id, st.ID, acctID)
+	return writeJSON(w, http.StatusAccepted, map[string]any{"site": siteView{st, acctID}, "job_id": id})
 }
 
+// targetAccount is the account a new site is for (0: none, staff-only).
+func (s *Server) targetAccount(r *http.Request) (int64, error) {
+	v := r.URL.Query().Get("account")
+	t := tenantOf(r)
+	if v == "" {
+		if t != nil {
+			return t.Account.ID, nil
+		}
+		return 0, nil
+	}
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || id < 0 {
+		return 0, errBadRequest
+	}
+	if s.Billing == nil {
+		return 0, fmt.Errorf("%w: accounts are not available", errBadRequest)
+	}
+	if t != nil {
+		if _, ok := s.accountInScope(r.Context(), principalFrom(r.Context()), id); !ok {
+			return 0, store.ErrNotFound
+		}
+		return id, nil
+	}
+	if id != 0 {
+		if _, err := s.Store.GetAccount(r.Context(), id); err != nil {
+			return 0, fmt.Errorf("%w: no account %d", errBadRequest, id)
+		}
+	}
+	return id, nil
+}
+
+// assignNewSite records who owns a site whose creation job just started.
+// Caller holds the quota lock.
+func (s *Server) assignNewSite(ctx context.Context, siteID string, acctID int64) error {
+	if err := s.Billing.AssignSiteLocked(ctx, siteID, acctID); err != nil {
+		s.Log.Error("recording a new site's account", "site", siteID, "account", acctID, "err", err)
+		return err
+	}
+	// A creation that failed at once has already rolled the site back (and
+	// its ownership with it, or before it): don't keep a stray owner.
+	if _, err := s.Store.GetSite(ctx, siteID); errors.Is(err, store.ErrNotFound) {
+		s.Store.UnassignSite(ctx, siteID)
+	}
+	return nil
+}
+
+// announceSite waits for a creation job: on success, the owning account's
+// state applies to the new site at once (an account suspended while its
+// site was being created doesn't get it online until the next hourly
+// reconcile), and site.created is sent.
+func (s *Server) announceSite(jobID int64, siteID string, acctID int64) {
+	if s.Billing == nil || s.Jobs == nil {
+		return
+	}
+	go func() {
+		ctx := context.Background()
+		j, err := s.Jobs.WaitJob(ctx, jobID)
+		if err != nil || j.Status != store.JobSucceeded {
+			return
+		}
+		st, err := s.Store.GetSite(ctx, siteID)
+		if err != nil {
+			return
+		}
+		if acctID != 0 {
+			if err := s.Billing.ApplyState(ctx, acctID); err != nil {
+				s.Log.Warn("applying an account's state to its new site", "site", siteID, "err", err)
+			}
+		}
+		if s.Billing.Hooks != nil {
+			s.Billing.Hooks.Emit(ctx, billing.EventSiteCreated, map[string]any{"site_id": siteID,
+				"account_id": acctID, "domain": st.PrimaryDomain})
+		}
+	}()
+}
+
+// deleteSite: operators may delete staging sites (they create them), live
+// sites need an administrator; tenants may delete their own sites.
 func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) error {
+	if s.Cluster != nil {
+		if node, remote, err := s.Cluster.SiteNode(r.Context(), r.PathValue("id")); err != nil {
+			return err
+		} else if remote {
+			return s.deleteRemoteSite(w, r, node)
+		}
+	}
 	st, err := s.Store.GetSite(r.Context(), r.PathValue("id"))
 	if err != nil {
 		return err
 	}
-	if st.ParentID == "" && auth.Level(principalFrom(r.Context()).Role) < auth.Level(admin) {
+	if st.ParentID == "" && tenantOf(r) == nil && auth.Level(principalFrom(r.Context()).Role) < auth.Level(admin) {
 		return errForbidden
+	}
+	var acctID int64
+	if o, err := s.Store.SiteOwnerOf(r.Context(), st.ID); err == nil {
+		acctID = o.AccountID
 	}
 	if err := s.Sites.Delete(r.Context(), r.PathValue("id")); err != nil {
 		return err
+	}
+	if s.Billing != nil && s.Billing.Hooks != nil {
+		s.Billing.Hooks.Emit(r.Context(), billing.EventSiteDeleted, map[string]any{"site_id": st.ID,
+			"account_id": acctID, "domain": st.PrimaryDomain})
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
@@ -306,6 +585,22 @@ func (s *Server) setShield(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) setResources(w http.ResponseWriter, r *http.Request) error {
 	var in site.Resources
 	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	if t := tenantOf(r); t != nil {
+		st, err := s.siteRecord(r.Context(), r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		most := in.Replicas
+		if st.Autoscale {
+			most = max(most, st.MaxReplicas)
+		}
+		if err := billing.CheckResources(t.SiteLimits, most, in.MemoryMB, in.CPUs); err != nil {
+			return err
+		}
+	}
+	if done, err := s.forwardAfterChecks(w, r, in); done || err != nil {
 		return err
 	}
 	st, err := s.Sites.Scale(r.Context(), r.PathValue("id"), in)

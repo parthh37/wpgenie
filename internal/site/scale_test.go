@@ -16,6 +16,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 )
 
 // fakeRuntime records every call in one log shared with fakeProxy, so tests
@@ -183,11 +184,7 @@ type harness struct {
 // newHarness has one active site "s1" served by a current replica on 19000.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	log := &[]string{}

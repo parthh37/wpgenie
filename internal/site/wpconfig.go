@@ -29,6 +29,9 @@ define( 'FORCE_SSL_ADMIN', true );
 define( 'WP_AUTO_UPDATE_CORE', 'minor' );  // security releases apply automatically
 define( 'WP_POST_REVISIONS', 20 );
 define( 'WP_REDIS_HOST', '{{.RedisHost}}' );
+{{- if .RedisUser}}
+define( 'WP_REDIS_PASSWORD', [ '{{.RedisUser}}', '{{.RedisPassword}}' ] ); // this site's own cache user
+{{- end}}
 define( 'WP_REDIS_PREFIX', '{{.SiteID}}:' );
 define( 'WP_CACHE_KEY_SALT', '{{.SiteID}}:' );
 define( 'DISABLE_WP_CRON', true );         // WPGenie runs cron every minute instead of on page views
@@ -48,6 +51,9 @@ require_once ABSPATH . 'wp-settings.php';
 
 type wpConfigData struct {
 	SiteID, DBName, DBUser, DBPassword, DBHost, RedisHost, TablePrefix string
+	// RedisUser and RedisPassword: the site's object cache user (see
+	// valkey.go).
+	RedisUser, RedisPassword string
 	// Environment is WP_ENVIRONMENT_TYPE ("" = WordPress's default,
 	// production): "staging" for staging sites.
 	Environment string

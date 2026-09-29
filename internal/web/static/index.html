@@ -9,17 +9,26 @@
 <script src="/panels.js" defer></script>
 <script src="/environments.js" defer></script>
 <script src="/insights.js" defer></script>
+<script src="/monitoring.js" defer></script>
+<script src="/cluster.js" defer></script>
+<script src="/offload.js" defer></script>
+<script src="/accounts.js" defer></script>
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="logo">◆</span> WPGenie</div>
   <nav id="tabs" hidden>
     <button class="tab active" data-tab="sites">Sites</button>
-    <button class="tab" data-tab="backups">Backups</button>
-    <button class="tab" data-tab="mail">Mail</button>
-    <button class="tab" data-tab="security">Security</button>
+    <button class="tab staff-only" data-tab="backups">Backups</button>
+    <button class="tab staff-only" data-tab="mail">Mail</button>
+    <button class="tab staff-only" data-tab="security">Security</button>
+    <button class="tab staff-only" data-tab="servers">Servers</button>
+    <button class="tab accounts-tab" data-tab="accounts">Accounts</button>
+    <button class="tab staff-only" data-tab="plans">Plans</button>
+    <button class="tab admin-only" data-tab="billing">Billing</button>
+    <button class="tab staff-only" data-tab="monitoring">Monitoring <span id="alert-dot" class="dot bad" hidden></span></button>
     <button class="tab admin-only" data-tab="users">Users</button>
-    <button class="tab" data-tab="system">System <span id="update-dot" class="dot" hidden></span></button>
+    <button class="tab staff-only" data-tab="system">System <span id="update-dot" class="dot" hidden></span></button>
   </nav>
   <div class="who" id="who" hidden>
     <button class="tab" data-tab="account" id="me-tab"></button>
@@ -60,7 +69,7 @@
   <section id="app" class="panel" data-panel="sites" hidden>
     <div class="bar">
       <h1>Sites</h1>
-      <button id="new-site-btn" class="admin-only">New site</button>
+      <button id="new-site-btn" class="can-create">New site</button>
     </div>
 
     <form id="new-site" class="card" hidden>
@@ -70,6 +79,7 @@
         <label>Site title<input name="name" placeholder="My Blog"></label>
         <label>Admin email<input name="admin_email" type="email" required></label>
         <label>Admin username <span class="muted">(optional)</span><input name="admin_user" placeholder="random if empty"></label>
+        <label id="new-site-node" hidden>Server<select name="node"></select></label>
       </div>
       <p class="muted">Point the domain's A/AAAA record at this server first — the TLS certificate is issued automatically.</p>
       <div class="actions">
@@ -207,6 +217,7 @@
     <div class="bar"><h1>Account</h1></div>
     <div id="account-notice" class="card notice" hidden></div>
     <div class="card" id="account-profile"></div>
+    <div class="card tenant-only" id="account-plan"></div>
     <div class="card">
       <h2>Two-factor authentication</h2>
       <div id="account-2fa"></div>
@@ -223,6 +234,103 @@
     <div class="card">
       <h2>Your sessions</h2>
       <div id="account-sessions"></div>
+    </div>
+    <div class="card">
+      <h2>API tokens</h2>
+      <p class="muted small">For scripts and billing systems (the WHMCS module). A token acts as you, with your role and account, and
+        can be revoked at any time. It is shown once; only a hash is kept.</p>
+      <form id="token-form" class="inline">
+        <input name="name" placeholder="What it is for (e.g. WHMCS)" maxlength="64" required>
+        <input name="expires_days" type="number" min="0" max="3650" placeholder="Expires in days (0 = never)">
+        <button type="submit">Create token</button>
+      </form>
+      <div id="account-tokens"></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="accounts" hidden>
+    <div class="bar"><h1>Accounts</h1><button id="new-account-btn" class="accounts-create">New account</button></div>
+    <form id="new-account" class="card" hidden>
+      <h2>Create an account</h2>
+      <div class="grid">
+        <label>Name<input name="name" required maxlength="100" placeholder="Acme Ltd"></label>
+        <label class="staff-only">Kind
+          <select name="kind"><option value="customer">Customer</option><option value="reseller">Reseller</option></select>
+        </label>
+        <label>Plan<select name="plan_id" required></select></label>
+        <label class="staff-only">Reseller <span class="muted">(customers only)</span><select name="parent_id"></select></label>
+        <label>Email <span class="muted">(optional)</span><input name="email" type="email"></label>
+        <label>First user <span class="muted">(optional; password generated)</span><input name="username" placeholder="username"></label>
+      </div>
+      <div class="actions">
+        <button type="button" class="ghost" id="cancel-account">Cancel</button>
+        <button type="submit">Create account</button>
+      </div>
+    </form>
+    <div class="card"><div id="accounts"></div></div>
+    <div id="account-detail"></div>
+  </section>
+
+  <section class="panel" data-panel="plans" hidden>
+    <div class="bar"><h1>Plans</h1></div>
+    <div class="card">
+      <p class="muted small">Limits per account (sites, staging copies included; disk: files and databases; bandwidth per calendar month, UTC)
+        and per site. 0 means unlimited (the server's own limits still apply). Resellers can give their customers resellable
+        plans that fit within their own.</p>
+      <div id="plans"></div>
+    </div>
+    <form id="plan-form" class="card admin-only">
+      <h2>Create or edit a plan</h2>
+      <div class="grid">
+        <label>ID <span class="muted">(lowercase, e.g. starter)</span><input name="id" required pattern="[a-z0-9][a-z0-9-]{0,31}"></label>
+        <label>Name<input name="name" required></label>
+        <label>Sites<input name="max_sites" type="number" min="0" value="1"></label>
+        <label>Disk (MB)<input name="disk_mb" type="number" min="0" value="10240"></label>
+        <label>Bandwidth / month (GB)<input name="bandwidth_gb" type="number" min="0" value="100"></label>
+        <label>Replicas per site<input name="max_replicas" type="number" min="0" value="1"></label>
+        <label>Memory per replica (MB)<input name="max_memory_mb" type="number" min="0" value="512"></label>
+        <label>CPUs per replica<input name="max_cpus" type="number" min="0" step="0.25" value="1"></label>
+        <label>Domains per site<input name="max_domains" type="number" min="0" value="5"></label>
+        <label>Past the bandwidth
+          <select name="overage"><option value="notify">Notify</option><option value="suspend">Suspend the account</option></select>
+        </label>
+        <label>Backup destinations <span class="muted">(IDs, comma-separated)</span><input name="backup_repos" placeholder="local"></label>
+      </div>
+      <div class="controls" id="plan-features"></div>
+      <div class="controls"><label class="check"><input type="checkbox" name="resellable"> Resellers may assign it</label></div>
+      <div class="actions"><button type="submit">Save plan</button></div>
+    </form>
+  </section>
+
+  <section class="panel" data-panel="billing" hidden>
+    <div class="bar"><h1>Billing</h1></div>
+    <div class="card">
+      <h2>Stripe</h2>
+      <p class="muted small">Subscriptions become accounts: Stripe calls <code id="stripe-url"></code> (add it as a webhook endpoint in Stripe
+        with the events checkout.session.completed, customer.subscription.created/updated/deleted, invoice.paid and
+        invoice.payment_failed). Secrets are write-only: leave a field empty to keep it.</p>
+      <form id="stripe-form" class="grid">
+        <label>Webhook signing secret<input name="webhook_secret" type="password" autocomplete="off" placeholder="whsec_…"></label>
+        <label>Secret key <span class="muted">(optional: plans from checkouts, metered bandwidth)</span><input name="secret_key" type="password" autocomplete="off" placeholder="sk_… or rk_…"></label>
+        <label>Meter event name <span class="muted">(optional: bandwidth in MB)</span><input name="meter_event" placeholder="wpgenie_bandwidth"></label>
+        <label>Prices → plans <span class="muted">(one per line: price_… = plan)</span><textarea name="prices" rows="3"></textarea></label>
+        <div class="actions"><button type="submit">Save Stripe settings</button></div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Webhooks</h2>
+      <p class="muted small">Events (accounts, plans, usage thresholds, sites) are posted as JSON, signed with
+        <code>X-WPGenie-Signature: t=…,v1=HMAC-SHA256(secret, "t.body")</code>, and retried with backoff for about a day and a half.</p>
+      <form id="webhook-form" class="inline">
+        <input name="url" type="url" placeholder="https://billing.example.com/wpgenie" required>
+        <button type="submit">Add endpoint</button>
+      </form>
+      <div class="controls" id="webhook-events"></div>
+      <div id="webhooks"></div>
+    </div>
+    <div class="card">
+      <h2>Deliveries</h2>
+      <div id="deliveries"></div>
     </div>
   </section>
 
@@ -251,6 +359,85 @@
         <form id="audit-filter" class="inline"><input name="actor" placeholder="filter by user"><button class="ghost" type="submit">Filter</button></form></div>
       <p class="muted small">Every change made through the panel, the API or the CLI (as <code>api-token</code>), and every sign-in.</p>
       <div id="audit"></div>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="servers" hidden>
+    <div class="bar"><h1>Servers</h1></div>
+    <div class="card">
+      <p class="muted small">Sites can live on several servers. Each runs its own Caddy, PHP, MariaDB and Valkey for the sites placed
+        on it; this panel places new sites (on the server with the most memory to spare, unless you pick one), moves them, and talks to
+        every server over mutual TLS. Nothing but the panel can manage a server once it's paired.</p>
+      <div id="servers"></div>
+    </div>
+    <form id="add-server" class="card admin-only">
+      <h2>Add a server</h2>
+      <p class="muted small">On the new server, install WPGenie as a node (<code>install.sh --agent</code>), then run
+        <code>wpgenie agent pair-code</code> and paste the code here with the server's address. The code works once, and proves to the
+        panel it reached that server (and to the server that the panel is yours). Port 7443 must be open between the servers.</p>
+      <div class="grid">
+        <label>Name<input name="name" placeholder="web-2" required></label>
+        <label>Address<input name="address" placeholder="203.0.113.7 or node2.example.com:7443" required></label>
+        <label>Public IP <span class="muted">(optional: where sites' DNS points)</span><input name="public_ip" placeholder="the address's IP"></label>
+        <label>Pairing code<input name="pairing_code" placeholder="wpg1-…" required autocomplete="off"></label>
+      </div>
+      <div class="actions"><button type="submit">Add server</button></div>
+    </form>
+  </section>
+
+  <section class="panel" data-panel="monitoring" hidden>
+    <div class="bar"><h1>Monitoring</h1></div>
+    <div class="card">
+      <h2>Active alerts</h2>
+      <p class="muted small">Every minute WPGenie loads each live site through Caddy (down after a few failed checks in a row), checks the
+        certificate every domain serves, the free disk space and the backups. Sites that never worked yet (DNS not pointing here) aren't judged.</p>
+      <div id="mon-active"></div>
+    </div>
+    <div class="card">
+      <h2>History</h2>
+      <div id="mon-history"></div>
+    </div>
+    <div class="card admin-only">
+      <h2>Thresholds and notifications</h2>
+      <form id="mon-settings">
+        <div class="grid">
+          <label>Disk warning at (% used)<input name="disk_warn_percent" type="number" min="1" max="99" step="0.1" required></label>
+          <label>Disk critical at (% used)<input name="disk_critical_percent" type="number" min="2" max="100" step="0.1" required></label>
+          <label>Certificate warning (days left)<input name="cert_warn_days" type="number" min="1" max="90" required></label>
+          <label>Certificate critical (days left)<input name="cert_critical_days" type="number" min="0" max="89" required></label>
+          <label>Site down after (failed checks)<input name="down_after" type="number" min="1" max="60" required></label>
+          <label>Repeat firing alerts every (hours, 0 = never)<input name="renotify_hours" type="number" min="0" max="168" required></label>
+        </div>
+        <h3>E-mail</h3>
+        <label class="check small"><input type="checkbox" name="email_enabled"> Send alerts by e-mail</label>
+        <div class="grid">
+          <label>SMTP server<input name="email_host" placeholder="smtp.example.com"></label>
+          <label>Port<input name="email_port" type="number" min="1" max="65535" placeholder="587"></label>
+          <label>Encryption
+            <select name="email_tls"><option value="starttls">STARTTLS (port 587)</option><option value="tls">TLS (port 465)</option></select>
+          </label>
+          <label>Username<input name="email_username" autocomplete="off"></label>
+          <label>Password<input name="email_password" type="password" autocomplete="new-password" placeholder="unchanged if empty"></label>
+          <label>From<input name="email_from" placeholder="WPGenie &lt;alerts@example.com&gt;"></label>
+          <label>To <span class="muted">(comma-separated)</span><input name="email_to" placeholder="ops@example.com, you@example.com"></label>
+        </div>
+        <h3>Webhooks</h3>
+        <p class="muted small">JSON POST with a <code>text</code> field (Slack, Mattermost), <code>content</code> (Discord) and the alerts,
+          signed: <code>X-WPGenie-Signature: sha256=HMAC(secret, X-WPGenie-Timestamp + "." + body)</code>. URLs and secrets are never shown again.</p>
+        <div id="mon-webhooks"></div>
+        <div class="actions">
+          <button type="button" class="ghost" id="mon-add-webhook">Add webhook</button>
+          <button type="button" class="ghost" id="mon-test">Send test notification</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+      <div id="mon-test-results"></div>
+    </div>
+    <div class="card admin-only">
+      <h2>Prometheus</h2>
+      <p class="muted small">Metrics for Prometheus at <code>/metrics</code>: traffic, PHP response times, replicas and load, uptime,
+        certificates, disk, memory, backups, shield and jobs. Scrapes need their own token (read-only; the API token doesn't work there).</p>
+      <div id="mon-metrics"></div>
     </div>
   </section>
 
@@ -286,7 +473,7 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
-      <button class="danger ghost delete admin-only">Delete</button>
+      <button class="danger ghost delete can-create">Delete</button>
     </div>
     <details class="perf">
       <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
@@ -392,6 +579,43 @@
         in the statistics.</p>
       <div class="cdn-status"></div>
     </details>
+    <details class="perf offload">
+      <summary>Uploads offload <span class="muted small offload-summary"></span></summary>
+      <p class="muted small">Copies the media library to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO, …): new uploads
+        within a minute, everything nightly; deleted uploads are deleted there too. Uploads missing on this server are served from the
+        storage's public URL, so local copies can be removed after a while to save disk.</p>
+      <ol class="muted small">
+        <li>Create a bucket and a key that may write, read and delete objects under the prefix (and nothing else).</li>
+        <li>Make the prefix publicly readable (a bucket policy allowing <code>s3:GetObject</code>, not listing), or put a CDN in front of it.</li>
+        <li>Saving writes a test object, fetches it through the public URL and deletes it; settings that don't work aren't saved.</li>
+      </ol>
+      <div class="grid">
+        <label>Endpoint<input class="off-endpoint" placeholder="https://s3.eu-central-1.amazonaws.com"></label>
+        <label>Region <span class="muted">(if needed)</span><input class="off-region" placeholder="eu-central-1"></label>
+        <label>Bucket<input class="off-bucket"></label>
+        <label>Prefix<input class="off-prefix"></label>
+        <label>Access key ID<input class="off-key-id" autocomplete="off"></label>
+        <label>Secret access key<input type="password" class="off-secret" autocomplete="off"></label>
+        <label>Public URL <span class="muted">(the prefix, or a CDN in front of it)</span><input class="off-public" placeholder="https://media.example.com/uploads"></label>
+        <label>Object ACL
+          <select class="off-acl">
+            <option value="">None (a bucket policy makes them public)</option>
+            <option value="public-read">public-read</option>
+          </select>
+        </label>
+        <label>Remove local copies after <span class="muted">(days, 0 = keep)</span><input type="number" class="off-days" min="0" max="3650" value="0"></label>
+      </div>
+      <div class="controls">
+        <button class="off-save">Save</button>
+        <button class="ghost off-sync">Sync now</button>
+        <button class="ghost off-download">Copy back</button>
+        <button class="ghost danger off-off">Turn off</button>
+      </div>
+      <p class="muted small">Local copies are only removed once the bucket holds an identical copy that the public URL serves. Offloaded images
+        whose local copy was removed are served in their original format (AVIF/WebP negotiation needs the file on disk). Deleting the site
+        leaves the bucket's objects in place.</p>
+      <div class="offload-status"></div>
+    </details>
     <details class="perf sec">
       <summary>Security <span class="muted small sec-summary"></span></summary>
       <div class="controls">
@@ -487,6 +711,10 @@
     <details class="perf acc">
       <summary>SFTP &amp; database</summary>
       <div class="acc-body"></div>
+    </details>
+    <details class="perf cluster" hidden>
+      <summary>Server <span class="muted small cluster-summary"></span></summary>
+      <div class="cluster-body"></div>
     </details>
     <details class="perf log">
       <summary>Activity</summary>

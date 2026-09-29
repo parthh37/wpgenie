@@ -28,6 +28,14 @@ type Ingester struct {
 	Logger          *slog.Logger
 	// Recent, if set, receives every PHP response time once committed.
 	Recent *Recent
+	// Observer, if set, receives every batch once committed (the
+	// monitor's Prometheus counters). It must not keep or change the batch
+	// beyond the call; a failed batch is read again and never observed.
+	Observer func(*store.TrafficBatch)
+	// HealthToken is shield.Options.HealthToken: requests carrying it are
+	// the daemon's own probes (the monitor's, two a minute per site), not
+	// traffic.
+	HealthToken string
 }
 
 func (in *Ingester) defaults() {
@@ -49,6 +57,7 @@ func (in *Ingester) Run(ctx context.Context) error {
 		return err
 	}
 	agg := newAggregator(in.Secret)
+	agg.health = []byte(HealthTokenHash(in.HealthToken))
 	t := time.NewTicker(in.Interval)
 	defer t.Stop()
 	for {
@@ -90,6 +99,9 @@ func (in *Ingester) tick(ctx context.Context, st store.IngestState, agg *aggrega
 	b, obs := agg.batch(next)
 	if err := in.Store.ApplyTraffic(ctx, b); err != nil {
 		return st, err
+	}
+	if in.Observer != nil {
+		in.Observer(b)
 	}
 	if in.Recent != nil {
 		for _, o := range obs {

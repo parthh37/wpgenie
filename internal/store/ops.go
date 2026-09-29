@@ -72,12 +72,10 @@ type UpdateRun struct {
 const UpdateRunning = "running"
 
 func (s *Store) StartUpdate(ctx context.Context, siteID, trigger string) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO site_updates (site_id, trigger, status, started_at) VALUES (?, ?, ?, ?)`,
-		siteID, trigger, UpdateRunning, time.Now().Unix())
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO site_updates (site_id, trigger, status, started_at) VALUES (?, ?, ?, ?)
+		RETURNING id`, siteID, trigger, UpdateRunning, time.Now().Unix()).Scan(&id)
+	return id, err
 }
 
 func (s *Store) FinishUpdate(ctx context.Context, id int64, status, summary, details string) error {

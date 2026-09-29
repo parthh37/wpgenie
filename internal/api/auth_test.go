@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +20,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/store/storetest"
 	"github.com/parthh37/wpgenie/internal/updater"
 )
 
@@ -34,11 +34,7 @@ type authEnv struct {
 
 func newAuthEnv(t *testing.T) *authEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Open(t)
 	svc := &site.Service{Cfg: config.Default(), Store: st, Log: slog.New(slog.DiscardHandler)}
 	ml := &mail.Service{Cfg: mail.Config{DataDir: t.TempDir()}, Store: st, Log: slog.New(slog.DiscardHandler)}
 	if err := ml.Load(context.Background()); err != nil {

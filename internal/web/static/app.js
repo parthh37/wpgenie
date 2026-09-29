@@ -7,6 +7,7 @@ let ME = null;
 // Sites by ID, as last loaded (staging links, job labels).
 let SITES = new Map();
 const isAdmin = () => ME && ME.role === 'admin';
+const isTenant = () => ME && (ME.role === 'customer' || ME.role === 'reseller');
 
 // The session lives in an HttpOnly cookie the page can't read. The custom
 // header is what the server checks on every change: other sites can't set
@@ -99,6 +100,7 @@ function openTab(name) {
 
 async function load() {
   showError(null);
+  await loadNodes();
   const sites = await api('GET', '/sites');
   SITES = new Map(sites.map((x) => [x.id, x]));
   const list = $('#sites');
@@ -120,6 +122,8 @@ function renderSite(site) {
   a.href = 'https://' + site.primary_domain;
   $('.id', el).textContent = site.id + ' · PHP ' + site.php_version;
   if (site.parent_id) $('.id', el).append(h('span', { class: 'badge' }, `staging of ${SITES.get(site.parent_id)?.primary_domain || site.parent_id}`));
+  if (clustered()) $('.id', el).append(h('span', { class: 'badge' }, nodeName(site.node || 'local')));
+  if (site.account_id && ME && ME.account_id !== site.account_id) $('.id', el).append(h('span', { class: 'badge' }, `account #${site.account_id}`));
   const pill = $('.status', el);
   pill.textContent = site.status;
   pill.classList.add(site.status);
@@ -138,6 +142,8 @@ function renderSite(site) {
   renderPerf(el, site);
   renderAutoscale(el, site);
   renderCDN(el, site);
+  renderOffload(el, site);
+  renderCluster(el, site);
   renderInsights(el, site);
   renderSecurity(el, site);
   renderPlugins(el, site);
@@ -656,6 +662,7 @@ function init() {
 
 async function start() {
   localStorage.removeItem('wpgenie_token'); // older versions kept the API token here
+  if (typeof handleSSO === 'function' && handleSSO()) return; // a one-time sign-in link (accounts.js)
   let st;
   try { st = await api('GET', '/auth/state'); } catch (e) { showError(e); return; }
   if (st.setup) { hideApp('setup'); return; }
@@ -673,9 +680,14 @@ function signedIn(user, require2fa) {
   $('#who').hidden = false;
   $('#me-tab').textContent = `${user.username} · ${user.role}`;
   document.body.classList.toggle('is-admin', isAdmin());
+  // Users of customer and reseller accounts get a reduced navigation.
+  const tenant = isTenant();
+  document.body.classList.toggle('is-tenant', tenant);
+  document.body.classList.toggle('is-reseller', user.role === 'reseller');
+  document.body.classList.toggle('is-staff', !tenant);
   if (require2fa && !user.totp_enabled) { openTab('account'); return; }
   openTab('sites');
-  if (typeof checkSystem === 'function') checkSystem();
+  if (!tenant && typeof checkSystem === 'function') checkSystem();
   if (typeof pollJobs === 'function') pollJobs();
 }
 
@@ -685,4 +697,5 @@ setInterval(() => {
   document.querySelectorAll('#sites [data-id]').forEach((el) => loadCPU({ id: el.dataset.id }));
 }, 15000);
 
-init();
+// After every deferred script (accounts.js adds sign-on links) has run.
+document.addEventListener('DOMContentLoaded', init);

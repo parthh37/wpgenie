@@ -109,6 +109,18 @@ func (m *MariaDB) Tables(ctx context.Context, db string) ([]string, error) {
 	return out, rows.Err()
 }
 
+// DatabaseSize is the space a site database takes (data and indexes, as
+// InnoDB reports them), for disk quotas.
+func (m *MariaDB) DatabaseSize(ctx context.Context, db string) (int64, error) {
+	if !identRe.MatchString(db) {
+		return 0, fmt.Errorf("invalid database identifier")
+	}
+	var n int64
+	err := m.db.QueryRowContext(ctx, "SELECT CAST(COALESCE(SUM(data_length + index_length), 0) AS SIGNED) "+
+		"FROM information_schema.tables WHERE table_schema = ?", db).Scan(&n)
+	return n, err
+}
+
 // DropTables drops tables of a site database (used to undo tables an
 // update created when its snapshot is restored).
 func (m *MariaDB) DropTables(ctx context.Context, db string, tables []string) error {

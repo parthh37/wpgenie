@@ -38,7 +38,7 @@ RUN set -eux; \
 COPY page-cache.php /usr/local/share/wpgenie/page-cache.php
 COPY smtp.php /usr/local/share/wpgenie/smtp.php
 COPY profile.php /usr/local/share/wpgenie/profile.php
-COPY images.php image-convert.php convert-images.php cdn.php /usr/local/share/wpgenie/
+COPY images.php image-convert.php convert-images.php cdn.php offload.php /usr/local/share/wpgenie/
 
 COPY php.ini  /usr/local/etc/php/conf.d/zz-wpgenie.ini
 COPY pool.conf /usr/local/etc/php-fpm.d/zz-wpgenie.conf

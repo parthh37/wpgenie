@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"github.com/parthh37/wpgenie/internal/shield"
 	"net/netip"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -156,6 +158,19 @@ func TestRenderRejectsInjection(t *testing.T) {
 
 // TestRenderIsValidCaddyfile asks a real Caddy to adapt the output. It runs
 // when a caddy binary is on PATH, or via Docker with WPGENIE_TEST_DOCKER=1.
+// The access log hashes the health token's header: the exact canonical name
+// is what Caddy's log filter matches.
+func TestRenderHashesHealthToken(t *testing.T) {
+	out, err := testCaddy().Render(testSites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "request>headers>" + textproto.CanonicalMIMEHeaderKey(shield.HealthHeader) + " hash"
+	if strings.Count(string(out), want) != 2 { // both WordPress sites
+		t.Errorf("health token not hashed in the access log (%q)", want)
+	}
+}
+
 func TestRenderIsValidCaddyfile(t *testing.T) {
 	out, err := testCaddy().Render(testSites)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -61,6 +62,41 @@ type Site struct {
 	// hostname. Fonts then need CORS, and formats aren't negotiated: the CDN
 	// would cache one format for every browser.
 	AssetCDN bool
+	// Offload is the public URL of the object storage holding the site's
+	// uploads (https://host/path; /wp-content/uploads maps onto the path),
+	// or "". Uploads missing on disk are fetched from there (offload.go).
+	Offload string
+	// Suspended sites (their account is suspended) get a static 503 page on
+	// every domain (redirect domains included): no PHP, no shield, no
+	// access log. Their files and database are untouched.
+	Suspended bool
+
+	// Multi-server. HomeUpstreams are the replicas on the site's own server
+	// when others also run on other servers (Upstreams has all of them):
+	// anything that may write files goes only there. Forwarded: the site's
+	// old server passes visitors on (a move), so it is also served on the
+	// loopback ingress listener (Config.IngressListen).
+	HomeUpstreams []string
+	Forwarded     bool
+	// Forward, set for a site that moved away from this server: its domains
+	// go to this local tunnel port (the new server's ingress), and
+	// ForwardHTTP (its port 80) gets Let's Encrypt's HTTP challenges.
+	Forward     string
+	ForwardHTTP string
+}
+
+// siteView is a site as the template renders it: the site, the shared
+// settings (Cfg), and the address line of its block.
+type siteView struct {
+	Site
+	Cfg         map[string]any
+	Address     string
+	HTTPAddress string
+	// Ingress: this is the loopback copy for forwarded visitors.
+	Ingress     bool
+	IngressView *siteView
+	// OffloadTo is the parsed Offload URL (nil: uploads only on disk).
+	OffloadTo *offloadTarget
 }
 
 // CacheBypassCookies are the cookies (name prefixes) that mean the visitor
@@ -132,6 +168,10 @@ type Config struct {
 	// CertDir holds sites' own certificates, a path valid inside the Caddy
 	// container (default: certs next to the Caddyfile, as mounted there).
 	CertDir string
+	// IngressListen is the loopback listener (host:port) for visitors another
+	// server of the cluster passes on, PROXY protocol only from loopback;
+	// "" turns it off.
+	IngressListen string
 }
 
 type Caddy struct {
@@ -200,10 +240,13 @@ func (c *Caddy) Render(sites []Site) ([]byte, error) { return c.RenderWAF(sites,
 func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 	sites = slices.Clone(sites) // BodyWAF is adjusted below
 	for _, s := range sites {
-		if len(s.Upstreams) == 0 && s.Proxy == "" {
+		if len(s.Upstreams) == 0 && s.Proxy == "" && s.Forward == "" && !s.Suspended {
 			return nil, fmt.Errorf("site %s: no PHP-FPM upstreams", s.ID)
 		}
-		for _, u := range append(slices.Clone(s.Upstreams), s.Proxy) {
+		if s.Forward != "" && s.ForwardHTTP == "" {
+			return nil, fmt.Errorf("site %s: forward without a challenge tunnel", s.ID)
+		}
+		for _, u := range slices.Concat(s.Upstreams, s.HomeUpstreams, []string{s.Proxy, s.Forward, s.ForwardHTTP}) {
 			if strings.ContainsAny(u, " \t\n{}#\"") {
 				return nil, fmt.Errorf("site %s: unsafe upstream %q", s.ID, u)
 			}
@@ -222,6 +265,11 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 		for _, f := range s.Images {
 			if !slices.Contains(imageFormats, f) {
 				return nil, fmt.Errorf("site %s: unknown image format %q", s.ID, f)
+			}
+		}
+		if s.Offload != "" {
+			if _, err := parseOffload(s.Offload); err != nil {
+				return nil, fmt.Errorf("site %s: %w", s.ID, err)
 			}
 		}
 	}
@@ -252,7 +300,7 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 			}
 		}
 		switch {
-		case s.BodyWAF == "" || s.BodyWAF == WAFOff || s.Proxy != "":
+		case s.BodyWAF == "" || s.BodyWAF == WAFOff || s.Proxy != "" || s.Suspended:
 			sites[i].BodyWAF = WAFOff
 		case s.BodyWAF.Engine() == "":
 			return nil, fmt.Errorf("site %s: unknown body WAF mode %q", s.ID, s.BodyWAF)
@@ -289,8 +337,15 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 	if strings.ContainsAny(certDir, " \t\n{}#\"`") {
 		return nil, fmt.Errorf("unsafe certificate directory %q", certDir)
 	}
-	var buf bytes.Buffer
-	err := tmpl.Execute(&buf, map[string]any{
+	ingressHost, ingressPort := "", ""
+	if c.cfg.IngressListen != "" {
+		var err error
+		if ingressHost, ingressPort, err = net.SplitHostPort(c.cfg.IngressListen); err != nil ||
+			net.ParseIP(ingressHost) == nil || !net.ParseIP(ingressHost).IsLoopback() {
+			return nil, fmt.Errorf("ingress listener %q must be a loopback host:port", c.cfg.IngressListen)
+		}
+	}
+	root := map[string]any{
 		"CertDir":        certDir,
 		"TrustedProxies": trusted,
 		"ACMEEmail":      email,
@@ -301,13 +356,42 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 		"SiteHeader":     shield.SiteHeader,
 		"VerdictHeader":  shield.VerdictHeader,
 		"AccessLog":      c.cfg.AccessLog,
-		"Sites":          sites,
 		"BypassCookies":  strings.Join(CacheBypassCookies, "|"),
 		"MobileExpr":     mobileExpr,
 		"EdgeTTL":        EdgeTTL,
 		"WAF":            useWAF,
 		"WAFDirectives":  directives,
-	})
+		"SuspendedPage":  SuspendedPage,
+		"IngressHost":    ingressHost,
+	}
+	views := make([]*siteView, len(sites))
+	anyIngress := false
+	for i, st := range sites {
+		v := &siteView{Site: st, Cfg: root, Address: strings.Join(st.Domains, ", ")}
+		if st.Offload != "" && st.Proxy == "" && st.Forward == "" {
+			if t, err := parseOffload(st.Offload); err == nil { // checked above
+				v.OffloadTo = &t
+			}
+		}
+		if st.Forward != "" {
+			v.HTTPAddress = "http://" + strings.Join(st.Domains, ", http://")
+		}
+		if st.Forwarded && ingressPort != "" && st.Proxy == "" && st.Forward == "" {
+			iv := &siteView{Site: st, Cfg: root, Ingress: true,
+				Address: "http://" + strings.Join(st.Domains, ":"+ingressPort+", http://") + ":" + ingressPort}
+			iv.CustomCert = false
+			iv.OffloadTo = v.OffloadTo
+			v.IngressView = iv
+			anyIngress = true
+		}
+		views[i] = v
+	}
+	root["Sites"] = views
+	if anyIngress {
+		root["IngressListen"] = ingressHost + ":" + ingressPort
+	}
+	var buf bytes.Buffer
+	err := tmpl.Execute(&buf, root)
 	return buf.Bytes(), err
 }
 

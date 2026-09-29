@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/parthh37/wpgenie/internal/store"
 )
 
 const DefaultPath = "/etc/wpgenie/config.json"
@@ -19,6 +21,13 @@ const DefaultPath = "/etc/wpgenie/config.json"
 type Config struct {
 	// DataDir holds the panel database, site files and backups.
 	DataDir string `json:"data_dir"`
+	// DatabaseURL chooses the panel database: empty for SQLite at
+	// DataDir/wpgenie.db (the default), or a postgres:// URL for a
+	// PostgreSQL database several control-plane nodes can share. A server
+	// that isn't on this machine must be reached over TLS (see
+	// store.PostgresConfig); `wpgenie store migrate-to-postgres` moves the
+	// SQLite data over.
+	DatabaseURL string `json:"database_url"`
 	// ListenAddr is where the API, UI and shield endpoints listen. Keep it on
 	// loopback: Caddy (host network) is the only public entry point.
 	ListenAddr string `json:"listen_addr"`
@@ -67,6 +76,9 @@ type Config struct {
 	ImagesDir string `json:"images_dir"`
 	// ResticImage runs backups (restic in a container, see internal/backup).
 	ResticImage string `json:"restic_image"`
+	// RcloneImage copies uploads to object storage (uploads offload, see
+	// internal/offload): rclone in a throwaway container per command.
+	RcloneImage string `json:"rclone_image"`
 	// JobConcurrency is how many heavy jobs (backups, restores, clones)
 	// run at the same time.
 	JobConcurrency int `json:"job_concurrency"`
@@ -85,6 +97,35 @@ type Config struct {
 
 	APIToken     string `json:"api_token"`
 	ShieldSecret string `json:"shield_secret"`
+
+	// Cluster (several servers). ClusterListen is where this server's
+	// cluster listener (mutual TLS, port 7443 by default) accepts the
+	// panel and other nodes; ClusterDir holds its keys and certificates.
+	// ClusterAddress is the address other servers reach this one's
+	// listener at (host:port; the panel's is sent to nodes for tunnels).
+	ClusterListen  string `json:"cluster_listen"`
+	ClusterDir     string `json:"cluster_dir"`
+	ClusterAddress string `json:"cluster_address"`
+	// PlaceOnControl lets the panel's own server take new sites when
+	// placement picks a server (default true).
+	PlaceOnControl *bool `json:"place_on_control"`
+	// ValkeyAddr is where tunnels from other nodes' replicas of a site that
+	// lives here reach Valkey ("": the container's address on the Docker
+	// network; Valkey has no password, so it is never published on the
+	// host). IngressAddr is Caddy's listener for visitors another server
+	// passes on (with their address in a PROXY protocol header) while a
+	// moved site's DNS catches up.
+	ValkeyAddr  string `json:"valkey_addr"`
+	IngressAddr string `json:"ingress_addr"`
+	// ValkeyACLDir holds Valkey's ACL file (mounted into its container);
+	// ValkeyKey derives every site's cache password (root only). "": no
+	// per-site cache users.
+	ValkeyACLDir string `json:"valkey_acl_dir"`
+	ValkeyKey    string `json:"valkey_key"`
+	// LinkImage runs the tunnels a node's replicas of another server's
+	// site use to reach that server's database (a static wpgenie binary
+	// mounted into it; see site/spread.go).
+	LinkImage string `json:"link_image"`
 }
 
 func Default() *Config {
@@ -111,24 +152,38 @@ func Default() *Config {
 		PHPVersions:      []string{"8.2", "8.3", "8.4"},
 		ImagesDir:        "/opt/wpgenie/images",
 		ResticImage:      "restic/restic:0.18.1",
+		RcloneImage:      "rclone/rclone:1.75.1",
 		JobConcurrency:   2,
 		SFTPImage:        "wpgenie/sftp:1",
 		SFTPPort:         2222,
 		AdminerImage:     "wpgenie/adminer:1",
 		AdminerPort:      8090,
 		RedisHost:        "wpgenie-redis",
+		ClusterListen:    ":7443",
+		ClusterDir:       "/etc/wpgenie/cluster",
+		IngressAddr:      "127.0.0.1:8444",
+		LinkImage:        "alpine:3.22",
+		ValkeyACLDir:     "/etc/wpgenie/valkey",
+		ValkeyKey:        "/etc/wpgenie/valkey.key",
 	}
 }
 
-// Load reads path (falling back to $WPGENIE_CONFIG, then DefaultPath) on top
-// of the defaults.
-func Load(path string) (*Config, error) {
+// Path is the config file Load reads: path, else $WPGENIE_CONFIG, else
+// DefaultPath.
+func Path(path string) string {
 	if path == "" {
 		path = os.Getenv("WPGENIE_CONFIG")
 	}
 	if path == "" {
 		path = DefaultPath
 	}
+	return path
+}
+
+// Load reads path (falling back to $WPGENIE_CONFIG, then DefaultPath) on top
+// of the defaults.
+func Load(path string) (*Config, error) {
+	path = Path(path)
 	cfg := Default()
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -163,8 +218,31 @@ func (c *Config) Validate() error {
 	if c.MariaDBDSN == "" {
 		errs = append(errs, errors.New("mariadb_dsn is required"))
 	}
+	if c.DatabaseURL != "" {
+		// The same parsing and TLS rules the store applies when connecting.
+		if _, err := store.PostgresConfig(c.DatabaseURL); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
+
+// PlaceSitesOnControl: see PlaceOnControl.
+func (c *Config) PlaceSitesOnControl() bool { return c.PlaceOnControl == nil || *c.PlaceOnControl }
+
+// MariaDBLoopback is MariaDB's address from this host (from MariaDBDSN's
+// tcp(...) part).
+func (c *Config) MariaDBLoopback() string {
+	if _, rest, ok := strings.Cut(c.MariaDBDSN, "@tcp("); ok {
+		if addr, _, ok := strings.Cut(rest, ")"); ok && addr != "" {
+			return addr
+		}
+	}
+	return "127.0.0.1:3306"
+}
+
+// IngressAddr: see Config.IngressAddr (Caddy's forwarded-visitor listener).
+func (c *Config) IngressListen() string { return c.IngressAddr }
 
 // DefaultPHPVersion is the PHP version of PHPImage (its tag).
 func (c *Config) DefaultPHPVersion() string {

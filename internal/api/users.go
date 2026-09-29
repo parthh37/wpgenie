@@ -21,12 +21,24 @@ func (s *Server) me(r *http.Request) (*store.User, error) {
 	return s.Store.GetUser(r.Context(), p.UserID)
 }
 
+// account is the signed-in user; for a tenant also their account, its
+// plan and limits.
 func (s *Server) account(w http.ResponseWriter, r *http.Request) error {
 	u, err := s.me(r)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, map[string]any{"user": u, "require_2fa": s.require2FA(r.Context())})
+	p := principalFrom(r.Context())
+	u.Role = p.Role
+	out := map[string]any{"user": u, "require_2fa": s.require2FA(r.Context())}
+	if t := tenantOf(r); t != nil {
+		v, err := s.viewAccount(r, t.Account)
+		if err != nil {
+			return err
+		}
+		out["account"] = v
+	}
+	return writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) error {
@@ -284,6 +296,11 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if in.Role != nil && u.AccountID != 0 {
+		// A tenant's role follows their account's kind; staff roles are
+		// never given to a user of an account.
+		return fmt.Errorf("%w: %s belongs to an account: change the account's kind instead", errBadRequest, u.Username)
+	}
 	role, disabled := u.Role, u.Disabled
 	if in.Role != nil {
 		if !auth.ValidRole(*in.Role) {
@@ -332,6 +349,10 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Store.DeleteUserSessions(r.Context(), u.ID, ""); err != nil {
 		return err
 	}
+	// A reset answers a compromised account: its tokens go too.
+	if err := s.Store.DeleteUserAPITokens(r.Context(), u.ID); err != nil {
+		return err
+	}
 	return writeJSON(w, http.StatusOK, map[string]string{"password": pw})
 }
 
@@ -346,6 +367,9 @@ func (s *Server) resetTOTP(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if err := s.Store.DeleteUserSessions(r.Context(), u.ID, ""); err != nil {
+		return err
+	}
+	if err := s.Store.DeleteUserAPITokens(r.Context(), u.ID); err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusNoContent)
