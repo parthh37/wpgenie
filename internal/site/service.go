@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -77,6 +78,9 @@ type Service struct {
 	CDN       CDNProvider
 	CDNRanges *cdn.Ranges
 	DNS       Resolver
+	// interfaceAddrs lists this server's addresses (nil: its network
+	// interfaces'); tests replace it.
+	interfaceAddrs func() ([]net.Addr, error)
 	// Bunny is bunny.net's API (pull zones).
 	Bunny PullZoneAPI
 	// Offload copies uploads to object storage (offload.Rclone); nil: off.

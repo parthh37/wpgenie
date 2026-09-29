@@ -11,6 +11,7 @@
 <script src="/ux.js" defer></script>
 <script src="/panels.js" defer></script>
 <script src="/environments.js" defer></script>
+<script src="/wizard.js" defer></script>
 <script src="/insights.js" defer></script>
 <script src="/monitoring.js" defer></script>
 <script src="/cluster.js" defer></script>
@@ -156,21 +157,6 @@
       <div class="tile tile-shield"><span class="tile-k">Threats blocked · 24 h</span><span class="tile-v" data-f="blocked">–</span><span class="tile-s" data-f="attack"></span></div>
     </div>
 
-    <form id="new-site" class="card" hidden>
-      <h2>Create a WordPress site</h2>
-      <div class="grid">
-        <label>Domain<input name="domain" placeholder="example.com" required></label>
-        <label>Site title<input name="name" placeholder="My Blog"></label>
-        <label>Admin email<input name="admin_email" type="email" required></label>
-        <label>Admin username <span class="muted">(optional)</span><input name="admin_user" placeholder="random if empty"></label>
-        <label id="new-site-node" hidden>Server<select name="node"></select></label>
-      </div>
-      <p class="muted">Point the domain's A/AAAA record at this server first — the TLS certificate is issued automatically.</p>
-      <div class="actions">
-        <button type="button" class="ghost" id="cancel-new">Cancel</button>
-        <button type="submit">Create site</button>
-      </div>
-    </form>
 
     <div id="sites" class="sites"></div>
     <p id="no-match" class="muted center" hidden>No sites match the filter.</p>

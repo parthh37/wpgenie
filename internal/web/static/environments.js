@@ -249,7 +249,7 @@ async function showDomains(el, site) {
   };
   const refresh = async () => { await load(); };
   const makePrimary = (d) => act('Make primary', async () => {
-    if (!await ask(`Make ${d} the primary domain? Links in the database are rewritten to it and ${site.primary_domain} redirects to it.`)) return;
+    if (!await checkBeforePrimary(site, d)) return;
     await startJob('PUT', `/sites/${site.id}/primary-domain`, { domain: d });
   });
   const remove = (d) => act('Remove', async () => {
@@ -268,14 +268,11 @@ async function showDomains(el, site) {
   const apex = site.primary_domain.replace(/^www\./, '');
   const twin = site.primary_domain.startsWith('www.') ? apex : 'www.' + site.primary_domain;
   const known = [...site.domains, ...site.redirect_domains];
-  const www = known.includes(twin) ? null : act(`Redirect ${twin} here`, async () => {
-    await api('POST', `/sites/${site.id}/domains`, { domain: twin, redirect: true }); await refresh();
-  });
-  const input = h('input', { placeholder: 'example.org' });
-  const redirect = h('input', { type: 'checkbox', checked: true });
-  const add = act('Add domain', async () => {
-    await api('POST', `/sites/${site.id}/domains`, { domain: input.value.trim(), redirect: redirect.checked }); await refresh();
-  }, '');
+  // Both go through the wizard: the domain's DNS is checked first.
+  const wizard = (label, preset, cls) => h('button', { class: cls, onclick: () => openAddDomainWizard(site, preset).catch(showError) }, label);
+  const www = known.includes(twin) ? null : wizard(`Redirect ${twin} here`, { domain: twin, redirect: true }, 'ghost');
+  const add = wizard('Add domain', undefined, '');
+  add.prepend(icon('plus'));
 
   const certBox = h('div');
   const certPem = h('textarea', { placeholder: '-----BEGIN CERTIFICATE-----  (the certificate, then any intermediates)' });
@@ -301,7 +298,7 @@ async function showDomains(el, site) {
   }
   fill(body, 
     table(['Domain', '', ''], rows),
-    h('div', { class: 'controls' }, h('label', {}, 'Add a domain', input), h('label', { class: 'check' }, redirect, 'Redirect to the primary domain'), add, www),
+    h('div', { class: 'actions dom-add' }, www, add),
     h('p', { class: 'muted small' }, 'Point every domain\'s DNS here first. Redirects keep the path (301). ' +
       'Changing the primary domain rewrites the site\'s links (like www ↔ bare domain).'),
     h('h3', {}, 'TLS certificate'), certBox,
