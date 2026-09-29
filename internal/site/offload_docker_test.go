@@ -27,7 +27,8 @@ func TestOffloadAgainstMinIO(t *testing.T) {
 	}
 	m := offloadtest.Start(t, "s1/uploads/")
 	h := newHarness(t)
-	h.svc.Offload = &offload.Rclone{Docker: &runtime.Docker{}, Image: h.svc.Cfg.RcloneImage, Network: m.Network}
+	h.svc.Offload = &offload.Rclone{Docker: &runtime.Docker{}, Image: h.svc.Cfg.RcloneImage, Network: m.Network,
+		User: offloadtest.RunAs()}
 	h.svc.offload.insecure = true // MinIO without TLS
 	ctx := context.Background()
 	in := OffloadInput{Enabled: true, Endpoint: m.Endpoint, Bucket: m.Bucket, AccessKeyID: m.AccessKey, SecretKey: m.SecretKey,

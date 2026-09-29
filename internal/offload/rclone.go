@@ -44,6 +44,9 @@ type Rclone struct {
 	// Network is the Docker network rclone's containers join ("" is
 	// "bridge": the internet, not the sites' network with the databases).
 	Network string
+	// User runs rclone as uid:gid ("": root, as the daemon, which owns the
+	// directories rclone reads and writes).
+	User string
 }
 
 // Target is where a site's uploads go: a bucket and key prefix on an
@@ -203,6 +206,9 @@ func (r *Rclone) dockerArgs(name string, mounts []Mount, logs bool, args []strin
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-e", "HOME=/tmp",
 		"--memory", "512m", "--pids-limit", "256", "--network", network}
+	if r.User != "" {
+		out = append(out, "--user", r.User)
+	}
 	for _, m := range mounts {
 		v := m.Host + ":" + m.Container
 		if m.ReadOnly {

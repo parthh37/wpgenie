@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/jobs"
-	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/store"
 )
 
@@ -435,10 +435,13 @@ echo dot > /g/wp-content/uploads/.htaccess
 (cd /g && tar -cf - wp-content) | sh -c "$SCRIPT" sh /s
 cat /s/wp-content/uploads/2026/a.jpg "/s/wp-content/uploads/2026/new/b c.jpg" /s/wp-content/cache/min/x.css /secret
 ls /s/wp-content/cache/min; ls -A /s/wp-content/uploads /s/wp-content/cache /s`
-	out, err := (&runtime.Docker{}).Run(context.Background(), nil, "run", "--rm", "-e", "SCRIPT="+generatedScript,
-		"alpine:3", "sh", "-c", setup)
+	// Its standard output only: Docker reports pulling the image on stderr.
+	var stderr strings.Builder
+	cmd := exec.Command("docker", "run", "--rm", "-e", "SCRIPT="+generatedScript, "alpine:3", "sh", "-c", setup)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%v: %s", err, out)
+		t.Fatalf("%v: %s%s", err, out, stderr.String())
 	}
 	want := "home\nb c\ncss\nsecret\nevil.css\nx.css\n" +
 		"/s:\nwp-content\n\n/s/wp-content/cache:\nmin\n\n/s/wp-content/uploads:\n2026"

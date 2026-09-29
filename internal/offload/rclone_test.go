@@ -166,7 +166,7 @@ func TestRcloneAgainstMinIO(t *testing.T) {
 		t.Skip("set WPGENIE_TEST_DOCKER=1 to run rclone against MinIO via Docker")
 	}
 	m := offloadtest.Start(t, "s1/uploads/")
-	r := &Rclone{Docker: &runtime.Docker{}, Image: "rclone/rclone:1.75.1", Network: m.Network}
+	r := &Rclone{Docker: &runtime.Docker{}, Image: "rclone/rclone:1.75.1", Network: m.Network, User: offloadtest.RunAs()}
 	tg := Target{Endpoint: m.Endpoint, Bucket: m.Bucket, Prefix: "s1/uploads/", AccessKeyID: m.AccessKey, SecretKey: m.SecretKey}
 	ctx := context.Background()
 

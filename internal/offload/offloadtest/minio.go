@@ -6,6 +6,7 @@ package offloadtest
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -125,4 +126,14 @@ func (m *MinIO) Get(t *testing.T, key string) (int, string) {
 		}
 	}
 	return resp.StatusCode, b.String()
+}
+
+// RunAs is the user rclone's containers should run as in a test: the test's
+// own when it isn't root (CI), so rclone can use its temporary directories;
+// as root without capabilities it can't enter another user's 0700 ones.
+func RunAs() string {
+	if os.Geteuid() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", os.Geteuid(), os.Getegid())
 }
