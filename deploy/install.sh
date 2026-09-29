@@ -43,9 +43,12 @@ trap 'die "installation failed at line $LINENO"' ERR
 preflight() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   [[ -r /etc/os-release ]] || die "unsupported OS"
+  # Read ID in a subshell: sourcing os-release here would overwrite our
+  # VERSION with the distro's ("26.04.1 LTS (Resolute Raccoon)").
+  local os_id
   # shellcheck disable=SC1091
-  . /etc/os-release
-  case "${ID}" in ubuntu | debian) ;; *) die "supported: Ubuntu 22.04+/Debian 12+ (found ${ID})" ;; esac
+  os_id=$(. /etc/os-release && printf '%s' "${ID:-}")
+  case "${os_id}" in ubuntu | debian) ;; *) die "supported: Ubuntu 22.04+/Debian 12+ (found ${os_id:-unknown})" ;; esac
   case "$(uname -m)" in
     x86_64) ARCH=amd64 ;;
     aarch64 | arm64) ARCH=arm64 ;;
