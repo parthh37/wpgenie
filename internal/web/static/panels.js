@@ -41,7 +41,7 @@ async function loadMail() {
   }
   const disable = h('button', { class: 'ghost danger' }, 'Disable mail');
   disable.addEventListener('click', async () => {
-    if (!confirm('Stop the mail server and webmail? Mailboxes and mail are kept on disk.')) return;
+    if (!await ask('Stop the mail server and webmail? Mailboxes and mail are kept on disk.')) return;
     try { await api('PUT', '/mail', { enabled: false }); await loadMail(); } catch (err) { showError(err); }
   });
   box.replaceChildren(
@@ -77,7 +77,7 @@ function renderDomain(d) {
   });
   const rm = h('button', { class: 'ghost danger' }, 'Remove');
   rm.addEventListener('click', async () => {
-    if (!confirm(`Stop accepting mail for ${d.domain}?`)) return;
+    if (!await ask(`Stop accepting mail for ${d.domain}?`)) return;
     try { await api('DELETE', `/mail/domains/${encodeURIComponent(d.domain)}`); await loadDomains(); } catch (e) { showError(e); }
   });
   return h('div', { class: 'card' }, h('div', { class: 'site-head' },
@@ -90,7 +90,7 @@ async function loadMailboxes() {
   $('#mailboxes').replaceChildren(table(['Address', 'Quota', '', ''], boxes.map((b) => {
     const pw = h('button', { class: 'ghost' }, 'New password');
     pw.addEventListener('click', async () => {
-      if (!confirm(`Replace the password of ${b.address}? Mail apps using the old one stop working.`)) return;
+      if (!await ask(`Replace the password of ${b.address}? Mail apps using the old one stop working.`)) return;
       try {
         const r = await api('PUT', `/mail/mailboxes/${encodeURIComponent(b.address)}/password`, {});
         showSecret(`New password for ${b.address}`, [`Password: ${r.password}`]);
@@ -98,7 +98,8 @@ async function loadMailboxes() {
     });
     const rm = h('button', { class: 'ghost danger' }, 'Delete');
     rm.addEventListener('click', async () => {
-      if (prompt(`This deletes ${b.address} and ALL its mail.\nType the address to confirm:`) !== b.address) return;
+      if (await askText(`This deletes ${b.address} and all its mail.`,
+        { title: `Delete ${b.address}?`, label: 'Type the address to confirm', match: b.address, ok: 'Delete mailbox' }) !== b.address) return;
       try { await api('DELETE', `/mail/mailboxes/${encodeURIComponent(b.address)}`); await loadMailboxes(); } catch (e) { showError(e); }
     });
     return [b.address + (b.site_id ? ` (WordPress sender of ${b.site_id})` : ''), b.quota_mb ? `${b.quota_mb} MB` : 'unlimited',
@@ -240,7 +241,7 @@ async function loadSystem(fresh) {
   const update = h('button', { disabled: !info.available || !info.signing_key || active },
     active ? 'Updating…' : info.available ? `Update to ${info.latest.version}` : 'Up to date');
   update.addEventListener('click', async () => {
-    if (!confirm(`Update WPGenie to ${info.latest.version}? The panel restarts; sites keep serving. ` +
+    if (!await ask(`Update WPGenie to ${info.latest.version}? The panel restarts; sites keep serving. ` +
       'If the new version does not start, the previous one is restored automatically.')) return;
     update.disabled = true;
     try { await api('POST', '/system/update'); pollSystem(); } catch (e) { showError(e); update.disabled = false; }
@@ -284,14 +285,16 @@ function show2FA(u) {
   if (u.totp_enabled) {
     const regen = h('button', { class: 'ghost' }, 'New recovery codes');
     regen.addEventListener('click', async () => {
-      const password = prompt('Your password, to create new recovery codes (the old ones stop working):');
+      const password = await askText('The old recovery codes stop working.',
+        { title: 'New recovery codes', label: 'Your password', type: 'password', autocomplete: 'current-password', ok: 'Create codes' });
       if (!password) return;
       try { const r = await api('POST', '/account/recovery-codes', { password }); showSecret('Recovery codes', r.recovery_codes); await loadAccount(); }
       catch (e) { showError(e); }
     });
     const off = h('button', { class: 'ghost danger' }, 'Turn off');
     off.addEventListener('click', async () => {
-      const password = prompt('Your password, to turn two-factor authentication off:');
+      const password = await askText('Signing in will only need your password.',
+        { title: 'Turn off two-factor authentication?', label: 'Your password', type: 'password', autocomplete: 'current-password', ok: 'Turn off' });
       if (!password) return;
       try { await api('DELETE', '/account/totp', { password }); await loadAccount(); } catch (e) { showError(e); }
     });
@@ -375,15 +378,16 @@ async function loadUsers() {
         try { await api('PUT', `/users/${u.id}`, { disabled: !u.disabled }); await loadUsers(); } catch (e) { showError(e); }
       }),
       act('Reset password', async () => {
-        if (!confirm(`Give ${u.username} a new password? They are signed out everywhere.`)) return;
+        if (!await ask(`Give ${u.username} a new password? They are signed out everywhere.`)) return;
         try { const r = await api('POST', `/users/${u.id}/password`); showSecret(`New password for ${u.username}`, [`Password: ${r.password}`]); } catch (e) { showError(e); }
       }),
       u.totp_enabled ? act('Reset 2FA', async () => {
-        if (!confirm(`Turn off two-factor authentication for ${u.username} (lost phone)? They are signed out everywhere.`)) return;
+        if (!await ask(`Turn off two-factor authentication for ${u.username} (lost phone)? They are signed out everywhere.`)) return;
         try { await api('DELETE', `/users/${u.id}/totp`); await loadUsers(); } catch (e) { showError(e); }
       }) : null,
       self ? null : act('Delete', async () => {
-        if (prompt(`Delete ${u.username}? Type the username to confirm:`) !== u.username) return;
+        if (await askText('They are signed out everywhere and can no longer sign in.',
+          { title: `Delete ${u.username}?`, label: 'Type the username to confirm', match: u.username, ok: 'Delete user' }) !== u.username) return;
         try { await api('DELETE', `/users/${u.id}`); await loadUsers(); } catch (e) { showError(e); }
       }, 'ghost danger'));
     return [h('td', {}, u.username, u.disabled ? h('span', { class: 'st-failed small' }, ' disabled') : '', self ? h('span', { class: 'muted small' }, ' (you)') : ''),
