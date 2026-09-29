@@ -105,3 +105,18 @@ td .actions button { margin-top: 0; }
 .st-block, .st-throttle { color: var(--bad); }
 .perf .grid { margin-top: .75rem; }
 .waf-note:empty { display: none; }
+
+/* Jobs */
+.jobs { padding: .75rem 1.25rem; }
+.jobs .job { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; gap: .75rem; align-items: center; padding: .35rem 0; font-size: .85rem; }
+.jobs .job + .job { border-top: 1px solid var(--line); }
+progress { width: 100%; height: .5rem; accent-color: var(--accent); }
+.badge { font-size: .7rem; padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--warn); color: var(--warn); margin-left: .4rem; vertical-align: middle; }
+.perf textarea { width: 100%; min-height: 6rem; margin-top: .3rem; padding: .55rem .7rem; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: .78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.perf h3 { font-size: .9rem; margin: 1rem 0 .25rem; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: .2rem 1rem; font-size: .85rem; margin: .5rem 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; word-break: break-all; }
+.st-succeeded, .st-scheduled, .st-manual { color: var(--ok); }
+.st-queued, .st-safety { color: var(--warn); }
+.grid > .actions { align-self: end; }

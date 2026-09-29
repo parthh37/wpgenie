@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 const DefaultPath = "/etc/wpgenie/config.json"
@@ -56,6 +58,26 @@ type Config struct {
 	// which security scans and automatic WordPress updates run.
 	MaintenanceHour int `json:"maintenance_hour"`
 
+	// PHPVersions are the PHP versions sites may run. PHPImage is the image
+	// of the default one (its tag); the others are built from ImagesDir
+	// (images/php) as <PHPImage repository>:<version> when a site first
+	// switches to them.
+	PHPVersions []string `json:"php_versions"`
+	// ImagesDir holds the image sources the installer put on the server.
+	ImagesDir string `json:"images_dir"`
+	// ResticImage runs backups (restic in a container, see internal/backup).
+	ResticImage string `json:"restic_image"`
+	// JobConcurrency is how many heavy jobs (backups, restores, clones)
+	// run at the same time.
+	JobConcurrency int `json:"job_concurrency"`
+	// SFTP server for site files (one container, every user chrooted to a
+	// site's directory), published on SFTPPort on all interfaces.
+	SFTPImage string `json:"sftp_image"`
+	SFTPPort  int    `json:"sftp_port"`
+	// Adminer (database admin, on demand) listens on 127.0.0.1:AdminerPort.
+	AdminerImage string `json:"adminer_image"`
+	AdminerPort  int    `json:"adminer_port"`
+
 	// MariaDBDSN is a root DSN used only to create per-site databases/users.
 	MariaDBDSN  string `json:"mariadb_dsn"`
 	MariaDBHost string `json:"mariadb_host"` // hostname as seen from site containers
@@ -86,6 +108,14 @@ func Default() *Config {
 		WebmailPort:      8089,
 		CaddyDataDir:     "/var/lib/wpgenie/caddy",
 		MariaDBHost:      "wpgenie-mariadb",
+		PHPVersions:      []string{"8.2", "8.3", "8.4"},
+		ImagesDir:        "/opt/wpgenie/images",
+		ResticImage:      "restic/restic:0.18.1",
+		JobConcurrency:   2,
+		SFTPImage:        "wpgenie/sftp:1",
+		SFTPPort:         2222,
+		AdminerImage:     "wpgenie/adminer:1",
+		AdminerPort:      8090,
 		RedisHost:        "wpgenie-redis",
 	}
 }
@@ -124,10 +154,36 @@ func (c *Config) Validate() error {
 	if c.MaintenanceHour < 0 || c.MaintenanceHour > 23 {
 		errs = append(errs, errors.New("maintenance_hour must be between 0 and 23"))
 	}
+	if c.JobConcurrency < 1 || c.SFTPPort < 1 || c.SFTPPort > 65535 || c.AdminerPort < 1 || c.AdminerPort > 65535 {
+		errs = append(errs, errors.New("job_concurrency must be >= 1; sftp_port and adminer_port must be valid ports"))
+	}
+	if !slices.Contains(c.PHPVersions, c.DefaultPHPVersion()) {
+		errs = append(errs, fmt.Errorf("php_versions must include the version of php_image (%s)", c.DefaultPHPVersion()))
+	}
 	if c.MariaDBDSN == "" {
 		errs = append(errs, errors.New("mariadb_dsn is required"))
 	}
 	return errors.Join(errs...)
+}
+
+// DefaultPHPVersion is the PHP version of PHPImage (its tag).
+func (c *Config) DefaultPHPVersion() string {
+	if i := strings.LastIndex(c.PHPImage, ":"); i >= 0 {
+		return c.PHPImage[i+1:]
+	}
+	return "8.3"
+}
+
+// PHPImageFor is the image of a PHP version.
+func (c *Config) PHPImageFor(version string) string {
+	if version == "" || version == c.DefaultPHPVersion() {
+		return c.PHPImage
+	}
+	repo := c.PHPImage
+	if i := strings.LastIndex(repo, ":"); i >= 0 {
+		repo = repo[:i]
+	}
+	return repo + ":" + version
 }
 
 func (c *Config) SitesDir() string { return filepath.Join(c.DataDir, "sites") }

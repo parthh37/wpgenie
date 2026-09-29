@@ -12,9 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/auth"
+	"github.com/parthh37/wpgenie/internal/backup"
 	"github.com/parthh37/wpgenie/internal/iprep"
+	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -30,6 +34,9 @@ type Server struct {
 	Shield  *shield.Shield
 	Updater *updater.Updater
 	Mail    *mail.Service
+	Jobs    *jobs.Queue
+	SFTP    *sftp.Service
+	Adminer *adminer.Service
 	// IP reputation data, for the status view (optional).
 	Lists     *iprep.Lists
 	Countries *iprep.Countries
@@ -52,6 +59,13 @@ func (s *Server) Handler() http.Handler {
 	// Shield endpoints: reached only through Caddy (loopback listener).
 	mux.Handle("GET /_shield/check", s.Shield.CheckHandler()) // forward_auth always uses GET
 	mux.Handle("POST /_shield/verify", s.Shield.VerifyHandler())
+
+	// WPGenie tools on sites' own domains (reached only through Caddy's
+	// /_wpgenie/* route, which names the site): Adminer.
+	if s.Adminer != nil {
+		mux.Handle("GET "+adminer.Path, s.Adminer)
+		mux.Handle("POST "+adminer.Path, s.Adminer)
+	}
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
@@ -90,7 +104,9 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/sites", viewer, s.listSites)
 	r("POST /api/v1/sites", admin, s.createSite)
 	r("GET /api/v1/sites/{id}", viewer, s.getSite)
-	r("DELETE /api/v1/sites/{id}", admin, s.deleteSite)
+	// Operators may delete staging sites (they create them); live sites
+	// need an admin (checked in deleteSite).
+	r("DELETE /api/v1/sites/{id}", operator, s.deleteSite)
 	r("PUT /api/v1/sites/{id}/shield", operator, s.setShield)
 	r("GET /api/v1/sites/{id}/stats", viewer, s.siteStats)
 	r("PUT /api/v1/sites/{id}/resources", operator, s.setResources)
@@ -107,6 +123,44 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/sites/{id}/scan", viewer, s.lastScan)
 	r("POST /api/v1/sites/{id}/plugins", operator, s.analysePlugins)
 	r("GET /api/v1/sites/{id}/plugins", viewer, s.pluginReport)
+
+	r("GET /api/v1/jobs", viewer, s.listJobs)
+	r("GET /api/v1/jobs/{id}", viewer, s.getJob)
+	r("DELETE /api/v1/jobs/{id}/secret", viewer, s.dropJobSecret)
+
+	r("GET /api/v1/backups/repos", viewer, s.listRepos)
+	r("POST /api/v1/backups/repos", admin, s.addRepo)
+	r("DELETE /api/v1/backups/repos/{id}", admin, s.deleteRepo)
+	r("POST /api/v1/backups/repos/{id}/check", operator, s.checkRepo)
+	r("POST /api/v1/backups/repos/{id}/password", admin, s.repoPassword)
+	r("GET /api/v1/backups/repos/{id}/backups", viewer, s.repoBackups)
+	r("DELETE /api/v1/backups/repos/{id}/backups/{backup}", admin, s.deleteRepoBackup)
+	r("POST /api/v1/backups/restore-new", admin, s.restoreAsNew)
+	r("GET /api/v1/sites/{id}/backups", viewer, s.siteBackups)
+	r("PUT /api/v1/sites/{id}/backups/policy", operator, s.setBackupPolicy)
+	r("POST /api/v1/sites/{id}/backups", operator, s.startBackup)
+	r("POST /api/v1/sites/{id}/backups/restore", operator, s.startRestore)
+	r("GET /api/v1/sites/{id}/backups/{repo}/{backup}/download", operator, s.downloadBackup)
+	r("DELETE /api/v1/sites/{id}/backups/{repo}/{backup}", admin, s.deleteBackup)
+
+	r("POST /api/v1/sites/{id}/staging", operator, s.createStaging)
+	r("POST /api/v1/sites/{id}/push", operator, s.pushStaging)
+	r("GET /api/v1/sites/{id}/tables", viewer, s.siteTables)
+	r("POST /api/v1/sites/{id}/domains", operator, s.addDomain)
+	r("PUT /api/v1/sites/{id}/domains/{domain}", operator, s.setDomain)
+	r("DELETE /api/v1/sites/{id}/domains/{domain}", operator, s.removeDomain)
+	r("PUT /api/v1/sites/{id}/primary-domain", operator, s.setPrimaryDomain)
+	r("GET /api/v1/sites/{id}/certificate", viewer, s.getCert)
+	r("PUT /api/v1/sites/{id}/certificate", operator, s.setCert)
+	r("DELETE /api/v1/sites/{id}/certificate", operator, s.deleteCert)
+	r("GET /api/v1/php", viewer, s.phpVersions)
+	r("PUT /api/v1/sites/{id}/php", operator, s.setPHP)
+	r("GET /api/v1/sites/{id}/sftp", viewer, s.listSFTP)
+	r("POST /api/v1/sites/{id}/sftp", operator, s.addSFTP)
+	r("PUT /api/v1/sites/{id}/sftp/{user}/keys", operator, s.setSFTPKeys)
+	r("PUT /api/v1/sites/{id}/sftp/{user}/password", operator, s.setSFTPPassword)
+	r("DELETE /api/v1/sites/{id}/sftp/{user}", operator, s.deleteSFTP)
+	r("POST /api/v1/sites/{id}/adminer", operator, s.openAdminer)
 
 	r("PUT /api/v1/sites/{id}/smtp", operator, s.setSiteSMTP)
 	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
@@ -161,10 +215,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, site.ErrDomainTaken), errors.Is(err, site.ErrConflict),
 		errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled), errors.Is(err, errConflict),
+		errors.Is(err, sftp.ErrConflict),
 		errors.Is(err, errLastAdmin):
 		status = http.StatusConflict
 	case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
-		errors.Is(err, mail.ErrInvalid):
+		errors.Is(err, mail.ErrInvalid), errors.Is(err, sftp.ErrInvalid), errors.Is(err, adminer.ErrInvalid),
+		errors.Is(err, backup.ErrWrongPassword):
 		status = http.StatusBadRequest
 	case errors.Is(err, errUnauthorized), errors.Is(err, errBadLogin):
 		status = http.StatusUnauthorized
@@ -205,15 +261,23 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
-	st, creds, err := s.Sites.Create(r.Context(), in)
+	// Provisioning runs as a job; the admin credentials are its secret,
+	// shown only to whoever created the site and never stored.
+	st, id, err := s.Sites.StartCreate(r.Context(), in)
 	if err != nil {
 		return err
 	}
-	// Credentials are returned exactly once and never stored by the panel.
-	return writeJSON(w, http.StatusCreated, map[string]any{"site": st, "credentials": creds})
+	return writeJSON(w, http.StatusAccepted, map[string]any{"site": st, "job_id": id})
 }
 
 func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) error {
+	st, err := s.Store.GetSite(r.Context(), r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	if st.ParentID == "" && auth.Level(principalFrom(r.Context()).Role) < auth.Level(admin) {
+		return errForbidden
+	}
 	if err := s.Sites.Delete(r.Context(), r.PathValue("id")); err != nil {
 		return err
 	}
@@ -333,7 +397,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/_shield/") {
+		// The shield's pages and the tools on sites' domains (Adminer, with
+		// its own nonce-based CSP) aren't the panel.
+		if !strings.HasPrefix(r.URL.Path, "/_shield/") && !strings.HasPrefix(r.URL.Path, "/_wpgenie/") {
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 			w.Header().Set("X-Frame-Options", "DENY")
 		}

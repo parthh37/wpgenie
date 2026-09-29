@@ -25,8 +25,11 @@ import (
 
 // DBDumper snapshots and restores a site's database.
 type DBDumper interface {
-	Dump(ctx context.Context, db string, w io.Writer) error
+	// Dump dumps the whole database, or only tables when given.
+	Dump(ctx context.Context, db string, w io.Writer, tables ...string) error
 	Restore(ctx context.Context, db string, r io.Reader) error
+	// RestoreAs loads SQL as a given (non-root) account.
+	RestoreAs(ctx context.Context, db, user, password string, r io.Reader) error
 }
 
 // Component is an installed piece of WordPress: core, a plugin or a theme.

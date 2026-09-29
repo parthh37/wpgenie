@@ -15,6 +15,9 @@ check.
 | MariaDB 11.4 LTS | WordPress databases | One DB + one user per site, grants limited to that schema |
 | Valkey 8 | Object cache | BSD-licensed Redis fork; LRU cache, no persistence |
 | SQLite (panel) | Sites, traffic rollups | Zero-ops; WAL mode; a single writer is plenty for panel state |
+| restic (container per command) | Backups | Deduplicated, compressed, encrypted; local, S3, B2, SFTP; verifiable |
+| OpenSSH (optional container) | SFTP for site files | Chroot and SFTP-only logins built in; nothing custom exposed to the internet |
+| Adminer (on demand) | Database access | One PHP file; runs only while someone uses it, behind WPGenie's tokens |
 
 ## Request flow
 
@@ -180,8 +183,10 @@ once, to create the first administrator (`POST /auth/setup` only works while the
 and creates the first one atomically). After that people sign in with their own accounts.
 
 - **Roles**: *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
-  plugin analysis, CDN, mailboxes, bans), *admin* (also creates and deletes sites, users, server-wide
-  security lists and mail settings, self-update). Every route declares the role it needs.
+  plugin analysis, CDN, mailboxes, bans, backups and restores, staging and pushes, domains and
+  certificates, PHP, SFTP logins, Adminer), *admin* (also creates and deletes sites, users, backup
+  destinations and backups, server-wide security lists and mail settings, self-update). Every route
+  declares the role it needs.
 - **Passwords**: PBKDF2-HMAC-SHA256, 600 000 iterations (standard library), 12+ characters. Unknown
   user names take as long as wrong passwords. 10 failures per account or 20 per address (IPv6: per
   /64) in 15 minutes lock sign-in for the rest of the window (the CLI still gets in with the token).
@@ -388,6 +393,120 @@ wp-admin.
   plugins, so it is parsed as untrusted input and only ever displayed.
 - Vulnerability counts come from the latest scan. Findings are logged to the site's activity log.
 
+## Jobs
+
+Long operations (creating a site, backups, restores, staging clones and pushes, PHP and primary
+domain changes) are jobs (`internal/jobs`): the API answers `202` with a job ID, and the dashboard's
+jobs tray and `wpgenie jobs` follow its progress. A job waits (*queued*) until it holds the site's
+maintenance lock, the one updates and scans take, so nothing overlaps on one site. Heavy jobs (whole-site
+copies) also share `job_concurrency` slots (default 2): ten scheduled backups starting at once take turns.
+A job keeps running when the request that started it goes away, and one left queued or running by a
+stopped daemon is marked failed at the next start. A new site's admin password is the job's *secret*:
+held in memory for 30 minutes, shown only to whoever created the site, never written anywhere.
+
+## Backups and environments
+
+**Backups** (`internal/backup`, `site/backups.go`) are [restic](https://restic.net/) snapshots, so they
+are deduplicated (content-defined chunks, compressed), encrypted and verifiable. One repository per
+destination serves every site that uses it: WordPress core, common plugins and themes are stored once for
+all of them. Destinations: a directory on this server (`local`, created on first use at
+`/var/lib/wpgenie/backups/local`), S3-compatible storage, Backblaze B2, or an SFTP server.
+
+- restic runs in a throwaway container per command (`restic/restic`, pinned): it sees only the site's
+  docroot (read-only), the database dump and, for a local repository, the repository; it keeps only
+  `DAC_READ_SEARCH` and has no network for local repositories. It stores symlinks as symlinks and never
+  follows them; a symlink it met would resolve inside its own container anyway. The repository password,
+  cloud keys and SSH key go in on stdin (a `KEY=VALUE` block the entrypoint exports), never in argv or
+  the environment `docker inspect` shows. restic's cache persists under `backups/cache` (root only).
+- An SFTP destination gets its own Ed25519 key (its public half shown to add to the server's
+  `authorized_keys`) and the server's host key is pinned when it's added (`ssh-keyscan`, strongest key
+  type): a changed key fails the backup instead of sending data to someone in the middle.
+- A backup is one snapshot: `/backup/files` (the docroot minus caches) and `/backup/db` with the
+  `mariadb-dump` (single transaction: no locks) and `meta.json` (domain, table prefix, the tables, PHP
+  version). Tags: `wpgenie`, `site=<id>`, `domain=<primary>` and the kind: *scheduled* (the site's keep
+  rules apply: last/daily/weekly/monthly, restic's `forget`), *manual* (kept until deleted) or *safety*
+  (taken before a restore or a push; kept 7 days). Data of forgotten snapshots goes with a weekly `prune`
+  (and `check`) per repository in the maintenance window.
+- **Schedule**: daily and longer schedules run in the maintenance window (before the night's automatic
+  updates); shorter ones by interval; a failed attempt is retried after an hour. New live sites get daily
+  local backups (7 daily, 4 weekly, 6 monthly); sites that existed before keep none until one is set.
+- **Restore** backs the site up first (*safety*), then restores files and/or the database. Files come out
+  of restic as a tar stream and are written by the site user inside its container (never as root, see
+  *WordPress updates*), in two phases: extracted into a temporary directory, and swapped in only after the
+  process producing the stream exited cleanly and the archive holds a WordPress install; a source that dies
+  half-way can't leave a half-replaced site even if tar took the cut stream for a complete one. The database
+  is loaded from the dump and tables the backup didn't have are dropped. WPGenie's own wrappers are
+  rewritten and caches purged. A backup can also become a **new site** on another domain, deleted sites'
+  included (their backups stay in the repository): same machinery, links rewritten to the new domain.
+- **Download** streams the snapshot from restic as `.tar.gz`; a failure half-way aborts the connection
+  rather than end a truncated archive that looks complete.
+
+**Staging** (`site/staging.go`) is a full copy of a live site as a site of its own (container, database,
+settings), linked by `parent_id`: files copied between the two containers (site user on both ends),
+database copied, links rewritten, `blog_public` 0. It is `WP_ENVIRONMENT_TYPE=staging` (Jetpack,
+WooCommerce Subscriptions and others stop acting as the live site), Caddy adds `X-Robots-Tag: noindex`,
+and it gets no cron, no mail through the mail server, no automatic updates and no scheduled backups:
+a copy of a shop must not charge renewals or e-mail customers. A **push** backs the live site up first,
+then copies code (everything but uploads), or all files, and/or the database or chosen tables. The
+database leaves staging already rewritten: WP-CLI's `search-replace --export` writes the SQL with the
+replacement applied (staging itself is untouched), and it is loaded into the live database table by
+table, so live never holds staging links, not even for a moment. That SQL comes out of the staging
+site's container, whose WordPress a compromised plugin could have altered, so it is loaded as a temporary
+MariaDB account with rights on the live site's database only (dropped afterwards), never as root; every
+load also runs in the client's `--sandbox` (no `\!` shell or `source` lines). Staging and push jobs lock
+both sites at once (all or nothing), before taking a heavy slot, so two jobs can't deadlock. The live site's own search-engine
+setting is kept. A whole-database push drops live tables staging doesn't have.
+
+**Link rewriting** (clone, push, primary domain change, restore as a new site) is one WP-CLI regex
+search-replace over every table: `//old` and JSON-escaped `\/\/old` (page builders), never followed by
+another hostname character, so `a.test` → `b.test` leaves `a.test.au` alone. WP-CLI handles serialised
+PHP data; GUIDs are left as WordPress requires.
+
+**Domains** (`site/domains.go`): a site serves its primary domain and any aliases; *redirect* domains
+answer `301` to the primary one with the path (their own Caddy block: no PHP). Making another domain
+primary rewrites the links (www ↔ bare domain is this) and turns the old primary into a redirect; if the
+proxy can't be switched, the links are put back. A site may bring **its own certificate** (e.g. a
+Cloudflare origin certificate): the chain and key must match, be valid now and cover every served domain;
+RSA keys need 2048+ bits. Files go next to the Caddyfile (`certs/<site>/`, key `root:<caddy group>
+0640`); Caddy then serves it and skips ACME for those names (HTTP still redirects to HTTPS). Nothing
+renews it: an event is logged daily from two weeks before it expires. If Caddy refuses the config the
+previous certificate is put back.
+
+**PHP versions** (8.2, 8.3, 8.4) are images of the same Dockerfile (`wpgenie/php:<version>`); the
+default's is built by the installer and updates, others by the daemon the first time a site switches (a
+job). The switch is a blue/green reconcile, health-checked like updates: a site working before and
+broken after (a plugin using something the new PHP removed) is switched back. After a self-update,
+images of other versions in use are rebuilt before sites are rolled. **PHP settings** (memory_limit,
+upload size, max_execution_time, max_input_vars) reach FPM as `WPG_*` variables read by `pool.conf`
+(defaults in the image); FPM's `request_terminate_timeout` is kept 30 s above max_execution_time. They
+only enter the replica spec when set, so upgrading doesn't roll sites that don't use them.
+
+**SFTP** (`internal/sftp`, `images/sftp`): one OpenSSH server for every site, published on `sftp_port`
+(2222), running while any login exists. Each login is chrooted (`ChrootDirectory`) to its site's
+directory (`root:82 0751`, as sshd requires), starts in `public/`, gets `internal-sftp` only (no shell,
+forwarding or tunnels) and writes as uid 82, the site user, with umask 022. It can read `wp-config.php`
+like the site's PHP can, and nothing of other sites. Logins are `<site>` or `<site>-<suffix>`, so they
+never clash with system accounts; passwords (generated, shown once) are stored only as SHA-512 crypt
+hashes (what the container's sshd reads without PAM), public keys are parsed and re-serialised without
+options (`command=`, `from=` …). The daemon renders `passwd`/`group`/`shadow` and `authorized_keys` and the
+container installs them atomically; deleting a login or changing its password ends its open sessions.
+Host keys persist. OpenSSH's own `PerSourcePenalties` slows down addresses that keep failing. Docker
+publishes the port past `ufw` (as it does for every published port).
+
+**Adminer** (`internal/adminer`, `images/adminer`) opens on the **site's own domain**
+(`https://<site>/_wpgenie/adminer/`), not the panel's: Adminer renders whatever the database holds, a
+compromised plugin controls that, and on the panel's origin an XSS in Adminer could act with the
+operator's panel session; on the site's origin it reaches nothing the site's code couldn't already.
+Caddy routes `/_wpgenie/*` to the daemon before the shield and the WAF (it's SQL, the WAF would block it),
+naming the site in a header it sets itself. Opening it creates a temporary MariaDB account with rights on
+that one database (5 connections) and a one-time token valid 2 minutes; the token is exchanged for an
+`HttpOnly`, `Secure` cookie scoped to the path, and the URL loses the token. The daemon proxies to the
+Adminer container on loopback with the account in headers and a per-start secret the container checks,
+so neither sites (same Docker network) nor anyone else can use Adminer directly; any login Adminer's form
+would make, to another server included, is replaced by the session's account. Sessions end after 15
+minutes idle or an hour: the account is dropped and its connections killed; the container stops when no
+session is left, and leftover accounts are dropped at startup.
+
 ## Updating WPGenie itself
 
 Trust chain: an Ed25519 public key compiled into the binary (`internal/updater/release.pub`) →
@@ -467,6 +586,10 @@ The code has explicit seams for going multi-server:
 /var/lib/wpgenie/caddy/           certificates (owned by wpgenie-caddy)
 /var/lib/wpgenie/mariadb/         databases
 /var/lib/wpgenie/snapshots/       pre-update snapshots (root only)
+/var/lib/wpgenie/backups/local/   the local restic repository (root only)
+/var/lib/wpgenie/backups/cache/   restic's cache; staging/ holds database dumps while backing up
+/var/lib/wpgenie/sftp/            SFTP accounts (config/) and host keys
+/etc/wpgenie/caddy/certs/<site>/  sites' own TLS certificates
 /var/lib/wpgenie/iprep/           IP blocklists and the country database
 /var/lib/wpgenie/updates/         staged WPGenie releases, status.json
 /var/lib/wpgenie/mail/            mailboxes (data/), mail server config, Roundcube DB

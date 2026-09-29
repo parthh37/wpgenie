@@ -220,6 +220,69 @@ var migrations = []string{
 		analysed_at INTEGER NOT NULL,
 		report      TEXT NOT NULL
 	);`,
+	// v7: backups and environments. Jobs are long operations with progress
+	// (no foreign key: the record of deleting or failing to create a site
+	// outlives it). Backup snapshots live in the restic repositories; the
+	// panel stores where the repositories are and each site's policy.
+	// parent_id links a staging site to the live site it was cloned from.
+	// Redirect domains answer with a permanent redirect to the primary.
+	`CREATE TABLE jobs (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		site_id     TEXT NOT NULL DEFAULT '',
+		kind        TEXT NOT NULL,
+		status      TEXT NOT NULL,
+		progress    INTEGER NOT NULL DEFAULT 0,
+		step        TEXT NOT NULL DEFAULT '',
+		error       TEXT NOT NULL DEFAULT '',
+		result      TEXT NOT NULL DEFAULT '',
+		actor       TEXT NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL,
+		started_at  INTEGER NOT NULL DEFAULT 0,
+		finished_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX jobs_by_site ON jobs (site_id, id);
+	CREATE TABLE backup_repos (
+		id               TEXT PRIMARY KEY,
+		name             TEXT NOT NULL,
+		kind             TEXT NOT NULL,
+		location         TEXT NOT NULL,
+		password         TEXT NOT NULL,
+		secrets          TEXT NOT NULL DEFAULT '{}',
+		created_at       INTEGER NOT NULL,
+		checked_at       INTEGER NOT NULL DEFAULT 0,
+		check_error      TEXT NOT NULL DEFAULT '',
+		pruned_at        INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE site_backup_policy (
+		site_id         TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		repo_id         TEXT NOT NULL REFERENCES backup_repos(id),
+		interval_hours  INTEGER NOT NULL DEFAULT 24,
+		keep_last       INTEGER NOT NULL DEFAULT 0,
+		keep_daily      INTEGER NOT NULL DEFAULT 7,
+		keep_weekly     INTEGER NOT NULL DEFAULT 4,
+		keep_monthly    INTEGER NOT NULL DEFAULT 6,
+		last_backup_at  INTEGER NOT NULL DEFAULT 0,
+		last_attempt_at INTEGER NOT NULL DEFAULT 0,
+		last_error      TEXT NOT NULL DEFAULT ''
+	);
+	ALTER TABLE sites ADD COLUMN parent_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN php_settings TEXT NOT NULL DEFAULT '{}';
+	ALTER TABLE site_domains ADD COLUMN redirect INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE site_certs (
+		site_id    TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		names      TEXT NOT NULL,
+		issuer     TEXT NOT NULL,
+		not_after  INTEGER NOT NULL,
+		trusted    INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE sftp_users (
+		username    TEXT PRIMARY KEY,
+		site_id     TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		password    TEXT NOT NULL DEFAULT '',
+		public_keys TEXT NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -82,12 +82,13 @@ func meminfoMB(field string) int {
 }
 
 func (s *Service) specFor(ctx context.Context, st *store.Site) (runtime.SiteSpec, error) {
-	imageID, err := s.Runtime.ImageID(ctx, s.Cfg.PHPImage)
+	image := s.Cfg.PHPImageFor(st.PHPVersion)
+	imageID, err := s.Runtime.ImageID(ctx, image)
 	if err != nil {
-		return runtime.SiteSpec{}, err
+		return runtime.SiteSpec{}, fmt.Errorf("PHP %s image: %w", st.PHPVersion, err)
 	}
 	return runtime.SiteSpec{
-		ID: st.ID, Image: s.Cfg.PHPImage, ImageID: imageID,
+		ID: st.ID, Image: image, ImageID: imageID, PHPEnv: phpEnv(st.PHP),
 		Dir: s.Cfg.SiteDir(st.ID), Docroot: s.Cfg.SiteRoot(st.ID), Domain: st.PrimaryDomain,
 		Network: s.Cfg.DockerNetwork, MemoryMB: st.MemoryMB, CPUs: st.CPUs,
 		MaxChildren: runtime.FPMMaxChildren(st.MemoryMB),
@@ -113,6 +114,9 @@ func (s *Service) RollSites(ctx context.Context) {
 		s.Log.Error("rolling sites", "err", err)
 		return
 	}
+	// The update rebuilt the default version's image; sites on other
+	// versions need theirs rebuilt from the new sources too.
+	s.buildImagesInUse(ctx, sites)
 	for _, st := range sites {
 		if st.Status != store.StatusActive {
 			continue

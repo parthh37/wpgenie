@@ -1,0 +1,36 @@
+# WPGenie SFTP server. Every account is jailed to its site's directory
+# (ChrootDirectory %h: /var/lib/wpgenie/sites/<id>, root-owned) and gets
+# the SFTP subsystem only.
+Port 2222
+HostKey /hostkeys/ssh_host_ed25519_key
+HostKey /hostkeys/ssh_host_rsa_key
+PidFile none
+LogLevel VERBOSE
+
+PermitRootLogin no
+AllowGroups sftp
+AuthorizedKeysFile /config/keys/%u
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+MaxAuthTries 4
+LoginGraceTime 30
+MaxStartups 10:30:60
+MaxSessions 4
+ClientAliveInterval 120
+# OpenSSH 9.8+ also slows down addresses that keep failing to log in
+# (PerSourcePenalties, on by default).
+
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+PermitUserRC no
+PermitUserEnvironment no
+
+Subsystem sftp internal-sftp
+ChrootDirectory %h
+# Start in the WordPress install; new files 0644, directories 0755.
+ForceCommand internal-sftp -d /public -u 0022

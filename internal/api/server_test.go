@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/config"
+	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -33,7 +36,10 @@ func newTestServer(t *testing.T) http.Handler {
 	}
 	upd := &updater.Updater{Current: "v0.1.0", Repo: "o/r", StateDir: t.TempDir(), APIBase: "http://127.0.0.1:1"}
 	// Building the handler also catches ServeMux pattern conflicts (they panic).
-	return (&Server{Token: "tok", Version: "v0.1.0", Sites: svc, Store: st, Shield: sh, Updater: upd, Mail: ml, Log: slog.Default()}).Handler()
+	svc.Jobs = &jobs.Queue{Store: st, Log: slog.Default()}
+	return (&Server{Token: "tok", Version: "v0.1.0", Sites: svc, Store: st, Shield: sh, Updater: upd, Mail: ml,
+		Jobs: svc.Jobs, SFTP: &sftp.Service{Store: st, Log: slog.Default()},
+		Adminer: &adminer.Service{Store: st, Log: slog.Default()}, Log: slog.Default()}).Handler()
 }
 
 func TestRoutesAndAuth(t *testing.T) {
@@ -43,6 +49,17 @@ func TestRoutesAndAuth(t *testing.T) {
 		want                      int
 	}{
 		{"GET", "/healthz", "", "", 200},
+		{"GET", "/api/v1/jobs", "tok", "", 200},
+		{"GET", "/api/v1/jobs/abc", "tok", "", 400},
+		{"GET", "/api/v1/jobs/999", "tok", "", 404},
+		{"GET", "/api/v1/php", "tok", "", 200},
+		{"PUT", "/api/v1/sites/x/php", "tok", `{"version":"8.4"}`, 404},
+		{"POST", "/api/v1/sites/x/backups/restore", "tok", `{"repo_id":"local","backup_id":"abcdef12"}`, 400},
+		{"POST", "/api/v1/sites/x/sftp", "tok", `{"password":true}`, 400},
+		{"PUT", "/api/v1/sites/x/primary-domain", "tok", `{"domain":"a.com"}`, 404},
+		{"POST", "/api/v1/backups/repos", "", `{}`, 401},
+		// Tools on sites' domains need Caddy's site header (and a token).
+		{"GET", "/_wpgenie/adminer/", "", "", 404},
 		{"GET", "/", "", "", 200},
 		{"GET", "/api/v1/sites", "", "", 401},
 		{"GET", "/api/v1/sites", "wrong", "", 401},

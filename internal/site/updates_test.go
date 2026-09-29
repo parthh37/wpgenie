@@ -147,9 +147,12 @@ func (p probeWP) Probe(context.Context, string) Health {
 
 type fakeDumper struct{ db *string }
 
-func (d fakeDumper) Dump(_ context.Context, _ string, w io.Writer) error {
+func (d fakeDumper) Dump(_ context.Context, _ string, w io.Writer, _ ...string) error {
 	_, err := io.WriteString(w, *d.db)
 	return err
+}
+func (d fakeDumper) RestoreAs(ctx context.Context, db, _, _ string, r io.Reader) error {
+	return d.Restore(ctx, db, r)
 }
 func (d fakeDumper) Restore(_ context.Context, _ string, r io.Reader) error {
 	b, err := io.ReadAll(r)

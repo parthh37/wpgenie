@@ -89,6 +89,14 @@
 # site {{.ID}} — {{.Name}}
 {{join .Domains ", "}} {
 	import wpgenie_hardening
+	{{- if .CustomCert}}
+	# The site's own certificate (uploaded in the panel; not renewed by Caddy).
+	tls {{$.CertDir}}/{{.ID}}/cert.pem {{$.CertDir}}/{{.ID}}/key.pem
+	{{- end}}
+	{{- if .Staging}}
+	# A staging copy: keep it out of search results.
+	header X-Robots-Tag "noindex, nofollow"
+	{{- end}}
 	root * {{.Root}}
 	encode zstd gzip
 	log {
@@ -146,6 +154,13 @@
 			header_up {{$.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}
 		}
+		# WPGenie tools served on the site's own origin (Adminer): the daemon
+		# checks their short-lived tokens. Before the WAF, which would take
+		# Adminer's SQL for an attack.
+		reverse_proxy /_wpgenie/* {{$.ShieldUpstream}} {
+			header_up {{$.SiteHeader}} {{.ID}}
+			header_up X-Forwarded-For {client_ip}
+		}
 		{{- if .ShieldEnabled}}
 		# Before the hardening rules below: probes for /.env or
 		# wp-config.php.bak must reach the shield to count towards a ban.
@@ -197,5 +212,13 @@
 	}
 	{{- end}}
 }
+{{- if .Redirects}}
+
+# site {{.ID}}: redirects to its primary domain
+{{join .Redirects ", "}} {
+	import wpgenie_hardening
+	redir https://{{index .Domains 0}}{uri} permanent
+}
+{{- end}}
 {{- end}}
 {{end -}}

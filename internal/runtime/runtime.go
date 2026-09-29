@@ -12,7 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -35,13 +38,22 @@ type SiteSpec struct {
 	MemoryMB    int
 	CPUs        float64
 	MaxChildren int // PHP-FPM pm.max_children
+	// PHPEnv are per-site PHP settings (WPG_* variables the image's FPM
+	// pool reads, KEY=VALUE); empty means the image defaults.
+	PHPEnv []string
 }
 
 // Hash identifies everything that requires recreating a container when it
 // changes. Replicas labelled with the current hash are kept as they are.
 func (s SiteSpec) Hash() string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%s|%s|%s|%s|%s|%d|%g|%d",
-		s.ImageID, s.Image, s.Dir, s.Docroot, s.Network, s.MemoryMB, s.CPUs, s.MaxChildren))
+	b := fmt.Appendf(nil, "%s|%s|%s|%s|%s|%d|%g|%d",
+		s.ImageID, s.Image, s.Dir, s.Docroot, s.Network, s.MemoryMB, s.CPUs, s.MaxChildren)
+	// Only when set: sites without PHP settings keep the hash they had
+	// before the settings existed, so upgrading doesn't roll them.
+	if len(s.PHPEnv) > 0 {
+		b = fmt.Appendf(b, "|%s", strings.Join(s.PHPEnv, ","))
+	}
+	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
 
@@ -110,6 +122,12 @@ func (d *Docker) Run(ctx context.Context, stdin io.Reader, args ...string) ([]by
 	return d.run(ctx, stdin, args...)
 }
 
+// Stream runs any docker command with stdout going to w; stderr (bounded)
+// goes into the error. For components managed outside the site Runtime.
+func (d *Docker) Stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	return d.stream(ctx, stdin, w, args...)
+}
+
 // stream runs docker with stdout going to w; stderr (bounded) goes into
 // the error. For large outputs (snapshots) that must not sit in memory.
 func (d *Docker) stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
@@ -159,7 +177,7 @@ func runArgs(s SiteSpec, port int) []string {
 	if s.MaxChildren == 0 {
 		s.MaxChildren = FPMMaxChildren(s.MemoryMB)
 	}
-	return []string{
+	args := []string{
 		"run", "-d",
 		"--name", ContainerName(s.ID, port),
 		"--hostname", s.ID,
@@ -195,9 +213,27 @@ func runArgs(s SiteSpec, port int) []string {
 		"-w", s.Docroot,
 		"-e", "WPG_ROOT=" + s.Dir, // used by open_basedir in the FPM pool
 		"-e", "WPG_MAX_CHILDREN=" + strconv.Itoa(s.MaxChildren),
-		s.Image,
-		"php-fpm",
 	}
+	for _, e := range s.PHPEnv {
+		args = append(args, "-e", e)
+	}
+	return append(args, s.Image, "php-fpm")
+}
+
+// ImageExists reports whether an image is present locally.
+func (d *Docker) ImageExists(ctx context.Context, image string) bool {
+	_, err := d.run(ctx, nil, "image", "inspect", "--format", "{{.Id}}", image)
+	return err == nil
+}
+
+// Build builds an image from a directory; buildArgs are KEY=VALUE.
+func (d *Docker) Build(ctx context.Context, tag, dir string, buildArgs ...string) error {
+	args := []string{"build", "-q", "-t", tag}
+	for _, a := range buildArgs {
+		args = append(args, "--build-arg", a)
+	}
+	_, err := d.run(ctx, nil, append(args, dir)...)
+	return err
 }
 
 func (d *Docker) ImageID(ctx context.Context, image string) (string, error) {
@@ -440,4 +476,42 @@ func errorLines(out []byte) string {
 		return "unknown error (output withheld: may contain secrets)"
 	}
 	return strings.Join(keep, "; ")
+}
+
+// EnsureBuilt builds an image from the sources in dir unless the image
+// already carries their hash (label wpgenie.src), and returns its ID. For
+// images the daemon builds on first use (SFTP, Adminer): an upgrade that
+// changes their sources rebuilds them the next time they are needed.
+func (d *Docker) EnsureBuilt(ctx context.Context, tag, dir string) (string, error) {
+	hash, err := dirHash(dir)
+	if err != nil {
+		return "", fmt.Errorf("image sources for %s: %w", tag, err)
+	}
+	out, err := d.run(ctx, nil, "image", "inspect", "--format", `{{.Id}}|{{index .Config.Labels "wpgenie.src"}}`, tag)
+	if id, label, ok := strings.Cut(strings.TrimSpace(string(out)), "|"); err == nil && ok && label == hash {
+		return id, nil
+	}
+	if _, err := d.run(ctx, nil, "build", "-q", "--label", "wpgenie.src="+hash, "-t", tag, dir); err != nil {
+		return "", err
+	}
+	return d.ImageID(ctx, tag)
+}
+
+// dirHash hashes the regular files of a directory tree (names and content).
+func dirHash(dir string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil || !e.Type().IsRegular() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		fmt.Fprintf(h, "%s\x00%d\x00", rel, len(b))
+		h.Write(b)
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil)[:8]), err
 }

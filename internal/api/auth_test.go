@@ -163,6 +163,8 @@ func TestRolesAndCSRF(t *testing.T) {
 	op := e.browser()
 	op.do("POST", "/api/v1/auth/login", `{"username":"OLI","password":"`+pw+`"}`, true, nil) // names are case-insensitive
 
+	e.store.CreateSite(context.Background(), &store.Site{ID: "slive", Name: "live", PrimaryDomain: "live.test",
+		PHPVersion: "8.3", FPMPort: 19000, DBName: "wp_slive", Status: store.StatusActive, MemoryMB: 512, CPUs: 1, Replicas: 1})
 	for _, c := range []struct {
 		who          *browser
 		method, path string
@@ -170,6 +172,14 @@ func TestRolesAndCSRF(t *testing.T) {
 		want         int
 	}{
 		{viewer, "GET", "/api/v1/sites", "", 200},
+		// Operators delete staging sites only; live sites need an admin.
+		{op, "DELETE", "/api/v1/sites/slive", "", 403},
+		{viewer, "DELETE", "/api/v1/sites/slive", "", 403},
+		{op, "POST", "/api/v1/backups/repos", `{"name":"x","kind":"local","path":"/srv/b"}`, 403},
+		{op, "POST", "/api/v1/backups/repos/local/password", "", 403},
+		{viewer, "POST", "/api/v1/sites/slive/backups", "", 403},
+		{viewer, "POST", "/api/v1/sites/slive/adminer", "", 403},
+		{viewer, "GET", "/api/v1/sites/slive/backups/local/0123abcd/download", "", 403},
 		{viewer, "PUT", "/api/v1/sites/x/cache", `{"page_cache":true,"object_cache":true}`, 403},
 		{op, "PUT", "/api/v1/sites/x/cache", `{"page_cache":true,"object_cache":true}`, 404}, // allowed; no such site
 		{op, "POST", "/api/v1/sites", `{"domain":"a.com","admin_email":"a@b.co"}`, 403},
