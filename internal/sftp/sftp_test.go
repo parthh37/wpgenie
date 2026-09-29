@@ -84,6 +84,16 @@ func TestSFTPServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	base := t.TempDir()
+	// sshd chroots only into paths whose every component is root-owned and
+	// not group/world-writable (true of /var/lib/wpgenie/sites/<id>; not of
+	// a temporary directory under /tmp, mode 1777).
+	for d := base; d != "/"; d = filepath.Dir(d) {
+		if fi, err := os.Stat(d); err == nil && d != base &&
+			(fi.Sys().(*syscall.Stat_t).Uid != 0 || fi.Mode().Perm()&0o022 != 0) {
+			t.Fatalf("%s isn't root-owned or is group/world-writable: sshd refuses to chroot below it. "+
+				"Point TMPDIR at a root-owned directory (make test-e2e does)", d)
+		}
+	}
 	sites := filepath.Join(base, "sites")
 	site := filepath.Join(sites, "sabc1234")
 	os.MkdirAll(filepath.Join(site, "public"), 0o755)

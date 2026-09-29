@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -98,7 +99,26 @@ func dockerRestic(t *testing.T) *Restic {
 	if os.Getenv("WPGENIE_TEST_DOCKER") == "" {
 		t.Skip("set WPGENIE_TEST_DOCKER=1 to run restic in Docker")
 	}
-	return &Restic{Docker: &runtime.Docker{}, Image: "restic/restic:0.18.1", CacheDir: t.TempDir()}
+	return &Restic{Docker: &runtime.Docker{}, Image: "restic/restic:0.18.1", CacheDir: writableDir(t)}
+}
+
+// writableDir is a temporary directory restic's container can write. It
+// runs as root without DAC_OVERRIDE (on a server the repository and cache
+// are root's), so a directory owned by a non-root test runner must be
+// opened up.
+func writableDir(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	if os.Geteuid() != 0 {
+		os.Chmod(d, 0o777)
+		// restic leaves root-owned files the test can't remove itself; this
+		// runs before TempDir's own cleanup (cleanups run last-in first-out).
+		t.Cleanup(func() {
+			exec.Command("docker", "run", "--rm", "-v", d+":/d", "--entrypoint", "sh", "restic/restic:0.18.1",
+				"-c", "rm -rf /d/* /d/.[!.]*").Run()
+		})
+	}
+	return d
 }
 
 func writeTree(t *testing.T, root string, files map[string]string) {
@@ -116,7 +136,7 @@ func TestResticRoundTrip(t *testing.T) {
 	r := dockerRestic(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	repo := &store.BackupRepo{ID: "local", Kind: KindLocal, Location: t.TempDir(), Password: "correct horse"}
+	repo := &store.BackupRepo{ID: "local", Kind: KindLocal, Location: writableDir(t), Password: "correct horse"}
 	if err := r.Init(ctx, repo); err != nil {
 		t.Fatal(err)
 	}

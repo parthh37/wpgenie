@@ -22,10 +22,12 @@ test-integration:
 # a container on a Docker network shared with the database; the temporary
 # directory is mounted at the same path so sibling containers' bind mounts
 # resolve. Needs the PHP images (make php-image, and PHP_VERSION=8.4).
-E2E_TMP ?= /tmp/wpgenie-e2e
+# E2E_TMP must be root-owned all the way up (not under /tmp): sshd refuses to
+# chroot below a group/world-writable directory, as it should.
+E2E_TMP ?= /var/lib/wpgenie-e2e
 test-e2e:
 	docker network inspect wpgenie-e2e >/dev/null 2>&1 || docker network create wpgenie-e2e
-	mkdir -p $(E2E_TMP)
+	test -d $(E2E_TMP) || sudo install -d -m 0755 -o root -g root $(E2E_TMP)
 	docker run --rm --network wpgenie-e2e -v /var/run/docker.sock:/var/run/docker.sock -v "$(CURDIR)":/src -w /src \
 	  -v $(E2E_TMP):$(E2E_TMP) -e TMPDIR=$(E2E_TMP) -e WPGENIE_TEST_DOCKER=1 -e WPGENIE_TEST_E2E=1 -e E2E_NET=wpgenie-e2e \
 	  golang:1.26-alpine sh -c 'apk add -q docker-cli >/dev/null && go test -count=1 -timeout 30m \
