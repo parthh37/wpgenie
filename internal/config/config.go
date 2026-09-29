@@ -39,6 +39,19 @@ type Config struct {
 	DBMaxConnections int `json:"db_max_connections"`
 	// CronConcurrency is how many sites run WP-Cron at the same time.
 	CronConcurrency int `json:"cron_concurrency"`
+	// Mail stack (off until enabled in the panel). CaddyDataDir is Caddy's
+	// /data on the host, where the mail server finds its certificate.
+	MailImage    string `json:"mail_image"`
+	WebmailImage string `json:"webmail_image"`
+	WebmailPort  int    `json:"webmail_port"`
+	CaddyDataDir string `json:"caddy_data_dir"`
+
+	// UpdateRepo is the GitHub repository (owner/name) WPGenie updates
+	// itself from. Releases must be signed with the key built into the binary.
+	UpdateRepo string `json:"update_repo"`
+	// MaintenanceHour (0-23, server local time) starts the nightly window in
+	// which security scans and automatic WordPress updates run.
+	MaintenanceHour int `json:"maintenance_hour"`
 
 	// MariaDBDSN is a root DSN used only to create per-site databases/users.
 	MariaDBDSN  string `json:"mariadb_dsn"`
@@ -62,6 +75,12 @@ func Default() *Config {
 		MaxReplicas:      8,
 		DBMaxConnections: 300,
 		CronConcurrency:  4,
+		MaintenanceHour:  3,
+		UpdateRepo:       "parthh37/wpgenie",
+		MailImage:        "ghcr.io/docker-mailserver/docker-mailserver:16",
+		WebmailImage:     "roundcube/roundcubemail:1.7.x-apache",
+		WebmailPort:      8089,
+		CaddyDataDir:     "/var/lib/wpgenie/caddy",
 		MariaDBHost:      "wpgenie-mariadb",
 		RedisHost:        "wpgenie-redis",
 	}
@@ -97,6 +116,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxReplicas < 1 || c.DBMaxConnections < 20 || c.CronConcurrency < 1 {
 		errs = append(errs, errors.New("max_replicas and cron_concurrency must be >= 1, db_max_connections >= 20"))
+	}
+	if c.MaintenanceHour < 0 || c.MaintenanceHour > 23 {
+		errs = append(errs, errors.New("maintenance_hour must be between 0 and 23"))
 	}
 	if c.MariaDBDSN == "" {
 		errs = append(errs, errors.New("mariadb_dsn is required"))

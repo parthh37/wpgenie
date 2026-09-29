@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -36,27 +37,52 @@ type Site struct {
 	PageCache   bool       `json:"page_cache"`
 	ObjectCache bool       `json:"object_cache"`
 	Upstreams   []int      `json:"upstream_ports"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// Shield: request inspection, and IP networks (normalised prefixes).
+	WAF        bool     `json:"waf"`
+	AdminAllow []string `json:"admin_allow"`
+	TrustedIPs []string `json:"trusted_ips"`
+	// CPU autoscaling between MinReplicas and MaxReplicas, aiming to keep
+	// each replica's CPU use near TargetCPU percent of its allowance.
+	Autoscale   bool `json:"autoscale"`
+	MinReplicas int  `json:"min_replicas"`
+	MaxReplicas int  `json:"max_replicas"`
+	TargetCPU   int  `json:"target_cpu"`
+	// AutoUpdate is the nightly WordPress update policy: off, security or all.
+	AutoUpdate string `json:"auto_update"`
+	// SMTP: WordPress sends its mail through the WPGenie mail server.
+	SMTP      bool      `json:"smtp"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, status, shield_mode, block_ai_bots,
-	memory_mb, cpus, replicas, page_cache, object_cache, created_at, updated_at`
+	memory_mb, cpus, replicas, page_cache, object_cache, waf, admin_allow, trusted_ips,
+	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp, created_at, updated_at`
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated int64
+	var adminAllow, trusted string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
-		&created, &updated)
+		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
+		&s.SMTP, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	s.AdminAllow, s.TrustedIPs = splitList(adminAllow), splitList(trusted)
 	s.CreatedAt, s.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return &s, nil
+}
+
+func splitList(v string) []string {
+	if v == "" {
+		return []string{}
+	}
+	return strings.Split(v, ",")
 }
 
 // CreateSite inserts the site, its primary domain and its first upstream
@@ -69,10 +95,21 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	}
 	defer tx.Rollback()
 	now := time.Now().Unix()
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if site.MinReplicas == 0 {
+		site.MinReplicas, site.MaxReplicas = 1, 1
+	}
+	if site.TargetCPU == 0 {
+		site.TargetCPU = 70
+	}
+	if site.AutoUpdate == "" {
+		site.AutoUpdate = "security"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
-		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache, now, now)
+		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
+		site.WAF, strings.Join(site.AdminAllow, ","), strings.Join(site.TrustedIPs, ","),
+		site.Autoscale, site.MinReplicas, site.MaxReplicas, site.TargetCPU, site.AutoUpdate, site.SMTP, now, now)
 	if err != nil {
 		return err
 	}
@@ -259,9 +296,33 @@ func (s *Store) SetSiteStatus(ctx context.Context, id string, st SiteStatus) err
 	return s.exec1(ctx, `UPDATE sites SET status = ?, updated_at = ? WHERE id = ?`, st, time.Now().Unix(), id)
 }
 
-func (s *Store) SetShield(ctx context.Context, id, mode string, blockAI bool) error {
-	return s.exec1(ctx, `UPDATE sites SET shield_mode = ?, block_ai_bots = ?, updated_at = ? WHERE id = ?`,
-		mode, blockAI, time.Now().Unix(), id)
+// ShieldSettings is the stored per-site shield configuration.
+type ShieldSettings struct {
+	Mode        string
+	BlockAIBots bool
+	WAF         bool
+	AdminAllow  []string
+	TrustedIPs  []string
+}
+
+func (s *Store) SetShield(ctx context.Context, id string, c ShieldSettings) error {
+	return s.exec1(ctx, `UPDATE sites SET shield_mode = ?, block_ai_bots = ?, waf = ?, admin_allow = ?, trusted_ips = ?,
+		updated_at = ? WHERE id = ?`,
+		c.Mode, c.BlockAIBots, c.WAF, strings.Join(c.AdminAllow, ","), strings.Join(c.TrustedIPs, ","),
+		time.Now().Unix(), id)
+}
+
+func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU int) error {
+	return s.exec1(ctx, `UPDATE sites SET autoscale = ?, min_replicas = ?, max_replicas = ?, target_cpu = ?,
+		updated_at = ? WHERE id = ?`, on, minR, maxR, targetCPU, time.Now().Unix(), id)
+}
+
+func (s *Store) SetSMTP(ctx context.Context, id string, on bool) error {
+	return s.exec1(ctx, `UPDATE sites SET smtp = ?, updated_at = ? WHERE id = ?`, on, time.Now().Unix(), id)
+}
+
+func (s *Store) SetAutoUpdate(ctx context.Context, id, policy string) error {
+	return s.exec1(ctx, `UPDATE sites SET auto_update = ?, updated_at = ? WHERE id = ?`, policy, time.Now().Unix(), id)
 }
 
 func (s *Store) DeleteSite(ctx context.Context, id string) error {

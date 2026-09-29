@@ -19,20 +19,24 @@ with one command.
 | 🔒 | Automatic SSL (Let's Encrypt / ZeroSSL) & reverse proxy via Caddy, HTTP/3 | ✅ |
 | 📦 | Per-site isolation: unprivileged, read-only, capability-less PHP-FPM containers | ✅ |
 | 🛡️ | **Shield**: bot classification, AI-crawler blocking, per-IP rate limiting, login brute-force limits | ✅ |
+| 🧱 | **WAF**: WordPress-tuned request inspection (SQLi, XSS, traversal, code injection, scanner probes, user enumeration) | ✅ |
+| 🚫 | Automatic server-wide bans for attackers (escalating), manual bans, security log | ✅ |
+| 🔑 | Per-site wp-admin IP allowlist, trusted IPs | ✅ |
 | 🧩 | Self-hosted proof-of-work challenge (CAPTCHA without Google/Cloudflare, no tracking) | ✅ |
 | ✔️ | Search-engine verification (forward-confirmed reverse DNS) — fake "Googlebots" are caught | ✅ |
 | 📊 | Visitor counts (HyperLogLog, no raw IPs stored), page views, **bandwidth per site** | ✅ |
 | 🔐 | WordPress hardening: `wp-config.php` outside docroot & read-only, file editor disabled, PHP jailed with `open_basedir`, uploads can't execute PHP | ✅ |
-| 🖥️ | Dashboard + REST API + CLI | ✅ (basic) |
-| 🧱 | Web Application Firewall (Coraza + OWASP CRS) | 🚧 Phase 1 |
-| 🔎 | Plugin analyser & automatic vulnerability checks | 🚧 Phase 1 |
-| 🔄 | Update manager with pre-update snapshot + health check + auto-rollback | 🚧 Phase 1 |
+| 🔎 | Nightly security scans: known vulnerabilities ([WPVulnerability](https://www.wpvulnerability.net/)), modified core/plugin files, PHP in uploads | ✅ |
+| 🔄 | **WordPress updates**: snapshot → update → health check → automatic rollback; nightly security auto-updates | ✅ |
+| ⬆️ | **One-click WPGenie updates**: signed releases, automatic rollback if the new version doesn't start | ✅ |
+| 🖥️ | Dashboard + REST API + CLI | ✅ |
 | 💾 | Backups (files + DB) to local/S3 with one-click restore | 🚧 Phase 2 |
 | 🧪 | Staging environments, SFTP, PHP version switching | 🚧 Phase 2 |
 | ⚡ | Full-page cache served by Caddy, Redis object cache, system cron | ✅ |
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
+| 🌡️ | **CPU autoscaling**: replicas follow traffic between a min and max, capped by server memory | ✅ |
+| ✉️ | **Mail**: mailboxes & aliases (docker-mailserver: Postfix, Dovecot, Rspamd), Roundcube webmail, automatic DKIM, DNS checks, WordPress mail via SMTP, outbound relay | ✅ |
 | 🖼️ | Image optimisation, CDN integration | 🚧 Phase 3 |
-| ✉️ | Mailboxes (Stalwart), DKIM/SPF/DMARC, transactional mail | 🚧 Phase 4 |
 | 🌐 | Multi-server clusters | 🚧 Phase 5 |
 
 ## Install
@@ -62,8 +66,42 @@ wpgenie site cache <site-id> --page on --object on
 wpgenie site purge <site-id>
 ```
 
-After upgrading WPGenie (which rebuilds the PHP image), `wpgenie site scale <site-id>` with no
-flags rolls a site onto the new image.
+Or let it scale itself: replicas are added when CPU use passes the target and removed after five
+quiet minutes:
+
+```bash
+wpgenie site autoscale <site-id> --on --min 1 --max 4 --target 70
+```
+
+Keep WordPress patched. Every update takes a snapshot first and is rolled back automatically if the
+site stops working; by default, updates that fix a known vulnerability are applied every night:
+
+```bash
+wpgenie site updates <site-id>                 # what's outdated
+wpgenie site update <site-id> --all
+wpgenie site auto-update <site-id> security    # off | security | all
+wpgenie site scan <site-id>                    # vulnerabilities + file integrity
+```
+
+Lock down wp-admin and see who the shield stopped:
+
+```bash
+wpgenie site shield <site-id> --admin-allow 203.0.113.7,198.51.100.0/24
+wpgenie security bans
+```
+
+Mail (point `mail.example.com`'s A record here and open ports 25, 465, 587, 993 first):
+
+```bash
+wpgenie mail enable mail.example.com
+wpgenie mail domain add example.com            # prints the MX/SPF/DKIM/DMARC records to publish
+wpgenie mail box add jane@example.com --quota 2048
+wpgenie site smtp <site-id> on                 # WordPress sends its mail through it
+```
+
+Webmail is at `https://mail.example.com/`. Update WPGenie itself from the dashboard (System tab) or
+with `wpgenie update`: releases are signature-checked, and the previous version is restored if the
+new one doesn't come up.
 
 ## How it works
 
@@ -101,9 +139,11 @@ Layout:
 
 ```
 cmd/wpgenie/        daemon + CLI entrypoint
-internal/shield/    bot classification, rate limiting, PoW challenge, policy
+internal/shield/    bot classification, WAF rules, bans, rate limiting, PoW challenge, policy
 internal/analytics/ Caddy log tailing → visitors / bandwidth rollups
-internal/site/      site lifecycle orchestration (with rollback)
+internal/site/      site lifecycle (with rollback), autoscaling, WordPress updates, scans
+internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
+internal/updater/   WPGenie self-update (signed releases, applier with rollback)
 internal/proxy/     Caddyfile rendering + live reload
 internal/runtime/   container runtime (the seam for multi-node)
 internal/store/     panel state (SQLite)

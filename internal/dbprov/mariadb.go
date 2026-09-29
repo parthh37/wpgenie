@@ -81,3 +81,46 @@ func (m *MariaDB) SetConnectionLimit(ctx context.Context, user string, n int) er
 	_, err := m.db.ExecContext(ctx, "ALTER USER '"+user+"'@'%' WITH MAX_USER_CONNECTIONS "+strconv.Itoa(n))
 	return err
 }
+
+// Table names come from plugins, so they are checked rather than trusted:
+// only characters that can't break out of a backquoted identifier.
+var tableRe = regexp.MustCompile(`^[A-Za-z0-9_$]{1,64}$`)
+
+// Tables lists the tables of a site database.
+func (m *MariaDB) Tables(ctx context.Context, db string) ([]string, error) {
+	if !identRe.MatchString(db) {
+		return nil, fmt.Errorf("invalid database identifier")
+	}
+	rows, err := m.db.QueryContext(ctx,
+		"SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name", db)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DropTables drops tables of a site database (used to undo tables an
+// update created when its snapshot is restored).
+func (m *MariaDB) DropTables(ctx context.Context, db string, tables []string) error {
+	if !identRe.MatchString(db) {
+		return fmt.Errorf("invalid database identifier")
+	}
+	for _, t := range tables {
+		if !tableRe.MatchString(t) {
+			return fmt.Errorf("refusing to drop table with unusual name %q", t)
+		}
+		if _, err := m.db.ExecContext(ctx, "DROP TABLE IF EXISTS `"+db+"`.`"+t+"`"); err != nil {
+			return err
+		}
+	}
+	return nil
+}

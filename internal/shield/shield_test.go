@@ -2,7 +2,7 @@ package shield
 
 import (
 	"context"
-	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,14 +40,14 @@ func (f fakeResolver) LookupAddr(_ context.Context, ip string) ([]string, error)
 	if v, ok := f.ptr[ip]; ok {
 		return v, nil
 	}
-	return nil, errors.New("nxdomain")
+	return nil, &net.DNSError{Err: "no such host", Name: ip, IsNotFound: true}
 }
 
 func (f fakeResolver) LookupHost(_ context.Context, h string) ([]string, error) {
 	if v, ok := f.a[h]; ok {
 		return v, nil
 	}
-	return nil, errors.New("nxdomain")
+	return nil, &net.DNSError{Err: "no such host", Name: h, IsNotFound: true}
 }
 
 func TestCrawlerVerification(t *testing.T) {

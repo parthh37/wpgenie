@@ -53,6 +53,7 @@ jobs:
           docker exec php test -f /tmp/s1/public/wp-includes/version.php
           docker exec php wp --version
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
+          docker exec php php -l /usr/local/share/wpgenie/smtp.php
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php
           # WPG_MAX_CHILDREN reaches the pool; the cron jail applies open_basedir.
           docker exec php php-fpm -tt 2>&1 | grep -q "pm.max_children = 7"

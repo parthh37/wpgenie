@@ -47,6 +47,7 @@ var scripts = []string{
 	"python-requests", "python-urllib", "aiohttp", "httpx", "go-http-client",
 	"curl/", "wget/", "libwww-perl", "java/", "okhttp", "axios/", "node-fetch",
 	"scrapy", "httpclient", "guzzlehttp", "headlesschrome", "phantomjs",
+	"wpgenie-health", // the update manager's own checks: not a visitor
 }
 
 // searchEngines maps a UA token to the reverse-DNS suffixes its operator

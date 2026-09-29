@@ -69,6 +69,12 @@ func TestFPMMaxChildren(t *testing.T) {
 		}
 		prev = n
 	}
+	// The sizes the doc comment promises; the smallest site keeps 2 workers.
+	for mem, want := range map[int]int{256: 2, 512: 5, 1024: 13, 2048: 29, 8192: MaxMaxChildren} {
+		if got := FPMMaxChildren(mem); got != want {
+			t.Errorf("FPMMaxChildren(%d) = %d, want %d", mem, got, want)
+		}
+	}
 }
 
 func TestSocketStates(t *testing.T) {
@@ -142,5 +148,19 @@ func TestErrorLinesDropsEchoedSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got, "database connection") {
 		t.Fatalf("lost the actual error: %q", got)
+	}
+}
+
+func TestParseCPUStats(t *testing.T) {
+	out := []byte("wpg-s1-19000|87.25%\nwpgenie-mariadb|3.10%\nwpg-s1-19001|--\nwpg-s2-19002|150.00%\n\n")
+	got := parseCPUStats(out)
+	want := map[string]float64{"wpg-s1-19000": 87.25, "wpg-s2-19002": 150}
+	if len(got) != len(want) {
+		t.Fatalf("parseCPUStats = %v, want %v (infrastructure and unsampled containers skipped)", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
 	}
 }

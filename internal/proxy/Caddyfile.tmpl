@@ -24,7 +24,7 @@
 		path *.sql *.sql.gz *.bak *.old *.orig *.swp *.log *.ini
 		path /wp-content/cache/wpgenie/* /wp-content/cache/wpgenie.*
 	}
-	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode)
+	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode|wpgenie-restore)
 }
 {{if .PanelDomain}}
 {{.PanelDomain}} {
@@ -36,6 +36,32 @@
 }
 {{end}}
 {{- range .Sites}}
+{{- if .Proxy}}
+# {{.ID}} — {{.Name}}
+{{join .Domains ", "}} {
+	import wpgenie_hardening
+	encode zstd gzip
+	@wpg_dynamic {
+		not {
+			path *.css *.js *.mjs *.map *.png *.jpg *.jpeg *.gif *.webp *.avif *.svg *.ico *.woff *.woff2 *.ttf *.otf *.eot
+			not path_regexp (?i)\.php
+		}
+	}
+	route {
+		reverse_proxy /_shield/* {{$.ShieldUpstream}} {
+			header_up {{$.SiteHeader}} {{.ID}}
+		}
+		{{- if .ShieldEnabled}}
+		forward_auth @wpg_dynamic {{$.ShieldUpstream}} {
+			uri /_shield/check
+			header_up {{$.SiteHeader}} {{.ID}}
+		}
+		{{- end}}
+		respond @wpg_dotfiles 404
+		reverse_proxy {{.Proxy}}
+	}
+}
+{{- else}}
 # site {{.ID}} — {{.Name}}
 {{join .Domains ", "}} {
 	import wpgenie_hardening
@@ -51,7 +77,15 @@
 	{{- if .BlockXMLRPC}}
 	@wpg_xmlrpc path /xmlrpc.php
 	{{- end}}
-	@wpg_dynamic not path *.css *.js *.mjs *.map *.png *.jpg *.jpeg *.gif *.webp *.avif *.svg *.ico *.woff *.woff2 *.ttf *.otf *.eot *.mp4 *.webm *.mp3 *.pdf
+	# Everything but static files goes through the shield, and so does any
+	# path containing ".php": PHP runs the script up to the first ".php", so
+	# /wp-login.php/x.css runs wp-login.php and must not pass as a stylesheet.
+	@wpg_dynamic {
+		not {
+			path *.css *.js *.mjs *.map *.png *.jpg *.jpeg *.gif *.webp *.avif *.svg *.ico *.woff *.woff2 *.ttf *.otf *.eot *.mp4 *.webm *.mp3 *.pdf
+			not path_regexp (?i)\.php
+		}
+	}
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
 	# page (images/php/page-cache.php); the cookie rule here is a stricter
@@ -68,19 +102,21 @@
 
 	# Directive order inside route is exactly as written.
 	route {
-		respond @wpg_forbidden 404
-		respond @wpg_dotfiles 404
-		{{- if .BlockXMLRPC}}
-		respond @wpg_xmlrpc 403
-		{{- end}}
 		reverse_proxy /_shield/* {{$.ShieldUpstream}} {
 			header_up {{$.SiteHeader}} {{.ID}}
 		}
 		{{- if .ShieldEnabled}}
+		# Before the hardening rules below: probes for /.env or
+		# wp-config.php.bak must reach the shield to count towards a ban.
 		forward_auth @wpg_dynamic {{$.ShieldUpstream}} {
 			uri /_shield/check
 			header_up {{$.SiteHeader}} {{.ID}}
 		}
+		{{- end}}
+		respond @wpg_forbidden 404
+		respond @wpg_dotfiles 404
+		{{- if .BlockXMLRPC}}
+		respond @wpg_xmlrpc 403
 		{{- end}}
 		{{- if .PageCache}}
 		# After the shield: cached pages still get bot blocking and rate limits.
@@ -105,4 +141,5 @@
 		file_server
 	}
 }
+{{- end}}
 {{end -}}

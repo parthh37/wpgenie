@@ -7,6 +7,7 @@
   :root { --bg: #f6f7fb; --panel: #fff; --line: #e3e6ee; --text: #151923; --muted: #667085; color-scheme: light; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 h1 { font-size: 1.4rem; margin: 0; }
@@ -65,3 +66,23 @@ button.danger { color: var(--bad); }
 .perf .controls label:first-child { min-width: 0; }
 .perf label:not(.check) { min-width: 130px; }
 .perf p { margin: .4rem 0 0; }
+
+nav#tabs { display: flex; gap: .25rem; }
+.tab { background: transparent; color: var(--muted); border: 1px solid transparent; }
+.tab.active { color: var(--text); border-color: var(--line); background: var(--panel); }
+.dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; background: var(--warn); vertical-align: middle; }
+form.inline { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
+form.inline input { flex: 1 1 200px; margin: 0; }
+table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: .5rem; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+td.wrap { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
+td button { padding: .2rem .6rem; font-size: .8rem; }
+.st-ok, .st-running, .st-updated, .st-done { color: var(--ok); }
+.st-missing, .st-mismatch, .st-error, .st-failed, .st-rolled_back { color: var(--bad); }
+.st-pending, .st-waiting_certificate, .st-waiting_mailbox, .st-unknown, .st-running_update { color: var(--warn); }
+.sev-critical, .sev-high { color: var(--bad); font-weight: 600; }
+.sev-medium { color: var(--warn); }
+.events div { font-size: .85rem; padding: .25rem 0; border-bottom: 1px solid var(--line); }
+.events time { color: var(--muted); margin-right: .5rem; font-variant-numeric: tabular-nums; }
+.stats div.cpu dd { color: var(--accent); }

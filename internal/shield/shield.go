@@ -9,11 +9,14 @@ package shield
 
 import (
 	"context"
+	"crypto/subtle"
 	_ "embed"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -23,13 +26,25 @@ const (
 	// VerdictHeader marks responses produced by the shield so access-log
 	// analytics can tell a shield block apart from WordPress's own 403s.
 	VerdictHeader = "X-WPGenie-Shield"
-	passCookie    = "wpg_pass"
+	// HealthHeader carries Options.HealthToken on the daemon's own health
+	// checks, which then skip the shield.
+	HealthHeader = "X-WPGenie-Health"
+	passCookie   = "wpg_pass"
 )
 
 type SiteSettings struct {
 	ID          string
 	Mode        Mode
 	BlockAIBots bool
+	// Inspect enables request inspection (the WAF rules in inspect.go).
+	Inspect bool
+	// AdminAllow, if not empty, is the only networks allowed to reach
+	// wp-login.php and wp-admin.
+	AdminAllow []netip.Prefix
+	// Trusted networks bypass the shield entirely (office, uptime monitor).
+	Trusted []netip.Prefix
+	// Webmail marks Roundcube: its login is a POST to ?_task=login.
+	Webmail bool
 }
 
 // SiteLookup returns the shield settings for a site ID.
@@ -46,6 +61,10 @@ type Options struct {
 	Burst             float64
 	LoginPerMinute    float64
 	LoginBurst        float64
+	// HealthToken, if set, is the secret the daemon's health checks send in
+	// HealthHeader. Not loopback: a local tunnel (cloudflared, ssh -L)
+	// makes every visitor it forwards look like loopback.
+	HealthToken string
 
 	Logger *slog.Logger
 }
@@ -55,6 +74,8 @@ type Shield struct {
 	limiter  *rateLimiter
 	login    *rateLimiter
 	verifier *crawlerVerifier
+	bans     *banList
+	events   *eventLog
 	now      func() time.Time
 }
 
@@ -79,6 +100,8 @@ func New(o Options) *Shield {
 		limiter:  newRateLimiter(o.RequestsPerSecond, o.Burst),
 		login:    newRateLimiter(o.LoginPerMinute/60, o.LoginBurst),
 		verifier: newCrawlerVerifier(o.Resolver),
+		bans:     newBanList(),
+		events:   newEventLog(500),
 		now:      time.Now,
 	}
 }
@@ -94,17 +117,26 @@ func (s *Shield) Run(ctx context.Context) {
 		case now := <-t.C:
 			s.limiter.sweep(now)
 			s.login.sweep(now)
+			s.bans.sweep(now)
 		}
 	}
 }
 
 // Classify combines UA matching with DNS verification of search engines.
-func (s *Shield) Classify(ctx context.Context, ip, ua string) Class {
+// A claimed crawler whose DNS can't be checked right now is treated as an
+// unverified script: throttled if it's too fast, never blocked or trusted.
+func (s *Shield) Classify(_ context.Context, ip, ua string) Class {
 	c, suffixes := classifyUA(ua)
-	if c == ClassVerifiedCrawler && !s.verifier.verify(ctx, ip, suffixes) {
+	if c != ClassVerifiedCrawler {
+		return c
+	}
+	switch s.verifier.verify(ip, suffixes) {
+	case verified:
+		return ClassVerifiedCrawler
+	case spoofed:
 		return ClassSpoofedCrawler
 	}
-	return c
+	return ClassScript
 }
 
 func (s *Shield) CheckHandler() http.Handler {
@@ -118,18 +150,41 @@ func (s *Shield) CheckHandler() http.Handler {
 		}
 		ip := clientIP(r)
 		ua := r.UserAgent()
-		path, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Uri"), "?")
+		uri := r.Header.Get("X-Forwarded-Uri")
+		script := ScriptPath(uri)
 		method := r.Header.Get("X-Forwarded-Method")
 		now := s.now()
+		banKey, _ := BanKey(ip)
 
 		sig := Signals{
 			Mode:        site.Mode,
 			BlockAIBots: site.BlockAIBots,
-			Class:       s.Classify(r.Context(), ip, ua),
-			HasPass:     s.validPass(r, site.ID, ip, ua, now),
-			LoginPath:   isLoginPath(method, path),
+			Trusted:     s.isHealthCheck(r) || inAny(ip, site.Trusted),
 		}
-		key := site.ID + "|" + ip
+		if sig.Trusted || sig.Mode == ModeOff {
+			w.WriteHeader(http.StatusOK) // skip the DNS lookups and rate limit accounting
+			return
+		}
+		sig.Banned = s.bans.banned(banKey, now)
+		sig.Class = s.Classify(r.Context(), ip, ua)
+		sig.HasPass = s.validPass(r, site.ID, ip, ua, now)
+		sig.LoginPath = isLoginPath(method, script) ||
+			// Roundcube reads _task from the query, body or cookie; any POST
+			// without a logged-in session is a login attempt.
+			(site.Webmail && method == http.MethodPost && !hasCookie(r, "roundcube_sessauth"))
+		sig.AdminDenied = len(site.AdminAllow) > 0 && !inAny(ip, site.AdminAllow) &&
+			(isAdminPath(script) || isAuthenticatedAPI(r, script, uri))
+		sig.CrossSite = crossSite(r.Header.Get("Sec-Fetch-Site"))
+		if site.Inspect {
+			sig.Threat = Inspect(Request{Method: method, URI: uri, UA: ua, Referer: r.Header.Get("Referer"),
+				Cookie: r.Header.Get("Cookie"), Browser: sig.Class == ClassHuman})
+		}
+		// IPv6 clients share a budget per /64, like bans: otherwise one
+		// subscriber rotates through addresses for fresh bursts forever.
+		key := site.ID + "|" + banKey
+		if banKey == "" {
+			key = site.ID + "|" + ip
+		}
 		if sig.LoginPath {
 			sig.RateExceeded = !s.login.allow(key, now)
 		} else {
@@ -138,16 +193,25 @@ func (s *Shield) CheckHandler() http.Handler {
 
 		v := Decide(sig)
 		if v != Allow {
-			s.o.Logger.Debug("shield", "site", site.ID, "ip", ip, "class", sig.Class, "verdict", v, "path", path)
-		}
-		if v != Allow {
 			w.Header().Set(VerdictHeader, v.String())
+			path, _, _ := strings.Cut(uri, "?")
+			reason := reasonFor(sig, v)
+			s.o.Logger.Debug("shield", "site", site.ID, "ip", ip, "class", sig.Class, "verdict", v, "reason", reason, "path", path)
+			if v != Challenge {
+				s.events.add(Event{Time: now, Site: site.ID, IP: ip, Verdict: v.String(), Reason: reason, Path: path})
+			}
+			if n := strikes(sig, v); n > 0 && banKey != "" {
+				if banned, until := s.bans.strike(banKey, n, reason, now); banned {
+					s.o.Logger.Warn("shield: client banned", "addr", banKey, "until", until, "reason", reason, "site", site.ID)
+					s.events.add(Event{Time: now, Site: site.ID, IP: ip, Verdict: "ban", Reason: reason + " (until " + until.UTC().Format(time.RFC3339) + ")", Path: path})
+				}
+			}
 		}
 		switch v {
 		case Allow:
 			w.WriteHeader(http.StatusOK)
 		case Challenge:
-			s.serveChallenge(w, site, ip, r.Header.Get("X-Forwarded-Uri"), now)
+			s.serveChallenge(w, site, ip, uri, now)
 		case Throttle:
 			w.Header().Set("Retry-After", "30")
 			http.Error(w, "Too many requests", http.StatusTooManyRequests)
@@ -155,6 +219,112 @@ func (s *Shield) CheckHandler() http.Handler {
 			http.Error(w, "Access denied", http.StatusForbidden)
 		}
 	})
+}
+
+// reasonFor names the signal that produced a verdict, for the security log.
+func reasonFor(s Signals, v Verdict) string {
+	switch {
+	case s.Banned:
+		return "banned"
+	case s.Threat != ThreatNone:
+		return s.Threat.String()
+	case s.AdminDenied:
+		return "admin_allowlist"
+	case v == Block:
+		return s.Class.String()
+	case s.RateExceeded && s.LoginPath:
+		return "login_rate_limit"
+	case s.RateExceeded:
+		return "rate_limit"
+	}
+	return "under_attack"
+}
+
+// Bans lists active bans, longest-lasting first.
+func (s *Shield) Bans() []Ban { return s.bans.list(s.now()) }
+
+// Events returns recent blocks, throttles and bans, newest first.
+func (s *Shield) Events(site string, limit int) []Event { return s.events.recent(site, limit) }
+
+var ErrBadAddr = errors.New("not an IP address or ban entry")
+
+// BanAddr bans an address by hand on every site.
+func (s *Shield) BanAddr(addr string, d time.Duration, reason string) (string, error) {
+	key, err := normalizeBanAddr(addr)
+	if err != nil {
+		return "", err
+	}
+	if d <= 0 || d > MaxManualBan {
+		d = MaxManualBan
+	}
+	if reason == "" {
+		reason = "manual"
+	}
+	s.bans.ban(key, d, reason, s.now())
+	return key, nil
+}
+
+// Unban lifts a ban; addr is an IP or an entry as listed by Bans.
+func (s *Shield) Unban(addr string) (bool, error) {
+	key, err := normalizeBanAddr(addr)
+	if err != nil {
+		return false, err
+	}
+	return s.bans.unban(key), nil
+}
+
+func normalizeBanAddr(addr string) (string, error) {
+	if key, ok := BanKey(addr); ok {
+		return key, nil
+	}
+	if p, err := netip.ParsePrefix(addr); err == nil && p.Addr().Is6() && p.Bits() == 64 {
+		return p.Masked().String(), nil
+	}
+	return "", ErrBadAddr
+}
+
+func (s *Shield) isHealthCheck(r *http.Request) bool {
+	got := r.Header.Get(HealthHeader)
+	return s.o.HealthToken != "" && got != "" &&
+		subtle.ConstantTimeCompare([]byte(got), []byte(s.o.HealthToken)) == 1
+}
+
+func hasCookie(r *http.Request, name string) bool {
+	c, err := r.Cookie(name)
+	return err == nil && c.Value != ""
+}
+
+// crossSite: the browser says another site initiated the request. Tools
+// don't send Sec-Fetch-* at all.
+func crossSite(secFetchSite string) bool {
+	return secFetchSite == "cross-site" || secFetchSite == "same-site"
+}
+
+// isAuthenticatedAPI: a REST or XML-RPC request carrying credentials
+// (application passwords), which reaches the admin without wp-admin.
+func isAuthenticatedAPI(r *http.Request, script, uri string) bool {
+	if r.Header.Get("Authorization") == "" {
+		return false
+	}
+	return strings.HasSuffix(script, "/xmlrpc.php") || strings.HasPrefix(script, "/wp-json") ||
+		strings.Contains(uri, "rest_route=")
+}
+
+func inAny(ip string, nets []netip.Prefix) bool {
+	if len(nets) == 0 {
+		return false
+	}
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	for _, n := range nets {
+		if n.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 //go:embed challenge.html
@@ -231,11 +401,13 @@ func (s *Shield) validPass(r *http.Request, siteID, ip, ua string, now time.Time
 	return p.Site == siteID && p.Net == ipBucket(ip) && p.UA == uaHash(ua) && !expired(p.Expires, now)
 }
 
-func isLoginPath(method, path string) bool {
+// isLoginPath takes the script (ScriptPath), so /wp-login.php/x can't
+// escape the login budget.
+func isLoginPath(method, script string) bool {
 	if method != http.MethodPost {
 		return false
 	}
-	return path == "/wp-login.php" || path == "/xmlrpc.php" || strings.HasSuffix(path, "/wp-login.php")
+	return strings.HasSuffix(script, "/wp-login.php") || strings.HasSuffix(script, "/xmlrpc.php")
 }
 
 // clientIP trusts X-Forwarded-For because the shield only listens on

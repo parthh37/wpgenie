@@ -82,15 +82,37 @@ fetch_sources() {
   mv "${SHARE}.new" "$SHARE"
 }
 
+# Releases sign checksums.txt with the key in internal/updater/release.pub
+# (the same key installed WPGenie checks before self-updating).
+verify_signature() {
+  local tmp=$1 pub="${SHARE}/internal/updater/release.pub"
+  if [[ ! -s $pub ]]; then
+    warn "this version has no release signing key; checking the checksum only"
+    return
+  fi
+  curl -fsSL -o "${tmp}/checksums.txt.sig" "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt.sig" ||
+    die "release ${VERSION} is not signed"
+  log "Verifying release signature"
+  openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "${tmp}/checksums.txt" \
+    -sigfile "${tmp}/checksums.txt.sig" >/dev/null || die "release signature does not verify: refusing to install"
+}
+
 install_binary() {
   local tmp
   tmp=$(mktemp -d)
   if [[ $VERSION != main ]] &&
     curl -fsSL -o "${tmp}/wpgenie.tar.gz" "https://github.com/${REPO}/releases/download/${VERSION}/wpgenie_${VERSION}_linux_${ARCH}.tar.gz" &&
     curl -fsSL -o "${tmp}/checksums.txt" "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"; then
+    verify_signature "$tmp"
     log "Verifying release checksum"
     (cd "$tmp" && grep "wpgenie_${VERSION}_linux_${ARCH}.tar.gz" checksums.txt | sed "s#wpgenie_${VERSION}_linux_${ARCH}.tar.gz#wpgenie.tar.gz#" | sha256sum -c --quiet)
-    tar -xzf "${tmp}/wpgenie.tar.gz" -C "$tmp" wpgenie
+    tar -xzf "${tmp}/wpgenie.tar.gz" -C "$tmp"
+    # Newer releases carry the compose stack and PHP image sources, covered
+    # by the signature: prefer them to the unsigned source snapshot.
+    if [[ -d ${tmp}/deploy && -d ${tmp}/images ]]; then
+      rm -rf "${SHARE}/deploy" "${SHARE}/images"
+      cp -R "${tmp}/deploy" "${tmp}/images" "${SHARE}/"
+    fi
   else
     log "No prebuilt release; compiling from source in a Go container"
     docker run --rm -e CGO_ENABLED=0 -v "${SHARE}:/src" -v "${tmp}:/out" -w /src golang:1.26-alpine \

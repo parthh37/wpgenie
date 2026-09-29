@@ -32,6 +32,7 @@ RUN set -eux; \
     grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php; \
     rm /tmp/redis-cache.zip
 COPY page-cache.php /usr/local/share/wpgenie/page-cache.php
+COPY smtp.php /usr/local/share/wpgenie/smtp.php
 
 COPY php.ini  /usr/local/etc/php/conf.d/zz-wpgenie.ini
 COPY pool.conf /usr/local/etc/php-fpm.d/zz-wpgenie.conf

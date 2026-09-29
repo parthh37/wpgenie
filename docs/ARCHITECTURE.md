@@ -36,6 +36,35 @@ check.
 
 **Edge**
 - Automatic TLS, HSTS, security headers, `Server`/`X-Powered-By` stripped.
+- Shield policy (`shield.Decide`, one pure function, tested as a table): attack evidence is blocked
+  outright (a solved challenge never excuses it); a pass skips challenges but never rate limits;
+  clients that can't run JavaScript (search crawlers, monitors, webhooks) are throttled rather than
+  challenged, because a challenge they can't solve would silently become a block (and challenging
+  Googlebot de-indexes a site). *Under attack* challenges everyone but pass holders and verified
+  crawlers.
+- WAF (`shield/inspect.go`): request inspection on what `forward_auth` sees (method, URI, headers,
+  never the body) for path traversal, SQL injection, XSS, PHP/shell/JNDI injection, scanner probes
+  (`.env`, backups, `phpunit`, plugin `readme.txt` version sniffing) and anonymous user enumeration.
+  Paths are decoded and cleaned exactly as Caddy's `php_fastcgi` resolves them (including the split
+  at the first `.php`, so `/wp-login.php/x` can't dodge the login limits). A false-positive suite of
+  real WordPress traffic guards against blocking customers. The shield runs *before* Caddy's own
+  404 rules so probes for forbidden files still count towards a ban.
+- Automatic bans (`shield/bans.go`): 5 strikes of unambiguous attack evidence within 10 minutes
+  ban an address on every site for 1 hour, doubling per repeat offence up to 24 h. IPv4 bans are
+  exact, IPv6 bans (and rate limits) cover the /64. Nobody can get someone else banned: rate
+  limits and the admin allowlist never count, requests a browser makes on another site's behalf
+  (`Sec-Fetch-Site: cross-site`, e.g. an attack URL in an `<img>`) are blocked but not counted, a
+  browser's search that merely looks like SQL/HTML is blocked without a strike, and verified
+  crawlers are never banned. Crawler DNS checks distinguish "not Google" (cached 6 h) from "couldn't
+  tell" (1 min, treated as an unverified script). Bans live in memory.
+- Every path containing `.php` goes through the shield, even with a static-looking suffix
+  (`/wp-login.php/x.css` runs `wp-login.php`). URLs are decoded leniently like PHP, so one invalid
+  escape can't hide a payload.
+- Per site: optional wp-admin / wp-login.php IP allowlist (`admin-ajax.php` and `admin-post.php`
+  stay public for front-end forms; REST/XML-RPC requests carrying credentials are covered) and
+  trusted IPs that bypass the shield. The daemon's own health checks prove themselves with a
+  per-process secret header, not by coming from loopback (a local tunnel would make every visitor
+  look like loopback).
 - Shield: AI-crawler blocking, attack-tool UA blocking, spoofed-crawler detection via
   forward-confirmed reverse DNS, per-IP token-bucket rate limits with a much stricter budget for
   `POST /wp-login.php` and `xmlrpc.php`.
@@ -134,6 +163,19 @@ PHP-FPM (`SIGQUIT`) is not relied on to finish in-flight requests: in testing it
 which is why step 4 drains by connection count. Because the image ID is part of the spec, rebuilding
 the PHP image and running `wpgenie site scale <id>` rolls a site onto it with no downtime.
 
+**Autoscaling (CPU).** Every 15 s the daemon takes one `docker stats` sample and computes each
+site's CPU use as a fraction of its replicas' allowance. Scale-up uses the Kubernetes HPA rule
+`ceil(replicas × use / target)` on a 45 s average, waits a minute between scale-ups, and at least
+doubles when replicas are saturated (≥ 90 %): a CPU-limited container never *measures* above its
+limit, so the ratio under-reports demand exactly when it matters. Scale-down only goes to the
+highest count any sample in the last 5 minutes asked for (HPA's stabilization window), so a lull
+between bursts doesn't shed capacity. A ±10 % tolerance stops flapping. Scale-ups are capped by the
+host's `MemAvailable` (minus 512 MB for MariaDB, Valkey and the OS): container limits don't reserve
+memory. Decisions go through the same blue/green reconcile as a manual scale, computed from the
+site's state under the lock, so a decision taken before someone resized the site is dropped rather
+than reverting the resize. Draining old replicas (up to 2 min) happens after the ops lock is
+released, so one site's scale-down never delays another site's scale-up.
+
 **Database fairness.** Every busy worker holds a MariaDB connection and all sites share one server.
 Each site's DB user gets `MAX_USER_CONNECTIONS = replicas × workers + 5`, and a site may not be
 scaled beyond half of `db_max_connections`, so one busy or attacked site can't take the others
@@ -174,6 +216,80 @@ rather than WP-CLI because it executes plugin code: `PHP_INI_SCAN_DIR` adds `jai
 `open_basedir` / `disable_functions` jail as web requests. Containers from an older image have no
 jail and are skipped; WordPress's own page-view cron keeps working for them.
 
+## WordPress updates and security scans
+
+`POST /sites/{id}/updates` (or the nightly auto-update policy) runs:
+
+1. inventory via WP-CLI (`--skip-plugins --skip-themes`, JSON on stdout only, so PHP warnings on
+   stderr can't corrupt it);
+2. a health probe of `/` and `/wp-login.php` through Caddy on loopback, with full TLS verification;
+3. a snapshot in `/var/lib/wpgenie/snapshots/<site>/<time>/` (root-only): the install minus
+   uploads and caches, taken with `tar` *inside the site container*, a `mariadb-dump` from the
+   MariaDB container (root password on stdin, never in argv/env), and the list of tables;
+4. core, then plugins, then themes; caches purged;
+5. a second probe, on a context of its own (a timeout or shutdown mid-update must not also
+   cancel the rollback). Only a *healthy → broken* transition triggers a rollback: an unreachable site
+   (no certificate yet) or one already failing can't be judged, and rolling back would discard a
+   legitimate update. Rollback deletes everything the snapshot covers and extracts it again *as
+   the site user inside its container* (a root-side extract could be steered through planted
+   symlinks), into a temporary directory first so a broken stream leaves the site untouched, restores the database, drops tables the update created, and rewrites WPGenie's
+   root-owned cache wrappers. The newest 3 snapshots per site are kept.
+
+Nightly (in the maintenance window, `maintenance_hour`, default 03:00 server time) every site is
+scanned: installed versions against WPVulnerability.net (PHP `version_compare` semantics, answers
+cached), `wp core verify-checksums`, `wp plugin verify-checksums`, and PHP files under uploads. The
+default auto-update policy, `security`, applies only updates that the database confirms fix a known
+vulnerability; `all` applies everything; both go through the snapshot/rollback path. Premium plugins
+whose updater only runs with plugins loaded are invisible to WP-CLI in this mode: update them from
+wp-admin.
+
+## Updating WPGenie itself
+
+Trust chain: an Ed25519 public key compiled into the binary (`internal/updater/release.pub`) →
+signature over `checksums.txt` → SHA-256 of the release tarball, which contains the binary,
+`deploy/` and `images/`. GitHub and the network are not trusted. The daemon downloads, verifies and
+extracts into `/var/lib/wpgenie/updates/<version>` (regular files under expected names only), then
+starts the applier as a transient systemd unit (`systemd-run`): outside the daemon's cgroup, so
+restarting the daemon doesn't kill it, and outside its sandbox, so it may write `/usr/local/bin`.
+The applier is a copy of the *running* binary. It builds the new PHP image first (nothing live
+changes if that fails), swaps binary, `/opt/wpgenie` and the unit file (keeping `.prev` copies),
+runs `docker compose up -d`, restarts WPGenie and waits for the API to report the new version. If
+anything fails it restores the previous files, re-tags the previous PHP image and restarts the old
+version. On success it asks the new daemon to roll every site onto the new image (blue/green, as a
+scale). Development builds (`dev`, `git describe` output) never self-update. See
+[RELEASING.md](RELEASING.md) for the signing key.
+
+## Mail
+
+Optional, switched on from the panel with a hostname (e.g. `mail.example.com`). The daemon runs two
+containers, like site replicas (spec-hash labels decide when to recreate):
+
+- `wpgenie-mail`: docker-mailserver (Postfix, Dovecot, Rspamd for spam filtering, DKIM signing and
+  DMARC/SPF checks; ClamAV off). Ports 25, 465, 587, 993. `SPOOF_PROTECTION` stops a mailbox from
+  sending as any other address. Its network alias is the public hostname, so sites and Roundcube
+  connect by that name and the certificate matches without leaving the Docker network.
+- `wpgenie-webmail`: Roundcube on `127.0.0.1:8089`, proxied by Caddy on the mail hostname with the
+  shield in front (a POST without a Roundcube session gets the strict login rate limit).
+  Fail2ban bans IMAP/SMTP password guessing (10 failures in 10 minutes → 1 h, escalating), ignoring
+  Docker's private ranges, whose logins the shield already limits.
+
+TLS: Caddy serves the webmail hostname, so it obtains that certificate; the mail server mounts only
+that certificate's directory read-only and reloads Postfix/Dovecot itself on renewal. The mail server
+starts once the certificate exists *and* a mailbox exists (it refuses to start without one); until
+then `setup` commands run in a throwaway container on the same config. Mailbox passwords go in on
+stdin, are shown once and never stored by the panel; the relay password and Roundcube's session
+key live in files readable only by their service, never in `docker run` arguments. DKIM keys (RSA 2048, selector `mail`) are
+generated by Rspamd once the server runs, without a restart; the panel shows the MX/SPF/DKIM/DMARC
+records to publish and checks them against live DNS.
+
+WordPress mail: with SMTP on, a site gets a managed sender mailbox: `wordpress@<domain>` if that
+domain's mail is hosted here, otherwise `<site-id>@<mail hostname>` (registering the site's domain
+would make this server treat every address on it as local, bouncing mail to its real mailboxes
+elsewhere). Its credentials
+sit next to `wp-config.php` (root:82 0640) and an mu-plugin wrapper loads `smtp.php` from the image,
+which points PHPMailer at the mail server (a visitor's address set as sender by a contact form
+becomes Reply-To). Outbound mail can go through a relay (SES, Postmark, …) where port 25 is blocked.
+
 ## Multi-server plan
 
 The code has explicit seams for going multi-server:
@@ -205,6 +321,9 @@ The code has explicit seams for going multi-server:
 /var/lib/wpgenie/sites.nosymfollow/   read-only, symlink-free view of sites/ (Caddy's only view)
 /var/lib/wpgenie/caddy/           certificates (owned by wpgenie-caddy)
 /var/lib/wpgenie/mariadb/         databases
+/var/lib/wpgenie/snapshots/       pre-update snapshots (root only)
+/var/lib/wpgenie/updates/         staged WPGenie releases, status.json
+/var/lib/wpgenie/mail/            mailboxes (data/), mail server config, Roundcube DB
 /var/log/wpgenie/access.log       JSON access log (rotated by Caddy)
 /opt/wpgenie/                     installed sources (deploy/, images/)
 ```

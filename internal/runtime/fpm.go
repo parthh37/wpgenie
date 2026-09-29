@@ -16,17 +16,25 @@ const (
 	MaxMaxChildren = 32
 )
 
-// FPMMaxChildren returns pm.max_children for a replica with memoryMB of RAM.
-//
-// Things to weigh:
-//   - Per-worker RSS: ~40 MB for a lean blog, 80–150 MB with WooCommerce or
-//     a page builder. php.ini's memory_limit (256M) is the worst case for a
-//     single request, not the typical one.
-//   - Fixed overhead not available to workers: the FPM master process and
-//     OPcache's shared memory (opcache.memory_consumption = 128 in php.ini).
-//   - The result must stay within [MinMaxChildren, MaxMaxChildren], and must
-//     never decrease when memoryMB grows (TestFPMMaxChildren checks both).
+const (
+	// fixedOverheadMB is memory no worker can use: OPcache's shared segment
+	// (opcache.memory_consumption = 128 in php.ini, interned strings
+	// included) plus the FPM master and the container's own processes.
+	fixedOverheadMB = 160
+	// workerBudgetMB is the average RSS planned per worker. A lean blog
+	// worker sits near 40 MB and WooCommerce/page builders reach 100+ MB;
+	// pm.max_requests = 500 recycles workers before leaks accumulate, and
+	// ondemand workers rarely all peak at once. php.ini's memory_limit (256M)
+	// is a per-request ceiling, not a planning figure: sizing by it would
+	// give a 1 GB replica 3 workers and leave its CPU idle under load.
+	workerBudgetMB = 64
+)
+
+// FPMMaxChildren returns pm.max_children for a replica with memoryMB of RAM:
+// what is left after the fixed overhead, divided by the per-worker budget,
+// clamped to [MinMaxChildren, MaxMaxChildren]. 512 MB → 5, 1 GB → 13,
+// 2 GB → 29 workers.
 func FPMMaxChildren(memoryMB int) int {
-	// TODO(you): replace this placeholder with a real sizing rule.
-	return MinMaxChildren
+	n := (memoryMB - fixedOverheadMB) / workerBudgetMB
+	return min(max(n, MinMaxChildren), MaxMaxChildren)
 }
