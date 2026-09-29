@@ -230,12 +230,14 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (_ *store.Site, _ 
 
 // prepareFiles lays out the site directory:
 //
-//	<dir>/            root:82  0750
+//	<dir>/            root:82  0751   others (Caddy) may traverse, not list
 //	<dir>/wp-config.php root:82 0640  readable, NOT writable, by PHP
 //	<dir>/public/     82:82    0755   WordPress install (docroot)
 //
 // Keeping wp-config.php outside the docroot and read-only to PHP means a
-// compromised plugin can neither leak it over HTTP nor rewrite it.
+// compromised plugin can neither leak it over HTTP nor rewrite it. Caddy runs
+// as its own user outside group 82, so it reaches public/ but can never read
+// wp-config.php, even through a symlink a site plants in its docroot.
 func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass string) error {
 	if err := os.MkdirAll(docroot, 0o755); err != nil {
 		return err
@@ -261,7 +263,7 @@ func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass string) error {
 		uid, gid int
 		mode     os.FileMode
 	}{
-		{dir, 0, wwwData, 0o750},
+		{dir, 0, wwwData, 0o751},
 		{cfgPath, 0, wwwData, 0o640},
 		{docroot, wwwData, wwwData, 0o755},
 	} {
