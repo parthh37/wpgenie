@@ -103,6 +103,7 @@ function renderSite(site) {
 
   renderPerf(el, site);
   renderAutoscale(el, site);
+  renderCDN(el, site);
   renderSecurity(el, site);
   renderUpdates(el, site);
   const log = $('.log', el);
@@ -174,6 +175,55 @@ function renderPerf(el, site) {
     try { await api('POST', `/sites/${site.id}/cache/purge`); purge.textContent = 'Purged ✓'; }
     catch (e) { showError(e); }
     finally { setTimeout(() => { purge.disabled = false; purge.textContent = 'Purge cache'; }, 1500); }
+  });
+}
+
+function renderCDN(el, site) {
+  const details = $('.cdn', el), box = $('.cdn-status', el), token = $('.cdn-token', el);
+  const save = $('.cdn-save', el), purge = $('.cdn-purge', el), off = $('.cdn-off', el);
+  const active = site.status === 'active';
+  [token, save, purge, off].forEach((c) => { c.disabled = !active; });
+  const show = (st) => {
+    const on = st.provider === 'cloudflare';
+    $('.cdn-summary', el).textContent = on ? '· Cloudflare, purging on' : '· Cloudflare (free plan)';
+    purge.hidden = off.hidden = !on;
+    token.placeholder = on ? 'unchanged if empty' : 'paste a Cloudflare API token';
+    const proxied = { yes: 'ok', no: 'failed', partly: 'failed', unknown: 'unknown' };
+    const ssl = { strict: 'ok', full: 'warning', flexible: 'failed', off: 'failed' };
+    box.replaceChildren(
+      table(['Domain', 'Through Cloudflare', 'SSL/TLS mode'], st.domains.map((d) => [
+        d.domain,
+        h('td', { title: d.addrs.join(', ') }, h('span', { class: 'st-' + proxied[d.proxied] }, d.proxied)),
+        d.ssl_mode ? h('td', {}, h('span', { class: 'st-' + (ssl[d.ssl_mode] || 'unknown') }, d.ssl_mode)) : '–',
+      ])),
+      on ? h('p', { class: 'muted small' }, st.purged_at ? `Last purged ${fmtTime(st.purged_at)}.` : 'Not purged yet.') : null,
+      st.last_error ? h('p', { class: 'st-failed small' }, 'Last purge failed: ' + st.last_error) : null,
+      ...st.warnings.map((w) => h('p', { class: 'small st-warning' }, '⚠ ' + w)),
+    );
+  };
+  const refresh = async () => {
+    box.replaceChildren(h('p', { class: 'muted small' }, 'Checking DNS and Cloudflare…'));
+    try { show(await api('GET', `/sites/${site.id}/cdn`)); } catch (e) { box.replaceChildren(); showError(e); }
+  };
+  details.addEventListener('toggle', () => { if (details.open && active) refresh(); });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    save.textContent = 'Checking token…';
+    try {
+      show(await api('PUT', `/sites/${site.id}/cdn`, { provider: 'cloudflare', api_token: token.value.trim() }));
+      token.value = '';
+    } catch (e) { showError(e); }
+    finally { save.disabled = false; save.textContent = 'Save token'; }
+  });
+  purge.addEventListener('click', async () => {
+    purge.disabled = true;
+    try { await api('POST', `/sites/${site.id}/cdn/purge`); purge.textContent = 'Purged ✓'; }
+    catch (e) { showError(e); }
+    finally { setTimeout(() => { purge.disabled = false; purge.textContent = 'Purge CDN'; }, 1500); }
+  });
+  off.addEventListener('click', async () => {
+    if (!confirm('Stop purging Cloudflare\'s cache for this site? The stored API token is deleted. Cloudflare keeps serving the site.')) return;
+    try { show(await api('PUT', `/sites/${site.id}/cdn`, { provider: '' })); } catch (e) { showError(e); }
   });
 }
 

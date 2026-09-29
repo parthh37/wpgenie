@@ -36,7 +36,8 @@ with one command.
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
 | 🌡️ | **CPU autoscaling**: replicas follow traffic between a min and max, capped by server memory | ✅ |
 | ✉️ | **Mail**: mailboxes & aliases (docker-mailserver: Postfix, Dovecot, Rspamd), Roundcube webmail, automatic DKIM, DNS checks, WordPress mail via SMTP, outbound relay | ✅ |
-| 🖼️ | Image optimisation, CDN integration | 🚧 Phase 3 |
+| 🌍 | **Free CDN (Cloudflare)**: real visitor IPs behind the proxy, automatic cache purges, SSL/DNS checks, cache headers on static files | ✅ |
+| 🖼️ | Image optimisation | 🚧 Phase 3 |
 | 🌐 | Multi-server clusters | 🚧 Phase 5 |
 
 ## Install

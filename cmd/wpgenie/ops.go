@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -158,8 +159,48 @@ func siteOpsCmd(cfg *config.Config, op string, args []string) error {
 			fmt.Printf("%s  %-9s %s\n", ev[i].Time.Local().Format("2006-01-02 15:04"), ev[i].Kind, ev[i].Message)
 		}
 		return nil
+	case "cdn":
+		return cdnCmd(cfg, id, args[1:])
 	}
 	return nil
+}
+
+func cdnCmd(cfg *config.Config, id string, args []string) error {
+	sub := "status"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	var st site.CDNStatus
+	switch sub {
+	case "status":
+		if err := call(cfg, "GET", "/sites/"+id+"/cdn", nil, &st); err != nil {
+			return err
+		}
+	case "cloudflare":
+		// On stdin, never argv: command lines are visible to every user in ps.
+		fmt.Fprintln(os.Stderr, "Cloudflare API token (Zone: Read, Cache Purge: Purge, optionally Zone Settings: Read):")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return errors.New("no token on stdin")
+		}
+		in := site.CDNInput{Provider: "cloudflare", APIToken: strings.TrimSpace(line)}
+		if err := call(cfg, "PUT", "/sites/"+id+"/cdn", in, &st); err != nil {
+			return err
+		}
+	case "off":
+		if err := call(cfg, "PUT", "/sites/"+id+"/cdn", site.CDNInput{}, &st); err != nil {
+			return err
+		}
+	case "purge":
+		if err := call(cfg, "POST", "/sites/"+id+"/cdn/purge", nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("CDN cache purged.")
+		return nil
+	default:
+		return errors.New("usage: wpgenie site cdn <site-id> [status|cloudflare|off|purge]")
+	}
+	return printJSON(st)
 }
 
 func printJSON(v any) error {

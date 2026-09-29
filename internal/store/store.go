@@ -151,6 +151,18 @@ var migrations = []string{
 		PRIMARY KEY (alias, target)
 	);
 	ALTER TABLE sites ADD COLUMN smtp INTEGER NOT NULL DEFAULT 0;`,
+	// v5: CDN in front of a site. Its own table so the API token never rides
+	// along with the site record the API returns. zones is JSON (domain ->
+	// zone ID); purged_at is when the last successful purge started.
+	`CREATE TABLE site_cdn (
+		site_id    TEXT PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+		provider   TEXT NOT NULL,
+		api_token  TEXT NOT NULL,
+		zones      TEXT NOT NULL DEFAULT '{}',
+		purged_at  INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

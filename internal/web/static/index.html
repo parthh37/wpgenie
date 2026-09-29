@@ -177,6 +177,23 @@
         <button class="ghost purge">Purge cache</button>
       </div>
     </details>
+    <details class="perf cdn">
+      <summary>CDN <span class="muted small cdn-summary">· Cloudflare (free plan)</span></summary>
+      <p class="muted small">Put the site behind Cloudflare's free CDN: static files are served from a data centre near each visitor.
+        Real visitor IPs reach the shield and analytics automatically. With an API token, Cloudflare's cache is also purged whenever the site's cache is.</p>
+      <ol class="muted small">
+        <li>Add the domain to Cloudflare and turn the proxy on (orange cloud) for its A/AAAA records.</li>
+        <li>Set SSL/TLS to <strong>Full (strict)</strong>. Flexible causes an endless redirect.</li>
+        <li>Create an API token (My Profile → API Tokens) with <em>Zone: Read</em>, <em>Cache Purge: Purge</em> and, optionally, <em>Zone Settings: Read</em>, limited to this zone.</li>
+      </ol>
+      <div class="controls">
+        <label>API token<input type="password" class="cdn-token" autocomplete="off" placeholder="unchanged if empty"></label>
+        <button class="cdn-save">Save token</button>
+        <button class="ghost cdn-purge">Purge CDN</button>
+        <button class="ghost danger cdn-off">Turn off</button>
+      </div>
+      <div class="cdn-status"></div>
+    </details>
     <details class="perf sec">
       <summary>Security <span class="muted small sec-summary"></span></summary>
       <div class="controls">

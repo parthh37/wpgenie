@@ -25,6 +25,7 @@ import (
 
 	"github.com/parthh37/wpgenie/internal/analytics"
 	"github.com/parthh37/wpgenie/internal/api"
+	"github.com/parthh37/wpgenie/internal/cdn"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/dbprov"
 	"github.com/parthh37/wpgenie/internal/mail"
@@ -61,6 +62,9 @@ Usage:
   wpgenie site auto-update <site-id> off|security|all
   wpgenie site scan <site-id>           security scan (vulnerabilities, file integrity)
   wpgenie site smtp <site-id> on|off    send WordPress mail through the mail server
+  wpgenie site cdn <site-id> [status|cloudflare|off|purge]
+                                        Cloudflare cache purging; "cloudflare" reads
+                                        the API token from stdin
   wpgenie site events <site-id>         activity log (autoscaling, updates, scans)
   wpgenie mail enable <hostname> | disable | status
   wpgenie mail domain add|rm|dns <domain>
@@ -152,18 +156,25 @@ func serve(cfg *config.Config) error {
 	} else if n > 0 {
 		log.Warn("marked updates interrupted by the last shutdown as failed", "count", n)
 	}
+	cfRanges := cdn.NewRanges()
 	svc := &site.Service{
 		Cfg: cfg, Store: st, Runtime: &runtime.Docker{}, DB: db, Log: log,
 		// Container names equal the hostnames sites use (deploy/docker-compose.yml).
-		Cache:  &runtime.Valkey{Container: cfg.RedisHost},
-		Dumper: &runtime.MariaDB{Container: cfg.MariaDBHost, Password: rootDSN.Passwd},
-		Prober: &site.HTTPProber{Token: healthToken},
-		Vulns:  &site.WPVulnerability{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
+		Cache:     &runtime.Valkey{Container: cfg.RedisHost},
+		Dumper:    &runtime.MariaDB{Container: cfg.MariaDBHost, Password: rootDSN.Passwd},
+		Prober:    &site.HTTPProber{Token: healthToken},
+		Vulns:     &site.WPVulnerability{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
+		CDN:       &cdn.Cloudflare{},
+		CDNRanges: cfRanges,
 		Proxy: proxy.NewCaddy(proxy.Config{
 			ACMEEmail: cfg.ACMEEmail, AdminURL: cfg.CaddyAdmin, PanelDomain: cfg.PanelDomain,
 			PanelUpstream: cfg.ListenAddr, ShieldUpstream: cfg.ListenAddr,
 			AccessLog: cfg.AccessLog, CaddyfilePath: cfg.CaddyfilePath,
+			CloudflareRanges: cfRanges.Get,
 		}),
+	}
+	if err := svc.LoadCDNRanges(ctx); err != nil {
+		log.Warn("using the built-in Cloudflare IP ranges", "err", err)
 	}
 	mailSvc := &mail.Service{
 		Cfg: mail.Config{DataDir: filepath.Join(cfg.DataDir, "mail"), CaddyDataDir: cfg.CaddyDataDir,
@@ -203,6 +214,8 @@ func serve(cfg *config.Config) error {
 	go svc.RunCron(ctx)
 	go svc.RunAutoscaler(ctx)
 	go svc.RunMaintenance(ctx)
+	go svc.RunCDN(ctx)
+	go svc.RunCDNRanges(ctx)
 
 	upd := &updater.Updater{Current: version, Repo: cfg.UpdateRepo, StateDir: filepath.Join(cfg.DataDir, "updates")}
 	go upd.Run(ctx, 12*time.Hour)
@@ -242,7 +255,7 @@ func serve(cfg *config.Config) error {
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|smtp|events")
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|smtp|cdn|events")
 	}
 	switch args[0] {
 	case "ls":
@@ -285,7 +298,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return autoscaleCmd(cfg, args[1:])
 	case "shield":
 		return shieldCmd(cfg, args[1:])
-	case "updates", "update", "auto-update", "scan", "smtp", "events":
+	case "updates", "update", "auto-update", "scan", "smtp", "events", "cdn":
 		return siteOpsCmd(cfg, args[0], args[1:])
 	case "purge":
 		if len(args) != 2 {

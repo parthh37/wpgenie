@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,9 @@ func testCaddy() *Caddy {
 	return NewCaddy(Config{
 		ACMEEmail: "ops@example.com", AdminURL: "http://127.0.0.1:2019", PanelDomain: "panel.example.com",
 		PanelUpstream: "127.0.0.1:8088", ShieldUpstream: "127.0.0.1:8088", AccessLog: "/var/log/wpgenie/access.log",
+		CloudflareRanges: func() []netip.Prefix {
+			return []netip.Prefix{netip.MustParsePrefix("173.245.48.0/20"), netip.MustParsePrefix("2606:4700::/32")}
+		},
 	})
 }
 
@@ -75,6 +79,60 @@ func TestRender(t *testing.T) {
 	}
 	if !strings.Contains(blog, "max_fails 3") || strings.Contains(shop, "fail_duration") {
 		t.Error("passive health checks belong on multi-replica sites only: one failure must not take a single-replica site offline")
+	}
+}
+
+// Behind Cloudflare every connection comes from its edge. The shield must
+// see the visitor (CF-Connecting-IP), but only when the peer really is
+// Cloudflare, or anyone could pick the address that gets banned.
+func TestRenderClientIP(t *testing.T) {
+	out, err := testCaddy().Render(testSites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	global := s[:strings.Index(s, "(wpgenie_hardening)")]
+	if !strings.Contains(global, "trusted_proxies static 173.245.48.0/20 2606:4700::/32") ||
+		!strings.Contains(global, "client_ip_headers CF-Connecting-IP") {
+		t.Errorf("global options must trust Cloudflare's ranges for CF-Connecting-IP:\n%s", global)
+	}
+	// Every call to the shield (checks and challenge verification, which
+	// must agree on the address) carries the resolved client IP.
+	shieldCalls := strings.Count(s, "header_up X-WPGenie-Site ")
+	if n := strings.Count(s, "header_up X-Forwarded-For {client_ip}"); n != shieldCalls || n == 0 {
+		t.Errorf("%d shield calls but %d pass {client_ip}", shieldCalls, n)
+	}
+
+	none, err := NewCaddy(Config{AdminURL: "http://127.0.0.1:2019", ShieldUpstream: "127.0.0.1:8088"}).Render(testSites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(none), "trusted_proxies") {
+		t.Error("no ranges configured: nothing may be trusted")
+	}
+}
+
+// Static files get cache headers (browsers and the CDN keep them), but only
+// files that exist: a missing /x.css is WordPress's 404 page.
+func TestRenderStaticCaching(t *testing.T) {
+	out, _ := testCaddy().Render(testSites)
+	s := string(out)
+	blog := s[strings.Index(s, "example.com, www.example.com {"):strings.Index(s, "shop.test {")]
+	for _, want := range []string{
+		`header @wpg_static_long Cache-Control "public, max-age=2592000"`,
+		`header @wpg_static_short Cache-Control "public, max-age=604800"`,
+	} {
+		if !strings.Contains(blog, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	long := blog[strings.Index(blog, "@wpg_static_long {"):]
+	long = long[:strings.Index(long, "}")]
+	if !strings.Contains(long, "file") || !strings.Contains(long, `not path_regexp (?i)\.php`) {
+		t.Errorf("static cache matcher must require an existing, non-PHP file:\n%s", long)
+	}
+	if strings.Contains(s[strings.Index(s, "mail.example.com {"):], "Cache-Control") {
+		t.Error("webmail is proxied as-is")
 	}
 }
 

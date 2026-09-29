@@ -52,7 +52,8 @@ issue candidate once its phase starts.
 - [ ] Admin-bar "purge cache" button; purge on WP-CLI content changes (runs with `--skip-plugins`)
 - [ ] Mobile/device cache variants for themes that serve different markup
 - [ ] WebP/AVIF conversion, lazy-loading, Brotli/zstd (zstd done)
-- [ ] CDN integration (Cloudflare/Bunny) with automatic purge
+- [x] CDN integration (Cloudflare free plan): real client IPs, automatic hostname purges, config checks
+- [ ] Bunny / generic pull-zone CDNs; optional HTML edge caching (Cloudflare Cache Rules)
 - [ ] Per-site slow-request / PHP error insights
 
 ## Phase 4 — Email
