@@ -192,12 +192,17 @@ func copyCaddyBinary(t *testing.T, dir string) {
 // startCaddy runs the fixture and returns Caddy's base URL once it serves.
 func startCaddy(t *testing.T, dir, mountOpts, uid string) string {
 	t.Helper()
-	b, err := exec.Command("docker", "run", "-d", "--privileged",
+	// Only stdout is the container ID: on a cold cache, docker run also
+	// prints image pull progress on stderr.
+	var stderr strings.Builder
+	cmd := exec.Command("docker", "run", "-d", "--privileged",
 		"-p", "127.0.0.1::8080", "-v", dir+":/mnt:ro",
 		"-e", "MOUNT_OPTS="+mountOpts, "-e", "CADDY_UID="+uid,
-		"debian:12-slim", "bash", "-c", fixture).CombinedOutput()
+		"debian:12-slim", "bash", "-c", fixture)
+	cmd.Stderr = &stderr
+	b, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("docker run: %v\n%s", err, b)
+		t.Fatalf("docker run: %v\n%s", err, stderr.String())
 	}
 	cid := strings.TrimSpace(string(b))
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", cid).Run() })
