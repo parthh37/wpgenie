@@ -37,6 +37,10 @@ preflight() {
     aarch64 | arm64) ARCH=arm64 ;;
     *) die "unsupported CPU architecture $(uname -m)" ;;
   esac
+  # The nosymfollow mount option (Caddy's view of site files) is Linux 5.10+.
+  local kmaj kmin
+  IFS=. read -r kmaj kmin _ <<<"$(uname -r)"
+  ((kmaj > 5 || (kmaj == 5 && kmin >= 10))) || die "Linux 5.10+ required (found $(uname -r))"
   local mem_mb
   mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
   ((mem_mb >= 900)) || warn "only ${mem_mb}MB RAM; 1GB+ recommended (2GB+ for several sites)"
@@ -98,7 +102,7 @@ install_binary() {
 
 write_config() {
   install -d -m 0700 "$ETC"
-  install -d -m 0755 "${ETC}/caddy" "$DATA" "${DATA}/sites" "${DATA}/caddy" "$LOGS"
+  install -d -m 0755 "${ETC}/caddy" "$DATA" "${DATA}/sites" "${DATA}/sites.nosymfollow" "${DATA}/caddy" "$LOGS"
   install -d -m 0700 "${DATA}/mariadb"
   if [[ -f ${ETC}/config.json ]]; then
     log "Keeping existing configuration and secrets"
@@ -127,12 +131,62 @@ EOF
   [[ -f ${ETC}/caddy/Caddyfile ]] || printf '{\n\tadmin 127.0.0.1:2019\n}\n' >"${ETC}/caddy/Caddyfile"
 }
 
+# set_infra_env KEY VALUE updates or appends a line in infra.env.
+set_infra_env() {
+  local f="${ETC}/infra.env"
+  if grep -q "^$1=" "$f"; then
+    sed -i "s/^$1=.*/$1=$2/" "$f"
+  else
+    printf '%s=%s\n' "$1" "$2" >>"$f"
+  fi
+}
+
+# Caddy runs as its own system user, outside www-data's group, so it can
+# traverse into site directories (0751) but never read wp-config.php
+# (root:82 0640). Also migrates installs where Caddy ran as root.
+setup_caddy_user() {
+  id -u wpgenie-caddy >/dev/null 2>&1 ||
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin wpgenie-caddy
+  local uid gid
+  uid=$(id -u wpgenie-caddy)
+  gid=$(id -g wpgenie-caddy)
+  set_infra_env CADDY_UID "$uid"
+  set_infra_env CADDY_GID "$gid"
+  chown -R "${uid}:${gid}" "${DATA}/caddy" "$LOGS"
+  find "${DATA}/sites" -mindepth 1 -maxdepth 1 -type d -exec chmod 0751 {} +
+}
+
+setup_caddy_sites_mount() {
+  local unit=var-lib-wpgenie-sites.nosymfollow.mount
+  install -m 0644 "${SHARE}/deploy/${unit}" "/etc/systemd/system/${unit}"
+  systemctl daemon-reload
+  systemctl enable --now "$unit" >/dev/null 2>&1 ||
+    die "could not mount ${DATA}/sites.nosymfollow (see: systemctl status $unit)"
+}
+
+# Fail closed: if the running Caddy can follow symlinks in site files, or runs
+# as root, one site could serve another's secrets. Take it offline instead.
+verify_caddy_isolation() {
+  local mounts uid
+  mounts=$(docker exec wpgenie-caddy cat /proc/self/mountinfo)
+  uid=$(docker exec wpgenie-caddy id -u)
+  if ! awk '$5 == "/var/lib/wpgenie/sites" && $6 ~ /(^|,)nosymfollow(,|$)/ {ok = 1} END {exit !ok}' <<<"$mounts" ||
+    [[ $uid == 0 ]]; then
+    docker stop wpgenie-caddy >/dev/null
+    die "Caddy is not isolated from site symlinks (nosymfollow mount missing or running as root); stopped it"
+  fi
+}
+
 start_stack() {
   log "Building the hardened PHP image (a few minutes on first install)"
   docker build -q -t wpgenie/php:8.3 --build-arg PHP_VERSION=8.3 "${SHARE}/images/php" >/dev/null
 
+  setup_caddy_user
+  setup_caddy_sites_mount
+
   log "Starting Caddy, MariaDB and Valkey"
   docker compose -f "${SHARE}/deploy/docker-compose.yml" --env-file "${ETC}/infra.env" up -d --quiet-pull
+  verify_caddy_isolation
 
   log "Waiting for MariaDB"
   for _ in $(seq 1 60); do
