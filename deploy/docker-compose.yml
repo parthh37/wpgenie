@@ -11,10 +11,19 @@ services:
     network_mode: host
     restart: unless-stopped
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    # Unprivileged, and not in www-data's group (82): even if Caddy is tricked
+    # into opening another site's wp-config.php (root:82 0640), it can't read
+    # it. The image's caddy binary carries cap_net_bind_service for :80/:443.
+    user: "${CADDY_UID:?run install.sh}:${CADDY_GID:?run install.sh}"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
     volumes:
       - /etc/wpgenie/caddy:/etc/caddy:ro
       - /var/lib/wpgenie/caddy:/data # certificates and ACME account
-      - /var/lib/wpgenie/sites:/var/lib/wpgenie/sites:ro
+      # NOT /var/lib/wpgenie/sites: this is a bind,ro,nosymfollow mount of it
+      # (deploy/var-lib-wpgenie-sites.nosymfollow.mount), so a symlink a site
+      # plants in its docroot can't make file_server read outside it.
+      - /var/lib/wpgenie/sites.nosymfollow:/var/lib/wpgenie/sites:ro
       - /var/log/wpgenie:/var/log/wpgenie
 
   mariadb:

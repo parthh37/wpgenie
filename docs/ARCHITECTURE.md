@@ -38,6 +38,32 @@ check.
 - Proof-of-work challenge: stateless HMAC-signed tokens bound to site, client /24 (/64 for IPv6)
   and User-Agent. No third-party CAPTCHA, no cookies until the challenge is passed.
 
+**Static files (Caddy)**
+
+Caddy's `file_server` follows symlinks, and a site can create symlinks in its own docroot (plugin
+archive extraction, WP-CLI, anything not jailed by `open_basedir`). Path-based deny rules only see
+the request path (`/wp-content/uploads/x.txt`), never the target. So without the controls below, a
+symlink planted by site A would make Caddy serve site B's `wp-config.php` or its own TLS private
+keys. Two independent layers:
+
+- **No symlinks, enforced by the kernel.** Caddy never mounts `/var/lib/wpgenie/sites`. It mounts
+  `/var/lib/wpgenie/sites.nosymfollow`, a `bind,ro,nosymfollow` view of it
+  (`deploy/var-lib-wpgenie-sites.nosymfollow.mount`, Linux 5.10+), where opening any symlink fails
+  with `ELOOP`, wherever it points. PHP containers mount the real directory, so WordPress is
+  unaffected; the only cost is that symlinks inside a docroot aren't served as static files.
+  `install.sh` checks the flag inside the running Caddy container and stops Caddy if it's missing
+  (Docker's `local` volume driver, for example, silently drops it).
+- **Unprivileged Caddy.** Caddy runs as the `wpgenie-caddy` system user with only
+  `NET_BIND_SERVICE`, outside www-data's group (82). Site directories are `0751` (traverse, no
+  listing), so it reaches `public/` but can't read `wp-config.php` (`root:82 0640`) even if it
+  opens it. This layer alone doesn't protect Caddy's own certificates or other sites' public
+  files. That's the first layer's job.
+
+`TestStaticFilesDoNotFollowSymlinks` (Docker) exercises both layers with the rendered Caddyfile
+and the unit's mount options. It also checks that the unprotected setup does leak, so the test
+proves something. Serving only each docroot to Caddy was rejected: compose mounts are static, so
+every new site would need a Caddy restart or per-site host mounts.
+
 **Site runtime** (`internal/runtime/runtime.go`)
 - Runs as uid 82 (`www-data`), `--cap-drop ALL`, `no-new-privileges`, `--read-only` root FS.
 - Writable locations: only the site's own docroot and a `noexec` tmpfs. The image's
@@ -48,7 +74,7 @@ check.
 
 **WordPress**
 - `wp-config.php` lives *above* the docroot, owned by root and read-only to PHP, so a compromised
-  plugin can neither serve nor rewrite it. Credentials never appear in env vars or `docker inspect`.
+  plugin can neither serve nor rewrite it (not even through a symlink; see *Static files*). Credentials never appear in env vars or `docker inspect`.
 - `DISALLOW_FILE_EDIT`, `FORCE_SSL_ADMIN`, automatic minor core updates, random table prefix,
   random admin username (never `admin`).
 - WP-CLI runs with `--skip-plugins --skip-themes`, so a malicious plugin can't hijack panel
@@ -92,9 +118,10 @@ The code has explicit seams for going multi-server:
 /etc/wpgenie/infra.env            MariaDB root password (0600)
 /etc/wpgenie/caddy/Caddyfile      generated; last config Caddy accepted
 /var/lib/wpgenie/wpgenie.db       panel state
-/var/lib/wpgenie/sites/<id>/      wp-config.php (root:82 0640)
+/var/lib/wpgenie/sites/<id>/      root:82 0751; wp-config.php (root:82 0640)
 /var/lib/wpgenie/sites/<id>/public/   WordPress (82:82)
-/var/lib/wpgenie/caddy/           certificates
+/var/lib/wpgenie/sites.nosymfollow/   read-only, symlink-free view of sites/ (Caddy's only view)
+/var/lib/wpgenie/caddy/           certificates (owned by wpgenie-caddy)
 /var/lib/wpgenie/mariadb/         databases
 /var/log/wpgenie/access.log       JSON access log (rotated by Caddy)
 /opt/wpgenie/                     installed sources (deploy/, images/)

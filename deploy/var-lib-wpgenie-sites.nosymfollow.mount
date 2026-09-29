@@ -1,0 +1,21 @@
+# Caddy's view of the site files: read-only, and the kernel refuses to follow
+# any symlink on it (Linux 5.10+). A site can create symlinks in its own
+# docroot (archive extraction, WP-CLI, ...); without this, Caddy's
+# file_server would follow one to another site's wp-config.php or to Caddy's
+# own TLS private keys and serve it. PHP-FPM containers mount the real
+# /var/lib/wpgenie/sites/<id>, so WordPress itself is unaffected.
+#
+# The unit name must match Where= (systemd-escape --path). Installed and
+# verified by install.sh.
+[Unit]
+Description=WPGenie site files for Caddy (read-only, no symlinks)
+Before=docker.service
+
+[Mount]
+What=/var/lib/wpgenie/sites
+Where=/var/lib/wpgenie/sites.nosymfollow
+Type=none
+Options=bind,ro,nosymfollow
+
+[Install]
+WantedBy=docker.service
