@@ -55,7 +55,7 @@ issue candidate once its phase starts.
       SFTP rate limits beyond OpenSSH's PerSourcePenalties, backup encryption keys per site, restore to a point in
       time between backups (binary logs)
 
-## Phase 3 — Performance
+## Phase 3 — Performance ✅
 - [x] Full-page cache: WordPress writes static HTML, Caddy serves it; purge on content change
       (disk-based rather than Souin: no custom Caddy build, and every replica shares it)
 - [x] Redis object cache drop-in, graceful + selective flush on the shared Valkey
@@ -64,13 +64,24 @@ issue candidate once its phase starts.
 - [x] System cron (jailed) instead of page-view WP-Cron
 - [x] Per-site MariaDB connection limits
 - [x] CPU autoscaling (HPA-style, stabilization window, host-memory cap)
-- [ ] Autoscale on PHP-FPM queue length / response time, not just CPU
-- [ ] Admin-bar "purge cache" button; purge on WP-CLI content changes (runs with `--skip-plugins`)
-- [ ] Mobile/device cache variants for themes that serve different markup
-- [ ] WebP/AVIF conversion, lazy-loading, Brotli/zstd (zstd done)
-- [x] CDN integration (Cloudflare free plan): real client IPs, automatic hostname purges, config checks
-- [ ] Bunny / generic pull-zone CDNs; optional HTML edge caching (Cloudflare Cache Rules)
-- [ ] Per-site slow-request / PHP error insights
+- [x] Autoscale on PHP-FPM load (requests per worker, the listen queue included, read from the replica's socket
+      table) and on the 95th percentile of PHP response times (from Caddy's log, only under load); the highest
+      proposal of the three metrics wins
+- [x] Admin-bar "Purge cache" button (editors and up; page cache, object cache and CDN); content changed with
+      WP-CLI purges too (mu-plugins load despite `--skip-plugins`: covered end to end)
+- [x] Mobile/desktop page cache copies for pages that ask `wp_is_mobile()` (Caddy picks with the same rule, client
+      hint first), or for every page when the theme detects phones itself
+- [x] WebP/AVIF copies of uploads (GD, in the site's container; new uploads by cron, the rest by a job and nightly),
+      negotiated by Caddy at the same URL; Brotli and gzip copies of cached pages served precompressed (zstd/gzip on
+      the fly for the rest); lazy-loading is WordPress core's (`loading="lazy"`, `fetchpriority`), left on
+- [x] Pull-zone CDNs: bunny.net (checked, purged with the site) or any other on its own hostname (static links
+      rewritten, fonts get CORS); optional HTML edge caching on Cloudflare (a Cache Rule per zone that only keeps
+      what Caddy marks cacheable: page-cache hits)
+- [x] Per-site insights: PHP response time percentiles and histogram, page cache hit rate, slowest URLs, PHP errors
+      grouped by message and place with the plugin or theme responsible
+- [ ] Follow-ups (not needed for the phase): Brotli for dynamic responses and static CSS/JS (a Caddy encoder module
+      or precompressed assets), stack traces of slow requests (FPM's slowlog needs ptrace, which the hardened
+      containers don't allow), GIF/animated image conversion, edge HTML caching on Bunny, alerts on error spikes
 
 ## Phase 4 — Email
 - [x] docker-mailserver (Postfix, Dovecot, Rspamd) as an optional, panel-managed component

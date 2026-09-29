@@ -52,7 +52,7 @@ func feed(sc *scaler, start time.Time, current int, utils ...float64) (time.Time
 
 func TestScalerScalesUpOnSustainedLoadOnly(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	sc := &scaler{policy: autoscalePolicy{1, 4, 0.7}}
+	sc := &scaler{policy: autoscalePolicy{min: 1, max: 4, target: 0.7}}
 	if _, want := feed(sc, t0, 1, 0.99); want != 1 {
 		t.Fatal("one hot sample (a cron run) must not scale")
 	}
@@ -75,7 +75,7 @@ func TestScalerScalesUpOnSustainedLoadOnly(t *testing.T) {
 
 func TestScalerScalesDownOnlyAfterStableWindow(t *testing.T) {
 	t0 := time.Unix(1_000_000, 0)
-	sc := &scaler{policy: autoscalePolicy{1, 4, 0.7}}
+	sc := &scaler{policy: autoscalePolicy{min: 1, max: 4, target: 0.7}}
 	quiet := make([]float64, int(scaleDownWindow/autoscaleInterval))
 	for i := range quiet {
 		quiet[i] = 0.1
@@ -89,7 +89,7 @@ func TestScalerScalesDownOnlyAfterStableWindow(t *testing.T) {
 	}
 
 	// A burst anywhere in the window holds the capacity it needed.
-	sc = &scaler{policy: autoscalePolicy{1, 4, 0.7}, since: now.Add(-time.Hour)}
+	sc = &scaler{policy: autoscalePolicy{min: 1, max: 4, target: 0.7}, since: now.Add(-time.Hour)}
 	burst := slices.Clone(quiet)
 	burst[len(burst)/2] = 0.95 // 4 replicas saturated once, 2.5 minutes ago
 	if _, want := feed(sc, now, 4, burst...); want != 4 {
@@ -98,7 +98,7 @@ func TestScalerScalesDownOnlyAfterStableWindow(t *testing.T) {
 }
 
 func TestScalerClampsIntoRange(t *testing.T) {
-	sc := &scaler{policy: autoscalePolicy{2, 4, 0.7}}
+	sc := &scaler{policy: autoscalePolicy{min: 2, max: 4, target: 0.7}}
 	if want, why := sc.next(time.Now(), 1); want != 2 || why == "" {
 		t.Fatalf("below min: %d %q", want, why)
 	}

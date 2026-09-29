@@ -166,6 +166,10 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
 	r("PUT /api/v1/sites/{id}/cdn", operator, s.setCDN)
 	r("POST /api/v1/sites/{id}/cdn/purge", operator, s.purgeCDN)
+	r("PUT /api/v1/sites/{id}/images", operator, s.setImages)
+	r("POST /api/v1/sites/{id}/images/convert", operator, s.convertImages)
+	r("GET /api/v1/sites/{id}/insights", viewer, s.insights)
+	r("DELETE /api/v1/sites/{id}/insights/errors", operator, s.clearPHPErrors)
 
 	r("GET /api/v1/mail", viewer, s.mailStatus)
 	r("PUT /api/v1/mail", admin, s.setMail)

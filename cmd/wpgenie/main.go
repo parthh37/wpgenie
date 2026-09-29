@@ -54,11 +54,18 @@ Usage:
   wpgenie site scale <site-id> [--memory MB] [--cpus N] [--replicas N]
                                         resize a site with no downtime; with no
                                         flags, rolls it onto the current PHP image
-  wpgenie site cache <site-id> [--page on|off] [--object on|off]
-                                        toggle the page / object cache
+  wpgenie site cache <site-id> [--page on|off] [--object on|off] [--mobile on|off]
+                                        toggle the page / object cache; --mobile keeps
+                                        separate mobile copies of every page
   wpgenie site purge <site-id>          empty the site's caches
   wpgenie site autoscale <site-id> [--on|--off] [--min N] [--max N] [--target PCT]
-                                        scale replicas with CPU use
+                          [--target-workers PCT] [--target-ms MS]
+                                        scale replicas with CPU use, PHP workers busy
+                                        (queue included) and response time (0: off)
+  wpgenie site images <site-id> [status|avif,webp|webp|off|convert]
+                                        serve uploads as AVIF/WebP (converted copies)
+  wpgenie site insights <site-id> [--hours N] [--json] [--clear-errors]
+                                        response times, cache hits, slow URLs, PHP errors
   wpgenie site shield <site-id> [--mode off|standard|under_attack] [--waf on|off]
                           [--body-waf off|detect|block] [--xmlrpc on|off]
                           [--admin-allow IP/CIDR,...] [--trusted IP/CIDR,...] [--deny IP/CIDR,...]
@@ -74,9 +81,10 @@ Usage:
                                         plugin analysis: wordpress.org status, abandoned,
                                         modified/nulled files, cost per plugin
   wpgenie site smtp <site-id> on|off    send WordPress mail through the mail server
-  wpgenie site cdn <site-id> [status|cloudflare|off|purge]
-                                        Cloudflare cache purging; "cloudflare" reads
-                                        the API token from stdin
+  wpgenie site cdn <site-id> [status|cloudflare [--edge-html on|off]|bunny <zone-id> <cdn-host>
+                          |generic <cdn-host>|off|purge]
+                                        Cloudflare (purges, optional edge caching of pages)
+                                        or a pull zone for static files; tokens/keys on stdin
   wpgenie site events <site-id>         activity log (autoscaling, updates, scans)
   wpgenie site backup <site-id> [now|ls|restore <repo> <backup> [--files-only|--db-only]
                           |download <repo> <backup> [file]|rm <repo> <backup>|policy [flags]]
@@ -219,6 +227,8 @@ func serve(cfg *config.Config) error {
 	}
 	docker := &runtime.Docker{}
 	cfRanges := cdn.NewRanges()
+	// PHP response times, from the access log to the autoscaler.
+	latency := &analytics.Recent{}
 	svc := &site.Service{
 		Cfg: cfg, Store: st, Runtime: &runtime.Docker{}, DB: db, Log: log,
 		// Container names equal the hostnames sites use (deploy/docker-compose.yml).
@@ -229,6 +239,8 @@ func serve(cfg *config.Config) error {
 		Directory: &site.WordPressOrg{UserAgent: "WPGenie/" + version + " (+https://github.com/parthh37/wpgenie)"},
 		CDN:       &cdn.Cloudflare{},
 		CDNRanges: cfRanges,
+		Bunny:     &cdn.Bunny{},
+		Latency:   latency,
 		Jobs:      jobQueue,
 		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
 			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},
@@ -343,11 +355,12 @@ func serve(cfg *config.Config) error {
 	go svc.RunCDN(ctx)
 	go svc.RunCDNRanges(ctx)
 	go svc.RunBackups(ctx)
+	go svc.RunInsights(ctx)
 
 	upd := &updater.Updater{Current: version, Repo: cfg.UpdateRepo, StateDir: filepath.Join(cfg.DataDir, "updates")}
 	go upd.Run(ctx, 12*time.Hour)
 
-	ing := &analytics.Ingester{Path: cfg.AccessLog, Store: st, Secret: []byte(cfg.ShieldSecret), Logger: log}
+	ing := &analytics.Ingester{Path: cfg.AccessLog, Store: st, Secret: []byte(cfg.ShieldSecret), Logger: log, Recent: latency}
 	go ing.Run(ctx)
 
 	srv := &http.Server{
@@ -388,7 +401,7 @@ func serve(cfg *config.Config) error {
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|" +
-			"plugins|smtp|cdn|events|backup|staging|push|domain|cert|php|sftp|adminer")
+			"plugins|smtp|cdn|images|insights|events|backup|staging|push|domain|cert|php|sftp|adminer")
 	}
 	switch args[0] {
 	case "ls":
@@ -418,7 +431,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return autoscaleCmd(cfg, args[1:])
 	case "shield":
 		return shieldCmd(cfg, args[1:])
-	case "updates", "update", "auto-update", "scan", "plugins", "smtp", "events", "cdn":
+	case "updates", "update", "auto-update", "scan", "plugins", "smtp", "events", "cdn", "images", "insights":
 		return siteOpsCmd(cfg, args[0], args[1:])
 	case "php":
 		return phpCmd(cfg, args[1:])
@@ -495,22 +508,25 @@ func scaleCmd(cfg *config.Config, args []string) error {
 }
 
 func cacheCmd(cfg *config.Config, args []string) error {
-	var page, object onOff
-	st, err := siteFlags(cfg, args, "usage: wpgenie site cache <site-id> [--page on|off] [--object on|off]",
+	var page, object, mobile onOff
+	st, err := siteFlags(cfg, args, "usage: wpgenie site cache <site-id> [--page on|off] [--object on|off] [--mobile on|off]",
 		func(fs *flag.FlagSet, st *store.Site) {
-			page, object = onOff(st.PageCache), onOff(st.ObjectCache)
+			page, object, mobile = onOff(st.PageCache), onOff(st.ObjectCache), onOff(st.CacheMobile)
 			fs.Var(&page, "page", "full-page cache (on|off)")
 			fs.Var(&object, "object", "Redis object cache (on|off)")
+			fs.Var(&mobile, "mobile", "separate mobile copies of every page, for themes that detect phones themselves (on|off)")
 		})
 	if err != nil {
 		return err
 	}
 	var out store.Site
-	in := site.CacheSettings{PageCache: bool(page), ObjectCache: bool(object)}
+	m := bool(mobile)
+	in := site.CacheSettings{PageCache: bool(page), ObjectCache: bool(object), Mobile: &m}
 	if err := call(cfg, "PUT", "/sites/"+st.ID+"/cache", in, &out); err != nil {
 		return err
 	}
-	fmt.Printf("Site %s: page cache %v, object cache %v\n", out.ID, onOff(out.PageCache), onOff(out.ObjectCache))
+	fmt.Printf("Site %s: page cache %v (separate mobile copies %v), object cache %v\n", out.ID, onOff(out.PageCache),
+		onOff(out.CacheMobile), onOff(out.ObjectCache))
 	return nil
 }
 

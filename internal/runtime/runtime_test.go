@@ -96,6 +96,15 @@ func TestSocketStates(t *testing.T) {
 	if l, n := socketStates(busy, 9000); l || n != 2 {
 		t.Errorf("socketStates = %v, %d; want not listening, 2 active", l, n)
 	}
+	// Every worker busy: three connections wait in the backlog of the
+	// (tcp6) listener, the rx_queue of its LISTEN row.
+	saturated := append(busy, "   4: 00000000000000000000000000000000:2328 00000000000000000000000000000000:0000 0A 00000000:00000003\n"+
+		"   5: 0100007F:2328 0100007F:C004 01 00000000:00000000\n"+
+		"   6: 0100007F:2328 0100007F:C005 01 00000000:00000000\n"+
+		"   7: 0100007F:2328 0100007F:C006 01 00000000:00000000\n"...)
+	if l, n, q := socketLoad(saturated, 9000); !l || n != 5 || q != 3 {
+		t.Errorf("socketLoad = %v, %d, %d; want listening, 5 requests, 3 queued", l, n, q)
+	}
 }
 
 func TestParseReplicas(t *testing.T) {

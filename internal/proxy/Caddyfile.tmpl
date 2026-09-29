@@ -134,17 +134,64 @@
 	}
 	header @wpg_static_long Cache-Control "public, max-age=2592000"
 	header @wpg_static_short Cache-Control "public, max-age=604800"
+	{{- if .AssetCDN}}
+	# A pull-zone CDN serves static files from its own hostname: browsers
+	# only use fonts from another origin with CORS.
+	@wpg_fonts path *.woff *.woff2 *.ttf *.otf *.eot
+	header @wpg_fonts Access-Control-Allow-Origin *
+	{{- end}}
+	{{- if .Images}}
+	# Uploads converted to modern formats (<file>.avif, <file>.webp next to
+	# the original) replace the original for browsers that accept them. Not
+	# for requests through the CDN edge (client_ip then differs from the
+	# peer): Cloudflare ignores Vary: Accept and would cache one format for
+	# every browser. The original must exist too, so deleting it removes
+	# the image even while a converted copy is left over.
+	@wpg_img {
+		path /wp-content/uploads/*
+		path_regexp wpg_img (?i)\.(?:jpe?g|png)$
+		file
+	}
+	header @wpg_img Vary Accept
+	{{- range .Images}}
+	@wpg_img_{{.}} {
+		path /wp-content/uploads/*
+		path_regexp wpg_img_{{.}} (?i)\.(?:jpe?g|png)$
+		header Accept *image/{{.}}*
+		# One expression: a second expression line would replace this one.
+		expression `{remote_host} == {client_ip} && file({'try_files': [{path} + '.{{.}}']}) && file({'try_files': [{path}]})`
+	}
+	{{- end}}
+	{{- end}}
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
 	# page (images/php/page-cache.php); the cookie rule here is a stricter
-	# substring match.
+	# substring match. Pages whose HTML depends on the device (the theme asked
+	# wp_is_mobile()) are stored as index-mobile.html and index-desktop.html
+	# instead, and picked with wp_is_mobile()'s own rule.
 	@wpg_cached {
 		method GET HEAD
 		path */
 		expression `{query} == ""`
-		not header_regexp Cookie (wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session_|edd_items_in_cart|PHPSESSID)
+		not header_regexp Cookie ({{$.BypassCookies}})
 		not header Authorization *
 		file /wp-content/cache/wpgenie{path}index.html
+	}
+	@wpg_cached_mobile {
+		method GET HEAD
+		path */
+		expression `{query} == "" && {{$.MobileExpr}}`
+		not header_regexp Cookie ({{$.BypassCookies}})
+		not header Authorization *
+		file /wp-content/cache/wpgenie{path}index-mobile.html
+	}
+	@wpg_cached_desktop {
+		method GET HEAD
+		path */
+		expression `{query} == "" && !{{$.MobileExpr}}`
+		not header_regexp Cookie ({{$.BypassCookies}})
+		not header Authorization *
+		file /wp-content/cache/wpgenie{path}index-desktop.html
 	}
 	{{- end}}
 
@@ -180,12 +227,40 @@
 		{{- if .BlockXMLRPC}}
 		respond @wpg_xmlrpc 403
 		{{- end}}
+		{{- range .Images}}
+		rewrite @wpg_img_{{.}} {path}.{{.}}
+		{{- end}}
 		{{- if .PageCache}}
 		# After the shield: cached pages still get bot blocking and rate limits.
+		# PHP stores .br and .gz copies next to each page: served as they are,
+		# at maximum compression and no CPU.
 		route @wpg_cached {
 			header X-WPGenie-Cache HIT
+			{{- if .EdgeHTML}}
+			# The CDN may keep this page (its rule only caches what says so);
+			# browsers revalidate.
+			header Cache-Control "public, max-age=0, s-maxage={{$.EdgeTTL}}"
+			{{- end}}
 			rewrite * {file_match.relative}
-			file_server
+			file_server {
+				precompressed br gzip
+			}
+		}
+		# Device-specific copies are never edge-cached: a CDN would serve one
+		# of them to every device.
+		route @wpg_cached_mobile {
+			header X-WPGenie-Cache HIT
+			rewrite * {file_match.relative}
+			file_server {
+				precompressed br gzip
+			}
+		}
+		route @wpg_cached_desktop {
+			header X-WPGenie-Cache HIT
+			rewrite * {file_match.relative}
+			file_server {
+				precompressed br gzip
+			}
 		}
 		{{- end}}
 		php_fastcgi {{join .Upstreams " "}} {

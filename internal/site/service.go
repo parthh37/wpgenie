@@ -75,7 +75,12 @@ type Service struct {
 	CDN       CDNProvider
 	CDNRanges *cdn.Ranges
 	DNS       Resolver
-	Log       *slog.Logger
+	// Bunny is bunny.net's API (pull zones).
+	Bunny PullZoneAPI
+	// Latency reports sites' recent PHP response times (the analytics
+	// ingester), for autoscaling on them; nil: CPU and workers only.
+	Latency LatencySource
+	Log     *slog.Logger
 	// Jobs runs long operations (create, backups, restores, clones) in the
 	// background; Backups is restic (see internal/backup); Images builds
 	// the PHP image of a version the first time a site switches to it.
@@ -108,6 +113,8 @@ type Service struct {
 	builds sync.Map
 	// repoMu serialises repository maintenance (prune, check) per repo.
 	repoMu sync.Map
+	// phpLogLocks: site ID -> *sync.Mutex, one error log read at a time.
+	phpLogLocks sync.Map
 	// certWarnDay: the day expiring certificates were last reported (the
 	// backup scheduler's goroutine only).
 	certWarnDay string
@@ -385,6 +392,7 @@ func (s *Service) siteJob(siteID, kind string, heavy bool) jobs.Spec {
 //	<dir>/            root:82  0751   others (Caddy) may traverse, not list
 //	<dir>/wp-config.php root:82 0640  readable, NOT writable, by PHP
 //	<dir>/public/     82:82    0755   WordPress install (docroot)
+//	<dir>/logs/       82:82    0750   PHP's error log (see insights.go)
 //
 // Keeping wp-config.php outside the docroot and read-only to PHP means a
 // compromised plugin can neither leak it over HTTP nor rewrite it. Caddy runs
@@ -392,6 +400,9 @@ func (s *Service) siteJob(siteID, kind string, heavy bool) jobs.Spec {
 // wp-config.php, even through a symlink a site plants in its docroot.
 func (s *Service) prepareFiles(id, dir, docroot, dbUser, dbPass, prefix, environment string) error {
 	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		return err
+	}
+	if err := ensureLogDir(dir); err != nil {
 		return err
 	}
 	if prefix == "" {
@@ -499,6 +510,14 @@ func (s *Service) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cdns, err := s.Store.ListCDN(ctx)
+	if err != nil {
+		return err
+	}
+	cdnOf := map[string]*store.CDN{}
+	for _, c := range cdns {
+		cdnOf[c.SiteID] = c
+	}
 	var ps []proxy.Site
 	settings := make(map[string]shield.SiteSettings, len(sites))
 	for _, st := range sites {
@@ -515,7 +534,12 @@ func (s *Service) Sync(ctx context.Context) error {
 			Upstreams: upstreamAddrs(st.Upstreams), ShieldEnabled: mode != shield.ModeOff, BlockXMLRPC: !st.XMLRPC,
 			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
 			CustomCert: certs[st.ID] != nil, Staging: st.ParentID != "",
+			Images: st.ImageFormats,
 		})
+		if c := cdnOf[st.ID]; c != nil {
+			ps[len(ps)-1].AssetCDN = c.AssetHost != ""
+			ps[len(ps)-1].EdgeHTML = c.Provider == cdnCloudflare && c.EdgeHTML
+		}
 	}
 	if s.Webmail != nil {
 		if host, up := s.Webmail(); host != "" {

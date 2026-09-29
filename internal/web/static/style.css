@@ -120,3 +120,9 @@ progress { width: 100%; height: .5rem; accent-color: var(--accent); }
 .st-succeeded, .st-scheduled, .st-manual { color: var(--ok); }
 .st-queued, .st-safety { color: var(--warn); }
 .grid > .actions { align-self: end; }
+.hist { width: auto; }
+.hist td { border: 0; padding: .1rem .5rem .1rem 0; white-space: nowrap; }
+.hist meter { width: 16rem; height: .8rem; }
+.insights h3 { margin: 1rem 0 0; color: var(--muted); font-weight: 550; }
+/* Viewers may still look at other periods. */
+.readonly .insights .insights-hours, .readonly .insights .insights-refresh { pointer-events: auto; opacity: 1; }

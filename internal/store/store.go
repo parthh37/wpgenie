@@ -283,6 +283,55 @@ var migrations = []string{
 		public_keys TEXT NOT NULL DEFAULT '',
 		created_at  INTEGER NOT NULL
 	);`,
+	// v8: performance. Separate mobile page cache for every page, image
+	// formats to convert uploads to, autoscaling on PHP workers and response
+	// time (0: off), pull-zone CDNs (asset_host, pull_zone) and HTML edge
+	// caching; insights: PHP response times per hour (hist: counts per
+	// store.LatencyBuckets, JSON), slow URLs and PHP errors grouped by
+	// fingerprint (level, message, file, line).
+	`ALTER TABLE sites ADD COLUMN cache_mobile INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN image_formats TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sites ADD COLUMN target_workers INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN target_response_ms INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE site_cdn ADD COLUMN asset_host TEXT NOT NULL DEFAULT '';
+	ALTER TABLE site_cdn ADD COLUMN pull_zone TEXT NOT NULL DEFAULT '';
+	ALTER TABLE site_cdn ADD COLUMN edge_html INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE perf_hourly (
+		site_id      TEXT NOT NULL,
+		hour         INTEGER NOT NULL,
+		php_requests INTEGER NOT NULL DEFAULT 0,
+		php_ms       INTEGER NOT NULL DEFAULT 0,
+		slow         INTEGER NOT NULL DEFAULT 0,
+		cache_hits   INTEGER NOT NULL DEFAULT 0,
+		cache_misses INTEGER NOT NULL DEFAULT 0,
+		hist         TEXT NOT NULL DEFAULT '[]',
+		PRIMARY KEY (site_id, hour)
+	);
+	CREATE TABLE slow_requests (
+		site_id     TEXT NOT NULL,
+		method      TEXT NOT NULL,
+		path        TEXT NOT NULL,
+		count       INTEGER NOT NULL,
+		total_ms    INTEGER NOT NULL,
+		max_ms      INTEGER NOT NULL,
+		last_status INTEGER NOT NULL,
+		last_seen   INTEGER NOT NULL,
+		PRIMARY KEY (site_id, method, path)
+	);
+	CREATE TABLE php_errors (
+		site_id     TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+		fingerprint TEXT NOT NULL,
+		level       TEXT NOT NULL,
+		message     TEXT NOT NULL,
+		file        TEXT NOT NULL,
+		line        INTEGER NOT NULL,
+		source      TEXT NOT NULL,
+		count       INTEGER NOT NULL,
+		first_seen  INTEGER NOT NULL,
+		last_seen   INTEGER NOT NULL,
+		PRIMARY KEY (site_id, fingerprint)
+	);
+	CREATE INDEX php_errors_by_time ON php_errors (site_id, last_seen);`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

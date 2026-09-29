@@ -32,8 +32,10 @@ check.
    Then, for sites with body inspection on, Coraza runs the OWASP Core Rule Set over the request,
    body included (see *Request-body WAF*).
 5. If the page cache is on and the request is cacheable (see below), Caddy serves the cached HTML
-   from disk; PHP never runs. The cache is consulted *after* the shield, so cached pages still get
-   bot blocking and rate limits.
+   from disk (its Brotli or gzip copy, as the browser accepts; the phone or computer copy for pages
+   that differ); PHP never runs. The cache is consulted *after* the shield, so cached pages still get
+   bot blocking and rate limits. JPEG/PNG uploads with converted copies are served as AVIF or WebP
+   to browsers that accept them (see *Images*).
 6. Otherwise the request goes via FastCGI to one of the site's PHP-FPM replicas on
    `127.0.0.1:<port>` (`lb_policy least_conn`).
 7. Caddy writes a JSON access log; the analytics ingester tails it and commits hourly rollups.
@@ -256,7 +258,7 @@ PHP-FPM (`SIGQUIT`) is not relied on to finish in-flight requests: in testing it
 which is why step 4 drains by connection count. Because the image ID is part of the spec, rebuilding
 the PHP image and running `wpgenie site scale <id>` rolls a site onto it with no downtime.
 
-**Autoscaling (CPU).** Every 15 s the daemon takes one `docker stats` sample and computes each
+**Autoscaling.** Every 15 s the daemon takes one `docker stats` sample and computes each
 site's CPU use as a fraction of its replicas' allowance. Scale-up uses the Kubernetes HPA rule
 `ceil(replicas × use / target)` on a 45 s average, waits a minute between scale-ups, and at least
 doubles when replicas are saturated (≥ 90 %): a CPU-limited container never *measures* above its
@@ -268,6 +270,24 @@ memory. Decisions go through the same blue/green reconcile as a manual scale, co
 site's state under the lock, so a decision taken before someone resized the site is dropped rather
 than reverting the resize. Draining old replicas (up to 2 min) happens after the ops lock is
 released, so one site's scale-down never delays another site's scale-up.
+
+CPU misses sites that *wait*: a slow payment API or a heavy query keeps every PHP worker busy while
+the CPU idles, and visitors queue. Two optional targets cover them, and each metric proposes a replica
+count, the highest winning (HPA's rule for several metrics; scale-down needs every sample of the window
+to agree on all of them):
+
+- **PHP workers busy** (`target_workers`, percent): requests per worker, *queued ones included*, over
+  the serving replicas. Read from each replica's socket table (`/proc/<pid>/net/tcp` of its main process,
+  from the host: one `docker inspect` per tick, nothing started in the containers; per container with
+  `docker exec` where the host's `/proc` isn't Docker's). Established connections to :9000 are requests
+  in PHP-FPM, and the listening socket's `rx_queue` is its accept backlog: requests no worker has taken.
+  Because the queue counts, the metric passes 100 % under saturation and the plain HPA rule applies (no
+  doubling heuristic, unlike CPU). FPM's own status page wasn't used: a worker serves it, so it stalls
+  exactly when every worker is busy.
+- **Response time** (`target_response_ms`): the 95th percentile of PHP response times over the scale-up
+  window (≥ 20 responses), from Caddy's access log (the analytics ingester keeps the last minutes in
+  memory). Above the target, one replica is added at a time, and only when the site is busy (CPU or
+  workers ≥ 50 %): a slow page on idle workers is slow code or a slow database, which replicas can't fix.
 
 **Database fairness.** Every busy worker holds a MariaDB connection and all sites share one server.
 Each site's DB user gets `MAX_USER_CONNECTIONS = replicas × workers + 5`, and a site may not be
@@ -288,6 +308,23 @@ Any content change (post published/edited, comment approved, menu, widgets, them
 stock) purges the whole cache: atomic rename, then delete. Pages expire after 10h, below
 WordPress's 12h nonce tick, so cached forms never carry expired nonces.
 
+- *Compressed copies.* Each page is stored with `index.html.br` (Brotli 11, the PECL extension in the
+  image) and `index.html.gz` (gzip 9), written before the page itself; Caddy's `file_server
+  precompressed` sends the best one the browser accepts, with no CPU per request. Everything else is
+  compressed on the fly (zstd, gzip).
+- *Phones and computers.* A filter on `wp_is_mobile` notes whether the render asked it. If so, the page
+  is stored as `index-mobile.html` or `index-desktop.html` (and any copy for every device is removed);
+  Caddy tries `index.html` first, then the copy for the request's device, decided by `wp_is_mobile()`'s
+  own rule: the `Sec-CH-UA-Mobile` client hint when sent, else the User-Agent (`proxy.MobileUA`,
+  mirrored in the PHP and pinned by a test). The PHP side stores by that rule, not by the filterable
+  `wp_is_mobile()`, and stores nothing when a filter makes the two disagree. Themes that sniff the
+  User-Agent themselves get *separate mobile cache*: every page stored per device.
+- *Purges.* Editors and above get *Purge cache* in the admin bar (page cache, this site's object
+  cache keys, and the CDN through the purge marker). The hooks also fire for WP-CLI: `--skip-plugins`
+  still loads mu-plugins, so content changed from the command line purges like the dashboard
+  (`TestPerformanceEndToEnd`). The daemon's own database-level changes (search-replace, loads) purge
+  explicitly.
+
 **Object cache.** The Redis drop-in from the redis-cache plugin (pinned by checksum) ships in the
 image and is loaded by a wrapper in `wp-content/object-cache.php`. The wrapper forces
 `WP_REDIS_GRACEFUL` (Valkey down → site keeps working uncached) and `WP_REDIS_SELECTIVE_FLUSH`
@@ -296,12 +333,39 @@ site's cache). Keys are prefixed with the site ID. Panel purges delete the site'
 Valkey (a server-side `SCAN` + `UNLINK` script), never via `wp cache flush`: WP-CLI would load the
 site-replaceable drop-in outside the PHP jail.
 
+### Images
+
+With image optimisation on (per site: AVIF and/or WebP), every JPEG and PNG upload gets
+`<file>.avif` and `<file>.webp` next to it. Caddy serves the best one the `Accept` header allows at the
+original URL (`Vary: Accept`), so HTML, the page cache and links elsewhere never change; browsers
+without support get the original. A copy is served only if the original still exists, and never to
+requests through the CDN edge (`{client_ip}` differs from the peer): Cloudflare ignores `Vary: Accept`
+and would cache one format for everyone. Sites behind a pull zone get no negotiation for the same
+reason.
+
+- Conversion is PHP + GD in the site's container, as the site user under the cron jail
+  (`image-convert.php`): EXIF orientation applied the way WordPress does (browsers rotate the original;
+  GD would drop it), alpha kept, CMYK and animated images skipped, pictures over 16 megapixels skipped
+  (memory). A copy that isn't smaller isn't kept. A copy carries its original's mtime, so a replaced
+  original (SFTP, restore) is converted again.
+- New uploads: `wp_generate_attachment_metadata` schedules a cron event that converts every size
+  (AVIF takes a second or more per size, too slow for the upload request). Deleting an image deletes its
+  copies (`wp_delete_file`).
+- Existing files: turning it on (or *Convert now*) runs `convert-images.php` over the uploads as a job,
+  niced (visitors share the container's CPU), without loading WordPress; it also removes copies whose
+  original is gone or whose format was turned off. The nightly maintenance queues it again (a job, at
+  most 20 minutes a night: it holds a heavy slot the night's backups share) for files that arrived
+  another way.
+
+Lazy-loading is WordPress core's (`loading="lazy"`, `fetchpriority` on the likely largest image);
+nothing in WPGenie removes it.
+
 The cache code lives read-only in the image (`/usr/local/share/wpgenie`); sites only get one-line
 wrappers. A compromised plugin can't alter the cache logic, and an image upgrade updates it
 everywhere. The daemon writes those wrappers as root into a directory the site controls, so all
 such file operations go through `os.Root`, which refuses to follow symlinks out of the docroot.
 
-### CDN (Cloudflare)
+### CDN
 
 A site can sit behind Cloudflare's free plan (DNS record proxied). Cloudflare then caches static
 files at its edge, which Caddy marks cacheable only when they exist on disk: images, fonts and media
@@ -337,6 +401,26 @@ HTTPS: an endless redirect.
 Certificates keep working behind the proxy: Caddy falls back to the HTTP-01 challenge, which
 Cloudflare forwards.
 
+**Edge caching of pages (optional).** Cloudflare can keep HTML too. WPGenie adds one Cache Rule per zone
+(Rulesets API, phase `http_request_cache_settings`, found again by its `ref`; the zone's own rules are
+never touched): the site's hostnames, GET/HEAD, none of the page cache's bypass cookies (Cloudflare's
+cache key ignores cookies), edge TTL *bypass by default*: Cloudflare only stores what the origin marks
+cacheable. Caddy marks exactly the page-cache hits, and only device-independent ones, with
+`s-maxage=3600` (`max-age=0` for browsers), so everything PHP renders and every personalised page stays
+uncached, by construction rather than by a second list of exceptions. A page is at most 10 h old in
+the page cache plus 1 h at the edge: still inside the nonce lifetime. Purges already cover the hostnames.
+The rule follows domain changes (checked every CDN pass). The price: edge hits skip the shield and the
+statistics. The token needs *Zone → Cache Rules: Edit* too.
+
+**Pull zones.** A site can instead keep its own DNS and send only static files through a pull zone on a
+hostname of its own (`cdn.example.com`): bunny.net (the API key and pull zone ID are checked: the zone
+must answer on that hostname; it's purged with the site, and its origin is checked in the status) or any
+other (no purges: static URLs are versioned or renamed). `cdn.php` rewrites links to the site's files
+under `wp-content` and `wp-includes` in front-end HTML (attributes, `srcset`, CSS `url()`; never `.php`,
+another host or JSON-escaped links) inside the page cache's buffer, so cached pages carry them; changing
+the hostname purges the page cache. Fonts get `Access-Control-Allow-Origin: *`, which browsers require
+from another origin.
+
 ### Cron
 
 New sites set `DISABLE_WP_CRON`; the daemon runs every active site's due events each minute
@@ -344,6 +428,29 @@ New sites set `DISABLE_WP_CRON`; the daemon runs every active site's due events 
 rather than WP-CLI because it executes plugin code: `PHP_INI_SCAN_DIR` adds `jail.ini`, the same
 `open_basedir` / `disable_functions` jail as web requests. Containers from an older image have no
 jail and are skipped; WordPress's own page-view cron keeps working for them.
+
+## Performance insights
+
+Per site, over a chosen period: PHP response times (median, 95th and 99th percentile, a histogram),
+the page cache hit rate, the slowest URLs and PHP errors.
+
+- **Response times** come from Caddy's access log, which the analytics ingester already reads: requests
+  PHP answered (not cache hits, static files, shield blocks or Caddy's own answers), in the same
+  transaction as the traffic counters. Durations are what the visitor waited, a queue for a worker
+  included. Hourly rows hold a histogram (fixed buckets, 50 ms to 10 s), so percentiles over any range
+  are merged exactly rather than averaged. URLs taking a second or more are grouped by method and path
+  (no query string) with count, average and slowest: the 500 most recent per site (anyone can make up
+  slow URLs), for 7 days.
+- **PHP errors** go to the site's own log, `logs/php-error.log` next to `wp-config.php` (FPM's
+  `error_log`, and the cron jail's; the directory is the site user's, Caddy can't read it). The daemon
+  reads it every 30 s through `os.Root`, with one non-blocking open checked against what `Lstat` saw
+  (the site can swap the file for a symlink or a named pipe at any moment; neither steers or stalls the
+  daemon), reading and truncating only through that handle. It groups entries by
+  level, message and file:line, and attributes each to a plugin, theme, mu-plugin or core by its path;
+  for an error inside WordPress, by the first plugin or theme in its stack trace. The read offset is
+  saved with the counts in one transaction, and the file is truncated once read past 8 MB. The newest
+  300 kinds per site are kept, for 30 days since last seen. A slowlog with stack traces isn't possible:
+  FPM needs ptrace for it, which the containers don't have.
 
 ## WordPress updates and security scans
 
@@ -582,6 +689,7 @@ The code has explicit seams for going multi-server:
 /var/lib/wpgenie/wpgenie.db       panel state
 /var/lib/wpgenie/sites/<id>/      root:82 0751; wp-config.php (root:82 0640)
 /var/lib/wpgenie/sites/<id>/public/   WordPress (82:82)
+/var/lib/wpgenie/sites/<id>/logs/     PHP's error log (82:82 0750; read by the daemon)
 /var/lib/wpgenie/sites.nosymfollow/   read-only, symlink-free view of sites/ (Caddy's only view)
 /var/lib/wpgenie/caddy/           certificates (owned by wpgenie-caddy)
 /var/lib/wpgenie/mariadb/         databases

@@ -37,7 +37,14 @@ type Site struct {
 	Replicas    int        `json:"replicas"`
 	PageCache   bool       `json:"page_cache"`
 	ObjectCache bool       `json:"object_cache"`
-	Upstreams   []int      `json:"upstream_ports"`
+	// CacheMobile stores every page as separate mobile and desktop copies
+	// (themes that detect phones themselves); otherwise only pages that ask
+	// wp_is_mobile() get them.
+	CacheMobile bool  `json:"cache_mobile"`
+	Upstreams   []int `json:"upstream_ports"`
+	// ImageFormats are the formats uploads are converted to and served in
+	// ("avif", "webp"); empty: off.
+	ImageFormats []string `json:"image_formats"`
 	// Shield: request inspection, and IP networks (normalised prefixes).
 	WAF        bool     `json:"waf"`
 	AdminAllow []string `json:"admin_allow"`
@@ -67,6 +74,11 @@ type Site struct {
 	MinReplicas int  `json:"min_replicas"`
 	MaxReplicas int  `json:"max_replicas"`
 	TargetCPU   int  `json:"target_cpu"`
+	// TargetWorkers (percent of PHP workers busy, queued requests included)
+	// and TargetResponseMS (95th percentile of PHP response times) also
+	// drive autoscaling; 0 turns either off.
+	TargetWorkers    int `json:"target_workers"`
+	TargetResponseMS int `json:"target_response_ms"`
 	// AutoUpdate is the nightly WordPress update policy: off, security or all.
 	AutoUpdate string `json:"auto_update"`
 	// SMTP: WordPress sends its mail through the WPGenie mail server.
@@ -87,7 +99,8 @@ const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, stat
 	memory_mb, cpus, replicas, page_cache, object_cache, waf, admin_allow, trusted_ips,
 	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp,
 	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
-	country_mode, countries, country_action, body_waf, parent_id, php_settings, created_at, updated_at`
+	country_mode, countries, country_action, body_waf, parent_id, php_settings,
+	cache_mobile, image_formats, target_workers, target_response_ms, created_at, updated_at`
 
 // PHPSettings are per-site PHP limits. Zero means the image default
 // (images/php/php.ini).
@@ -101,12 +114,13 @@ type PHPSettings struct {
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated int64
-	var adminAllow, trusted, deny, countries, php string
+	var adminAllow, trusted, deny, countries, php, images string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
 		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
-		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php, &created, &updated)
+		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php,
+		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -115,6 +129,7 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	}
 	s.AdminAllow, s.TrustedIPs, s.DenyIPs = splitList(adminAllow), splitList(trusted), splitList(deny)
 	s.Countries = splitList(countries)
+	s.ImageFormats = splitList(images)
 	if err := json.Unmarshal([]byte(php), &s.PHP); err != nil {
 		return nil, err
 	}
@@ -164,7 +179,7 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 37)+`?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 41)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
@@ -172,7 +187,8 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 		site.Autoscale, site.MinReplicas, site.MaxReplicas, site.TargetCPU, site.AutoUpdate, site.SMTP,
 		site.XMLRPC, site.RateRPS, site.RateBurst, site.LoginPerMin, site.ChallengeBits,
 		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
-		site.CountryAction, site.BodyWAF, site.ParentID, string(php), now, now)
+		site.CountryAction, site.BodyWAF, site.ParentID, string(php),
+		site.CacheMobile, strings.Join(site.ImageFormats, ","), site.TargetWorkers, site.TargetResponseMS, now, now)
 	if err != nil {
 		return err
 	}
@@ -412,9 +428,14 @@ func (s *Store) SetResources(ctx context.Context, id string, memoryMB int, cpus 
 		memoryMB, cpus, replicas, time.Now().Unix(), id)
 }
 
-func (s *Store) SetCache(ctx context.Context, id string, page, object bool) error {
-	return s.exec1(ctx, `UPDATE sites SET page_cache = ?, object_cache = ?, updated_at = ? WHERE id = ?`,
-		page, object, time.Now().Unix(), id)
+func (s *Store) SetCache(ctx context.Context, id string, page, object, mobile bool) error {
+	return s.exec1(ctx, `UPDATE sites SET page_cache = ?, object_cache = ?, cache_mobile = ?, updated_at = ? WHERE id = ?`,
+		page, object, mobile, time.Now().Unix(), id)
+}
+
+func (s *Store) SetImageFormats(ctx context.Context, id string, formats []string) error {
+	return s.exec1(ctx, `UPDATE sites SET image_formats = ?, updated_at = ? WHERE id = ?`,
+		strings.Join(formats, ","), time.Now().Unix(), id)
 }
 
 func (s *Store) SetSiteStatus(ctx context.Context, id string, st SiteStatus) error {
@@ -459,9 +480,10 @@ func (s *Store) SetShield(ctx context.Context, id string, c ShieldSettings) erro
 		c.CountryMode, strings.Join(c.Countries, ","), c.CountryAction, c.BodyWAF, time.Now().Unix(), id)
 }
 
-func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU int) error {
+func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU, targetWorkers, targetMS int) error {
 	return s.exec1(ctx, `UPDATE sites SET autoscale = ?, min_replicas = ?, max_replicas = ?, target_cpu = ?,
-		updated_at = ? WHERE id = ?`, on, minR, maxR, targetCPU, time.Now().Unix(), id)
+		target_workers = ?, target_response_ms = ?, updated_at = ? WHERE id = ?`,
+		on, minR, maxR, targetCPU, targetWorkers, targetMS, time.Now().Unix(), id)
 }
 
 func (s *Store) SetPHP(ctx context.Context, id, version string, settings PHPSettings) error {

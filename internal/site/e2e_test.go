@@ -30,98 +30,11 @@ func (okProber) Probe(context.Context, string) Health { return Health{Checked: t
 // TestEnvironmentsEndToEnd runs Phase 2 against real WordPress, MariaDB
 // and restic: create, back up, break, restore; stage, change staging, push;
 // switch the primary domain; restore a backup as a new site; switch PHP.
-// It needs Docker, the wpgenie/php:8.3 and :8.4 images, and to run on a
-// Docker network it shares with the database (see CONTRIBUTING: the test
-// container is started with E2E_NET).
+// It needs the wpgenie/php:8.3 and :8.4 images (see newE2E).
 func TestEnvironmentsEndToEnd(t *testing.T) {
-	net := os.Getenv("E2E_NET")
-	if os.Getenv("WPGENIE_TEST_E2E") != "1" || net == "" || os.Geteuid() != 0 {
-		t.Skip("set WPGENIE_TEST_E2E=1 and E2E_NET, run as root in a container on that network")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	const dbName, dbPass = "wpgt-e2e-db", "e2e-root-pw"
-	docker := &runtime.Docker{}
-	docker.Run(ctx, nil, "rm", "-f", dbName)
-	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", dbName, "--network", net,
-		"-e", "MARIADB_ROOT_PASSWORD="+dbPass, "mariadb:11.4"); err != nil {
-		t.Fatal(err)
-	}
-	defer docker.Run(context.Background(), nil, "rm", "-f", dbName)
-	dsn := "root:" + dbPass + "@tcp(" + dbName + ":3306)/"
-	raw, _ := sql.Open("mysql", dsn)
-	defer raw.Close()
-	for i := 0; raw.PingContext(ctx) != nil; i++ {
-		if i > 60 {
-			t.Fatal("MariaDB didn't start")
-		}
-		time.Sleep(time.Second)
-	}
-	db, err := dbprov.Open(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	cfg := config.Default()
-	cfg.DataDir = t.TempDir()
-	os.Chmod(cfg.DataDir, 0o755)
-	cfg.DockerNetwork, cfg.MariaDBHost, cfg.SitePortBase = net, dbName, 29000
-	cfg.CaddyfilePath = filepath.Join(cfg.DataDir, "caddy", "Caddyfile")
-	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	log := slog.New(slog.DiscardHandler)
-	if testing.Verbose() {
-		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
-	}
-	svc := &Service{Cfg: cfg, Store: st, Runtime: docker, DB: db, Log: log,
-		Dumper: &runtime.MariaDB{Container: dbName, Password: dbPass},
-		Proxy:  &fakeProxy{log: &[]string{}}, Cache: fakeCache{&[]string{}}, Prober: okProber{},
-		Jobs: &jobs.Queue{Store: st, Log: log},
-		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
-			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},
-		Images: docker, Version: "test"}
-	os.MkdirAll(filepath.Join(cfg.DataDir, "backups", "cache"), 0o700)
-	defer func() {
-		sites, _ := st.ListSites(context.Background())
-		for _, s := range sites {
-			docker.RemoveSite(context.Background(), s.ID)
-		}
-	}()
-
-	wp := func(id string, args ...string) string {
-		t.Helper()
-		var out bytes.Buffer
-		if err := docker.Exec(ctx, id, nil, &out, runtime.WPArgs(args...)...); err != nil {
-			t.Fatalf("wp %v on %s: %v", args, id, err)
-		}
-		return strings.TrimSpace(out.String())
-	}
-	sh := func(id, script string) string {
-		t.Helper()
-		var out bytes.Buffer
-		if err := docker.Exec(ctx, id, nil, &out, "sh", "-c", "cd "+cfg.SiteRoot(id)+" && "+script); err != nil {
-			t.Fatalf("sh %q on %s: %v", script, id, err)
-		}
-		return strings.TrimSpace(out.String())
-	}
-	wait := func(id int64, err error) *store.Job {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-		j, err := svc.Jobs.WaitJob(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if j.Status != store.JobSucceeded {
-			t.Fatalf("job %s failed at %d%% (%s): %s", j.Kind, j.Progress, j.Step, j.Error)
-		}
-		return j
-	}
+	e := newE2E(t)
+	ctx, svc, st, docker, raw, db := e.ctx, e.svc, e.st, e.docker, e.raw, e.db
+	wp, sh, wait := e.wp, e.sh, e.wait
 	titles := func(id string) []string {
 		return strings.Split(wp(id, "post", "list", "--post_type=post", "--field=post_title"), "\n")
 	}
@@ -270,6 +183,128 @@ func TestEnvironmentsEndToEnd(t *testing.T) {
 	if all, err := svc.RepoBackups(ctx, LocalRepoID); err != nil || len(all) < 3 {
 		t.Fatalf("repository after deletes: %d %v", len(all), err)
 	}
+}
+
+// e2e is a real WordPress environment: MariaDB in a container on E2E_NET,
+// sites as real PHP containers, jobs, restic.
+type e2e struct {
+	t      *testing.T
+	ctx    context.Context
+	svc    *Service
+	st     *store.Store
+	docker *runtime.Docker
+	raw    *sql.DB
+	db     *dbprov.MariaDB
+}
+
+// newE2E needs Docker, the wpgenie/php images, and to run on a Docker
+// network it shares with the database (see the Makefile's test-e2e: the test
+// container is started with E2E_NET).
+func newE2E(t *testing.T) *e2e {
+	t.Helper()
+	net := os.Getenv("E2E_NET")
+	if os.Getenv("WPGENIE_TEST_E2E") != "1" || net == "" || os.Geteuid() != 0 {
+		t.Skip("set WPGENIE_TEST_E2E=1 and E2E_NET, run as root in a container on that network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	t.Cleanup(cancel)
+	dbName, dbPass := "wpgt-db-"+strings.ToLower(t.Name()), "e2e-root-pw"
+	docker := &runtime.Docker{}
+	docker.Run(ctx, nil, "rm", "-f", dbName)
+	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", dbName, "--network", net,
+		"-e", "MARIADB_ROOT_PASSWORD="+dbPass, "mariadb:11.4"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Run(context.Background(), nil, "rm", "-f", dbName) })
+	dsn := "root:" + dbPass + "@tcp(" + dbName + ":3306)/"
+	raw, _ := sql.Open("mysql", dsn)
+	t.Cleanup(func() { raw.Close() })
+	for i := 0; raw.PingContext(ctx) != nil; i++ {
+		if i > 60 {
+			t.Fatal("MariaDB didn't start")
+		}
+		time.Sleep(time.Second)
+	}
+	db, err := dbprov.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// The object cache, as on a server: without it WordPress's cron runs one
+	// event per pass (it re-reads its lock from the cache, skipping the
+	// in-request copy).
+	valkey := "wpgt-valkey-" + strings.ToLower(t.Name())
+	docker.Run(ctx, nil, "rm", "-f", valkey)
+	if _, err := docker.Run(ctx, nil, "run", "-d", "--name", valkey, "--network", net, "valkey/valkey:8-alpine",
+		"valkey-server", "--save", "", "--appendonly", "no"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Run(context.Background(), nil, "rm", "-f", valkey) })
+
+	cfg := config.Default()
+	cfg.RedisHost = valkey
+	cfg.DataDir = t.TempDir()
+	os.Chmod(cfg.DataDir, 0o755)
+	cfg.DockerNetwork, cfg.MariaDBHost, cfg.SitePortBase = net, dbName, 29000
+	cfg.CaddyfilePath = filepath.Join(cfg.DataDir, "caddy", "Caddyfile")
+	st, err := store.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	log := slog.New(slog.DiscardHandler)
+	if testing.Verbose() {
+		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	svc := &Service{Cfg: cfg, Store: st, Runtime: docker, DB: db, Log: log,
+		Dumper: &runtime.MariaDB{Container: dbName, Password: dbPass},
+		Proxy:  &fakeProxy{log: &[]string{}}, Cache: fakeCache{&[]string{}}, Prober: okProber{},
+		Jobs: &jobs.Queue{Store: st, Log: log},
+		Backups: &backup.Restic{Docker: docker, Image: cfg.ResticImage,
+			CacheDir: filepath.Join(cfg.DataDir, "backups", "cache")},
+		Images: docker, Version: "test"}
+	os.MkdirAll(filepath.Join(cfg.DataDir, "backups", "cache"), 0o700)
+	t.Cleanup(func() {
+		sites, _ := st.ListSites(context.Background())
+		for _, s := range sites {
+			docker.RemoveSite(context.Background(), s.ID)
+		}
+	})
+	return &e2e{t: t, ctx: ctx, svc: svc, st: st, docker: docker, raw: raw, db: db}
+}
+
+func (e *e2e) wp(id string, args ...string) string {
+	e.t.Helper()
+	var out bytes.Buffer
+	if err := e.docker.Exec(e.ctx, id, nil, &out, runtime.WPArgs(args...)...); err != nil {
+		e.t.Fatalf("wp %v on %s: %v", args, id, err)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func (e *e2e) sh(id, script string) string {
+	e.t.Helper()
+	var out bytes.Buffer
+	if err := e.docker.Exec(e.ctx, id, nil, &out, "sh", "-c", "cd "+e.svc.Cfg.SiteRoot(id)+" && "+script); err != nil {
+		e.t.Fatalf("sh %q on %s: %v", script, id, err)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func (e *e2e) wait(id int64, err error) *store.Job {
+	e.t.Helper()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	j, err := e.svc.Jobs.WaitJob(e.ctx, id)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if j.Status != store.JobSucceeded {
+		e.t.Fatalf("job %s failed at %d%% (%s): %s", j.Kind, j.Progress, j.Step, j.Error)
+	}
+	return j
 }
 
 func mustSite(t *testing.T, st *store.Store, id string) *store.Site {

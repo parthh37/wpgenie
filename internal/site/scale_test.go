@@ -29,6 +29,7 @@ type fakeRuntime struct {
 	busy       map[string]int // replica -> polls that still report a request
 	onBusy     func()
 	cpu        map[string]float64
+	fpm        map[string]runtime.FPMLoad
 	// exec simulates commands run with Exec (see fakeWP in updates_test.go).
 	exec func(args []string, stdin io.Reader, stdout io.Writer) error
 	// onStart sees the image of every replica started; lastSpec is the
@@ -106,6 +107,16 @@ func (f *fakeRuntime) CPUUsage(context.Context) (map[string]float64, error) {
 	out := map[string]float64{}
 	for name, c := range f.containers {
 		if v, ok := f.cpu[name]; ok && c.Running {
+			out[name] = v
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRuntime) FPMLoad(context.Context) (map[string]runtime.FPMLoad, error) {
+	out := map[string]runtime.FPMLoad{}
+	for name, c := range f.containers {
+		if v, ok := f.fpm[name]; ok && c.Running {
 			out[name] = v
 		}
 	}
@@ -522,7 +533,7 @@ func TestPurgeFlushesOnlyThisSitesKeys(t *testing.T) {
 	if len(*h.flushed) != 0 {
 		t.Errorf("object cache off: nothing to flush, got %v", *h.flushed)
 	}
-	h.svc.Store.SetCache(ctx, "s1", false, true)
+	h.svc.Store.SetCache(ctx, "s1", false, true, false)
 	if err := h.svc.Purge(ctx, "s1"); err != nil {
 		t.Fatal(err)
 	}

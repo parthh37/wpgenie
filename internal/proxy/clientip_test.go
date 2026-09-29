@@ -70,23 +70,32 @@ func TestShieldSeesVisitorBehindCloudflare(t *testing.T) {
 
 func startClientIPCaddy(t *testing.T, trusted netip.Prefix) string {
 	t.Helper()
-	dir := t.TempDir()
-	root := filepath.Join(dir, "public")
-	for name, body := range map[string]string{
+	return startSiteCaddy(t, trusted, Site{ID: "sa", Name: "A", ShieldEnabled: true}, map[string]string{
 		"wp-content/themes/t/style.css": "body{}",
 		"wp-content/uploads/pic.png":    "png",
-	} {
+	}, "/wp-content/uploads/pic.png")
+}
+
+// startSiteCaddy runs site (served as http://a.test:8080 from /srv/public, with
+// PHP on a dead upstream) in a real Caddy, with files under the docroot and
+// a stand-in shield on :8088 that answers 403 with the X-Forwarded-For it
+// got. It returns the base URL once ready (a GET of readyPath gives 200).
+func startSiteCaddy(t *testing.T, trusted netip.Prefix, site Site, files map[string]string, readyPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "public")
+	for name, body := range files {
 		p := filepath.Join(root, name)
 		os.MkdirAll(filepath.Dir(p), 0o755)
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	site.Domains, site.Root, site.Upstreams = []string{"http://a.test:8080"}, "/srv/public", []string{"127.0.0.1:1"}
 	out, err := NewCaddy(Config{
 		AdminURL: "http://127.0.0.1:2019", ShieldUpstream: "127.0.0.1:8088", AccessLog: "/tmp/access.log",
 		CloudflareRanges: func() []netip.Prefix { return []netip.Prefix{trusted} },
-	}).Render([]Site{{ID: "sa", Name: "A", Domains: []string{"http://a.test:8080"}, Root: "/srv/public",
-		Upstreams: []string{"127.0.0.1:1"}, ShieldEnabled: true}})
+	}).Render([]Site{site})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +118,7 @@ func startClientIPCaddy(t *testing.T, trusted netip.Prefix) string {
 	for time.Now().Before(deadline) {
 		if a, err := exec.Command("docker", "port", cid, "8080/tcp").Output(); err == nil && len(a) > 0 {
 			base := "http://" + strings.TrimSpace(strings.SplitN(string(a), "\n", 2)[0])
-			if code, _ := tryGet(base, "a.test", "/wp-content/uploads/pic.png"); code == 200 {
+			if code, _ := tryGet(base, "a.test", readyPath); code == 200 {
 				return base
 			}
 		}

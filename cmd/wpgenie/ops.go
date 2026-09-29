@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,26 +19,30 @@ import (
 
 func autoscaleCmd(cfg *config.Config, args []string) error {
 	var on, off bool
-	st, err := siteFlags(cfg, args, "usage: wpgenie site autoscale <site-id> [--on|--off] [--min N] [--max N] [--target PCT]",
+	st, err := siteFlags(cfg, args, "usage: wpgenie site autoscale <site-id> [--on|--off] [--min N] [--max N] [--target PCT]\n"+
+		"  [--target-workers PCT] [--target-ms MS]  (0 turns a metric off)",
 		func(fs *flag.FlagSet, st *store.Site) {
 			fs.BoolVar(&on, "on", false, "turn autoscaling on")
 			fs.BoolVar(&off, "off", false, "turn autoscaling off")
 			fs.IntVar(&st.MinReplicas, "min", st.MinReplicas, "fewest replicas")
 			fs.IntVar(&st.MaxReplicas, "max", st.MaxReplicas, "most replicas")
 			fs.IntVar(&st.TargetCPU, "target", st.TargetCPU, "target CPU use per replica, percent")
+			fs.IntVar(&st.TargetWorkers, "target-workers", st.TargetWorkers, "target PHP workers busy (queued requests included), percent; 0: off")
+			fs.IntVar(&st.TargetResponseMS, "target-ms", st.TargetResponseMS, "target 95th percentile PHP response time, ms; 0: off")
 		})
 	if err != nil {
 		return err
 	}
 	enabled := (st.Autoscale || on) && !off
 	var out store.Site
-	in := site.AutoscaleSettings{Enabled: enabled, MinReplicas: st.MinReplicas, MaxReplicas: st.MaxReplicas, TargetCPU: st.TargetCPU}
+	in := site.AutoscaleSettings{Enabled: enabled, MinReplicas: st.MinReplicas, MaxReplicas: st.MaxReplicas, TargetCPU: st.TargetCPU,
+		TargetWorkers: st.TargetWorkers, TargetResponseMS: st.TargetResponseMS}
 	if err := call(cfg, "PUT", "/sites/"+st.ID+"/autoscale", in, &out); err != nil {
 		return err
 	}
 	if out.Autoscale {
-		fmt.Printf("Site %s autoscales between %d and %d replicas at %d%% CPU (now %d).\n",
-			out.ID, out.MinReplicas, out.MaxReplicas, out.TargetCPU, out.Replicas)
+		fmt.Printf("Site %s autoscales between %d and %d replicas at %d%% CPU, %d%% workers, %d ms (0: off; now %d).\n",
+			out.ID, out.MinReplicas, out.MaxReplicas, out.TargetCPU, out.TargetWorkers, out.TargetResponseMS, out.Replicas)
 	} else {
 		fmt.Printf("Site %s: autoscaling off, %d replica(s).\n", out.ID, out.Replicas)
 	}
@@ -183,11 +186,17 @@ func siteOpsCmd(cfg *config.Config, op string, args []string) error {
 		return nil
 	case "cdn":
 		return cdnCmd(cfg, id, args[1:])
+	case "images":
+		return imagesCmd(cfg, args)
+	case "insights":
+		return insightsCmd(cfg, args)
 	}
 	return nil
 }
 
 func cdnCmd(cfg *config.Config, id string, args []string) error {
+	const usage = "usage: wpgenie site cdn <site-id> [status | cloudflare [--edge-html on|off] | bunny <pull-zone-id> <cdn-host>\n" +
+		"  | generic <cdn-host> | off | purge]"
 	sub := "status"
 	if len(args) > 0 {
 		sub = args[0]
@@ -199,14 +208,38 @@ func cdnCmd(cfg *config.Config, id string, args []string) error {
 			return err
 		}
 	case "cloudflare":
-		// On stdin, never argv: command lines are visible to every user in ps.
-		fmt.Fprintln(os.Stderr, "Cloudflare API token (Zone: Read, Cache Purge: Purge, optionally Zone Settings: Read):")
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			return errors.New("no token on stdin")
+		fs := flag.NewFlagSet("cdn", flag.ContinueOnError)
+		var edge onOff
+		fs.Var(&edge, "edge-html", "Cloudflare keeps cached pages too (needs Cache Rules: Edit)")
+		if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 {
+			return errors.New(usage)
 		}
-		in := site.CDNInput{Provider: "cloudflare", APIToken: strings.TrimSpace(line)}
+		token, err := readSecret("Cloudflare API token (Zone: Read, Cache Purge: Purge, optionally Zone Settings: Read;\n" +
+			"Cache Rules: Edit for --edge-html on); empty keeps the stored one:")
+		if err != nil {
+			return err
+		}
+		in := site.CDNInput{Provider: "cloudflare", APIToken: token, EdgeHTML: bool(edge)}
 		if err := call(cfg, "PUT", "/sites/"+id+"/cdn", in, &st); err != nil {
+			return err
+		}
+	case "bunny":
+		if len(args) != 3 {
+			return errors.New(usage)
+		}
+		key, err := readSecret("bunny.net API key (Account settings → API); empty keeps the stored one:")
+		if err != nil {
+			return err
+		}
+		in := site.CDNInput{Provider: "bunny", APIToken: key, PullZone: args[1], AssetHost: args[2]}
+		if err := call(cfg, "PUT", "/sites/"+id+"/cdn", in, &st); err != nil {
+			return err
+		}
+	case "generic":
+		if len(args) != 2 {
+			return errors.New(usage)
+		}
+		if err := call(cfg, "PUT", "/sites/"+id+"/cdn", site.CDNInput{Provider: "generic", AssetHost: args[1]}, &st); err != nil {
 			return err
 		}
 	case "off":
@@ -220,7 +253,7 @@ func cdnCmd(cfg *config.Config, id string, args []string) error {
 		fmt.Println("CDN cache purged.")
 		return nil
 	default:
-		return errors.New("usage: wpgenie site cdn <site-id> [status|cloudflare|off|purge]")
+		return errors.New(usage)
 	}
 	return printJSON(st)
 }

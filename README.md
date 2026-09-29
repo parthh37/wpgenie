@@ -41,12 +41,13 @@ with one command.
 | 🐘 | PHP 8.2 / 8.3 / 8.4 per site (health-checked, switched back if the site breaks), per-site PHP limits | ✅ |
 | 📂 | Per-site **SFTP** (chrooted, keys or password) and **Adminer** on demand (one-time link, temporary DB account) | ✅ |
 | ⏳ | Job queue: long operations run in the background with progress in the dashboard and CLI | ✅ |
-| ⚡ | Full-page cache served by Caddy, Redis object cache, system cron | ✅ |
+| ⚡ | Full-page cache served by Caddy (Brotli/gzip precompressed, mobile copies when a theme needs them, admin-bar purge), Redis object cache, system cron | ✅ |
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
-| 🌡️ | **CPU autoscaling**: replicas follow traffic between a min and max, capped by server memory | ✅ |
+| 🌡️ | **Autoscaling**: replicas follow CPU, busy PHP workers (queued requests included) and response times, between a min and max, capped by server memory | ✅ |
+| 🖼️ | **Image optimisation**: AVIF/WebP copies of uploads, served at the same URL to browsers that accept them | ✅ |
+| 🔬 | **Performance insights**: response time percentiles, cache hit rate, slowest URLs, PHP errors by plugin/theme | ✅ |
 | ✉️ | **Mail**: mailboxes & aliases (docker-mailserver: Postfix, Dovecot, Rspamd), Roundcube webmail, automatic DKIM, DNS checks, WordPress mail via SMTP, outbound relay | ✅ |
-| 🌍 | **Free CDN (Cloudflare)**: real visitor IPs behind the proxy, automatic cache purges, SSL/DNS checks, cache headers on static files | ✅ |
-| 🖼️ | Image optimisation | 🚧 Phase 3 |
+| 🌍 | **CDN**: Cloudflare (real visitor IPs, automatic purges, optional edge caching of pages, SSL/DNS checks) or a bunny.net / any pull zone for static files | ✅ |
 | 🌐 | Multi-server clusters | 🚧 Phase 5 |
 
 ## Install
@@ -76,11 +77,19 @@ wpgenie site cache <site-id> --page on --object on
 wpgenie site purge <site-id>
 ```
 
-Or let it scale itself: replicas are added when CPU use passes the target and removed after five
-quiet minutes:
+Or let it scale itself: replicas are added when CPU use, busy PHP workers (waiting requests
+included) or response times pass their targets, and removed after five quiet minutes:
 
 ```bash
-wpgenie site autoscale <site-id> --on --min 1 --max 4 --target 70
+wpgenie site autoscale <site-id> --on --min 1 --max 4 --target 70 --target-workers 80 --target-ms 800
+```
+
+Make it lighter and see where time goes:
+
+```bash
+wpgenie site images <site-id> avif,webp        # AVIF/WebP copies of uploads, same URLs
+wpgenie site insights <site-id>                # response times, cache hit rate, slow URLs, PHP errors
+wpgenie site cdn <site-id> bunny 12345 cdn.example.com   # static files from a pull zone (API key on stdin)
 ```
 
 Keep WordPress patched. Every update takes a snapshot first and is rolled back automatically if the
