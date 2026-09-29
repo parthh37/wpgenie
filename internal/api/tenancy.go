@@ -70,6 +70,7 @@ var tenantRoutes = map[string]tenantRule{
 	"GET /api/v1/usage":                                anyTenant,
 	"GET /api/v1/plans":                                anyTenant,
 	"GET /api/v1/php":                                  anyTenant,
+	"GET /api/v1/dns-check":                            anyTenant, // public DNS; no server names
 	"GET /api/v1/security/events":                      anyTenant, // filtered to their sites
 	"GET /api/v1/jobs":                                 anyTenant, // filtered to their sites and jobs
 	"GET /api/v1/jobs/{id}":                            anyTenant,
@@ -113,6 +114,7 @@ var tenantRoutes = map[string]tenantRule{
 	"POST /api/v1/sites/{id}/plugins":                         anyTenant,
 	"GET /api/v1/sites/{id}/plugins":                          anyTenant,
 	"GET /api/v1/sites/{id}/tables":                           anyTenant,
+	"GET /api/v1/sites/{id}/dns-check":                        anyTenant,
 	"POST /api/v1/sites/{id}/domains":                         anyTenant, // within the plan
 	"PUT /api/v1/sites/{id}/domains/{domain}":                 anyTenant,
 	"DELETE /api/v1/sites/{id}/domains/{domain}":              anyTenant,

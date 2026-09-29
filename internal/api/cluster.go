@@ -51,6 +51,7 @@ var notForwarded = map[string]bool{
 	"POST /api/v1/sites/{id}/move/finish": true,
 	"PUT /api/v1/sites/{id}/spread":       true,
 	"POST /api/v1/sites/{id}/domains":     true,
+	"GET /api/v1/sites/{id}/dns-check":    true,
 	// Plan checks for tenants run here first (then forwardAfterChecks).
 	"PUT /api/v1/sites/{id}/autoscale":      true,
 	"PUT /api/v1/sites/{id}/resources":      true,

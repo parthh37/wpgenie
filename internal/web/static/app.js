@@ -647,29 +647,7 @@ function init() {
     } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
   $('#logout').addEventListener('click', signOut);
-  $('#new-site-btn').addEventListener('click', () => { $('#new-site').hidden = false; $('#new-site').domain.focus(); });
-  $('#cancel-new').addEventListener('click', () => { $('#new-site').hidden = true; });
-  $('#new-site').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.target, btn = $('button[type=submit]', form);
-    const body = Object.fromEntries(new FormData(form));
-    btn.disabled = true;
-    try {
-      // Provisioning runs as a job (progress in the jobs tray); the
-      // credentials come with it when it's done.
-      const res = await api('POST', '/sites', body);
-      form.reset();
-      form.hidden = true;
-      notify(`Creating ${res.site.primary_domain}: progress is in the jobs panel`);
-      followJob(res.job_id, async (v) => {
-        if (v.secret) showCredentials(res.site, v.secret, res.job_id);
-        else if (v.job.status === 'failed') showError(new Error(`Creating ${res.site.primary_domain} failed: ${v.job.error}`));
-        await load();
-      });
-      await load();
-    } catch (err) { showError(err); }
-    finally { btn.disabled = false; }
-  });
+  $('#new-site-btn').addEventListener('click', () => openNewSiteWizard().catch(showError));
   start();
 }
 

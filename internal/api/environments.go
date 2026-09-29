@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/billing"
+	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
@@ -438,6 +439,55 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, st)
+}
+
+// dnsCheck tells where a domain points before a site is created for it:
+// at the chosen server (admins), or at any server that may get the site.
+func (s *Server) dnsCheck(w http.ResponseWriter, r *http.Request) error {
+	node := r.URL.Query().Get("node")
+	tenant := tenantOf(r) != nil
+	if tenant {
+		node = "" // the provider places tenants' sites
+	}
+	if node == "" && (s.Cluster == nil || !s.Cluster.Enabled()) {
+		node = cluster.LocalNode
+	}
+	res, err := s.Sites.CheckDNS(r.Context(), r.URL.Query().Get("domain"), node)
+	if err != nil {
+		return err
+	}
+	if tenant {
+		res.Server = "" // server names are the provider's business
+	}
+	return writeJSON(w, http.StatusOK, res)
+}
+
+// siteDNSCheck tells whether a domain points at the server a site is on,
+// before it's added to the site. Answered here, not by that server: the
+// control plane knows each server's public address (a server behind NAT
+// doesn't).
+func (s *Server) siteDNSCheck(w http.ResponseWriter, r *http.Request) error {
+	id := r.PathValue("id")
+	node := cluster.LocalNode
+	if s.Cluster != nil {
+		n, remote, err := s.Cluster.SiteNode(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		if remote {
+			node = n
+		}
+	}
+	if node == cluster.LocalNode {
+		if _, err := s.Store.GetSite(r.Context(), id); err != nil {
+			return err
+		}
+	}
+	res, err := s.Sites.CheckDNS(r.Context(), r.URL.Query().Get("domain"), node)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) setDomain(w http.ResponseWriter, r *http.Request) error {

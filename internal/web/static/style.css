@@ -386,6 +386,40 @@ dialog::backdrop { background: rgba(5, 7, 10, .55); backdrop-filter: blur(3px); 
 .modal .actions { margin-top: 1.25rem; }
 .modal .actions button { margin-top: 0; }
 
+/* Wizards (wizard.js): steps, then the DNS check. */
+.modal.wizard { width: min(620px, calc(100vw - 2rem)); }
+.wiz-steps { display: flex; gap: .4rem 1.25rem; flex-wrap: wrap; margin: .35rem 0 1.25rem; padding: 0 0 .9rem; list-style: none; border-bottom: 1px solid var(--line); font-size: .82rem; color: var(--muted); }
+.wiz-steps li { display: flex; align-items: center; gap: .45rem; }
+.wiz-n { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line-2); font-size: .72rem; font-weight: 600; }
+.wiz-steps .current { color: var(--text); font-weight: 600; }
+.wiz-steps .current .wiz-n { background: var(--accent-btn); border-color: var(--accent-btn); color: #fff; }
+.wiz-steps .done .wiz-n { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.wiz-body { min-height: 140px; }
+.wiz-body > div > p { margin: .75rem 0 0; }
+.wiz-gap { margin-top: .9rem; }
+.wiz-choices { display: grid; gap: .5rem; margin-top: 1rem; }
+.wiz-choice { display: flex; align-items: flex-start; gap: .65rem; padding: .7rem .8rem; border: 1px solid var(--line-2); border-radius: var(--r-sm); cursor: pointer; }
+.wiz-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.wiz-choice input { margin-top: .2rem; }
+.wiz-choice > span { display: grid; gap: .15rem; color: var(--text); font-weight: 400; }
+.dns-status { display: flex; align-items: flex-start; gap: .75rem; padding: .8rem .9rem; border-radius: var(--r-sm); border: 1px solid transparent; }
+.dns-status .i { width: 20px; height: 20px; flex: none; margin-top: .1rem; }
+.dns-status p { margin: .2rem 0 0; font-size: .88rem; color: var(--muted); overflow-wrap: anywhere; }
+.dns-ok { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.dns-ok .i { color: var(--ok); }
+.dns-warn { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.dns-warn .i { color: var(--warn); }
+.dns-bad { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.dns-bad .i { color: var(--bad); }
+.dns-check > p { margin: .8rem 0 0; }
+.dns-check table code { font-size: .85rem; }
+.dns-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .9rem; }
+.dns-foot p { margin: 0; }
+.dns-busy::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .5em; vertical-align: -.1em;
+  border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.dom-add { justify-content: flex-start; margin-top: .9rem; }
+
 .palette { width: min(620px, calc(100vw - 2rem)); margin: 12vh auto auto; padding: 0; overflow: hidden; background: var(--panel);
   border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-lg); }
 .palette[open] { animation: pop .16s var(--ease); }

@@ -204,6 +204,8 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/sites/{id}/staging", operator, s.createStaging)
 	r("POST /api/v1/sites/{id}/push", operator, s.pushStaging)
 	r("GET /api/v1/sites/{id}/tables", viewer, s.siteTables)
+	r("GET /api/v1/dns-check", viewer, s.dnsCheck)
+	r("GET /api/v1/sites/{id}/dns-check", viewer, s.siteDNSCheck)
 	r("POST /api/v1/sites/{id}/domains", operator, s.addDomain)
 	r("PUT /api/v1/sites/{id}/domains/{domain}", operator, s.setDomain)
 	r("DELETE /api/v1/sites/{id}/domains/{domain}", operator, s.removeDomain)

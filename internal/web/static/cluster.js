@@ -13,14 +13,9 @@ const clustered = () => NODES.length > 1;
 const nodeName = (id) => (NODES.find((n) => n.id === (id || 'local')) || { name: id }).name;
 const nodeInfo = (n) => { try { return typeof n.info === 'string' ? JSON.parse(n.info) : (n.info || {}); } catch { return {}; } };
 
-// loadNodes refreshes the list the site cards and the create form use.
+// loadNodes refreshes the list the site cards and the create wizard use.
 async function loadNodes() {
   try { NODES = await api('GET', '/nodes'); } catch { NODES = []; }
-  const label = $('#new-site-node');
-  label.hidden = !clustered();
-  const sel = $('select', label);
-  sel.replaceChildren(h('option', { value: '' }, 'Automatic (the server with the most room)'),
-    ...NODES.filter((n) => n.status === 'active' && n.up).map((n) => h('option', { value: n.id }, `${n.name} (${n.id})`)));
 }
 
 function nodeState(n) {
