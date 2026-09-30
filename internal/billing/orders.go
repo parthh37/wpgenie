@@ -272,6 +272,16 @@ func (s *Service) PlaceOrder(ctx context.Context, in OrderInput, ip string, hash
 	if d.promoErr != nil {
 		return nil, fieldErr("promo", "%s", strings.TrimPrefix(d.promoErr.Error(), ErrInvalid.Error()+": "))
 	}
+	if d.promo != nil && d.promo.NewClientsOnly {
+		// Someone with an account already (by e-mail) isn't new.
+		known, err := s.Store.AccountEmailExists(ctx, c.Email)
+		if err != nil {
+			return nil, err
+		}
+		if known {
+			return nil, fieldErr("promo", "that code is for new clients only")
+		}
+	}
 	if d.totals.Total > 0 && !slices.Contains(cfg.methodIDs(), in.Method) {
 		return nil, fieldErr("method", "choose how to pay")
 	}
@@ -447,6 +457,11 @@ func (s *Service) activateOrderLocked(ctx context.Context, o *store.Order) error
 		p.Mode, p.Cycle = ModeInvoice, o.Cycle
 		p.NextDueAt, p.AnchorDay = AddMonths(today, CycleMonths(o.Cycle), today.Day()), today.Day()
 		if err := s.Store.SaveBillingProfile(ctx, p); err != nil {
+			return err
+		}
+		// The order's invoice paid for this first period (a plan change
+		// credits its unused part from it).
+		if err := s.Store.SetInvoicePeriod(ctx, o.InvoiceID, today, p.NextDueAt); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
 		s.mu.Lock()

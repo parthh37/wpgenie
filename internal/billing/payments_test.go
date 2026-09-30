@@ -278,10 +278,19 @@ func TestManualPaymentsCreditAndCancel(t *testing.T) {
 func TestPlanChangeProration(t *testing.T) {
 	e := newInvEnv(t)
 	ctx := context.Background()
-	// Now: Sep 20 12:00; paid until Oct 1 (the period Sep 1 - Oct 1: 30
-	// days, 10.5 unused).
-	e.setting(func(c *InvoicingSettings) { c.Invoice.DaysBeforeDue = 14 })
-	a := e.billed("Acme", "basic", "monthly", day(2026, 10, 1))
+	// Now: Sep 20 12:00; the period Sep 1 - Oct 1 (30 days, 10.5 unused)
+	// is paid.
+	a := e.billed("Acme", "basic", "monthly", day(2026, 9, 1))
+	// Nothing paid for the period yet: nothing to credit.
+	if q, err := e.svc.QuotePlanChange(ctx, a.ID, "pro", "", true); err != nil || q.Credit != 0 {
+		t.Fatalf("credit without a payment: %+v %v", q, err)
+	}
+	e.svc.RunInvoicingOnce(ctx)
+	sept := e.invoices(a.ID)[0]
+	if _, err := e.svc.QuotePlanChange(ctx, a.ID, "pro", "", true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("change with an unpaid renewal: %v", err)
+	}
+	e.svc.RecordPayment(ctx, sept.ID, PaymentInput{Gateway: "bank", Amount: 1000})
 	q, err := e.svc.QuotePlanChange(ctx, a.ID, "pro", "", true)
 	if err != nil || q.Credit != 350 || q.Charge != 1050 || q.Subtotal != 700 || q.Total != 700 ||
 		!q.NewNextDueAt.Equal(day(2026, 10, 1)) || len(q.Items) != 2 || q.Items[1].Amount != -350 {
@@ -298,13 +307,6 @@ func TestPlanChangeProration(t *testing.T) {
 			t.Errorf("%v: %v", bad, err)
 		}
 	}
-	// The renewal already made for the old plan…
-	if _, err := e.svc.RunInvoicingOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if list := e.invoices(a.ID); len(list) != 1 || list[0].Total != 1000 {
-		t.Fatalf("renewal %+v", list)
-	}
 	res, err := e.svc.ChangePlan(ctx, a.ID, "pro", "", true, "jo")
 	if err != nil || res.Invoice == nil || res.Invoice.Total != 700 || res.Invoice.Kind != "plan_change" {
 		t.Fatalf("change %+v %v", res, err)
@@ -312,42 +314,86 @@ func TestPlanChangeProration(t *testing.T) {
 	if acct, _ := e.store.GetAccount(ctx, a.ID); acct.PlanID != "basic" {
 		t.Fatal("switched before payment")
 	}
-	// …is replaced once the change is paid, at the new price.
-	if _, err := e.svc.RecordPayment(ctx, res.Invoice.ID, PaymentInput{Gateway: "bank", Amount: 700}); err != nil {
-		t.Fatal(err)
+	// The October renewal is issued first: the unpaid change's quote is
+	// stale, so it is withdrawn (and can't be asked for again until the
+	// renewal is paid).
+	e.run(day(2026, 9, 24))
+	if got, _ := e.store.GetInvoice(ctx, res.Invoice.ID); got.Status != "cancelled" {
+		t.Fatalf("stale plan change %s", got.Status)
 	}
-	if acct, _ := e.store.GetAccount(ctx, a.ID); acct.PlanID != "pro" {
-		t.Fatalf("plan %s", acct.PlanID)
+	if _, err := e.svc.ChangePlan(ctx, a.ID, "pro", "", true, "jo"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("change with an unpaid renewal: %v", err)
 	}
-	e.svc.RunInvoicingOnce(ctx)
-	var renewals []int64
+	var oct *store.Invoice
 	for _, inv := range e.invoices(a.ID) {
-		if inv.Kind == KindRenewal {
-			renewals = append(renewals, inv.Total)
-			if inv.Status == "unpaid" && inv.Total != 3000 {
-				t.Fatalf("new renewal %+v", inv)
-			}
+		if inv.Kind == KindRenewal && inv.Status == "unpaid" {
+			oct = inv
 		}
 	}
-	if len(renewals) != 2 {
-		t.Fatalf("renewals %v", renewals)
+	e.svc.RecordPayment(ctx, oct.ID, PaymentInput{Gateway: "bank", Amount: 1000})
+	res, err = e.svc.ChangePlan(ctx, a.ID, "pro", "", true, "jo")
+	if err != nil || res.Invoice == nil {
+		t.Fatalf("change after the renewal %+v %v", res, err)
 	}
-	// A downgrade that leaves money over: switched now, the rest to credit.
-	e.now = e.now.Add(24 * time.Hour) // 9.5 days left of 30
-	res, err = e.svc.ChangePlan(ctx, a.ID, "basic", "", true, "jo")
+	// Paid late, after staff moved the next due date on: it never moves
+	// back (no time is billed twice, none is lost).
+	nd := "2026-12-01"
+	e.svc.UpdateProfile(ctx, a.ID, ProfileInput{NextDueAt: &nd})
+	if _, err := e.svc.RecordPayment(ctx, res.Invoice.ID, PaymentInput{Gateway: "bank", Amount: res.Invoice.Total}); err != nil {
+		t.Fatal(err)
+	}
+	prof, _ := e.svc.Profile(ctx, a.ID)
+	if acct, _ := e.store.GetAccount(ctx, a.ID); acct.PlanID != "pro" || !prof.NextDueAt.Equal(day(2026, 12, 1)) {
+		t.Fatalf("after the change: %s, next due %v", acct.PlanID, prof.NextDueAt)
+	}
+}
+
+// The credit for unused time is what was paid for the period (after
+// discounts), not the plan's list price; a new cycle may start earlier than
+// the paid-through date only because that time was credited.
+func TestDowngradeCreditsWhatWasPaid(t *testing.T) {
+	e := newInvEnv(t)
+	ctx := context.Background()
+	half, _ := e.svc.CreatePromotion(ctx, Promotion{Code: "HALF", Type: "percent", Value: 5000, Recurring: true, Enabled: true})
+	a := e.billed("Acme", "pro", "monthly", day(2026, 9, 21))
+	p, _ := e.store.GetBillingProfile(ctx, a.ID)
+	p.PromoID = half.ID
+	e.store.SaveBillingProfile(ctx, p)
+	e.run(day(2026, 9, 20)) // the renewal Sep 21 - Oct 21: 3000 less 50%
+	inv := e.invoices(a.ID)[0]
+	if inv.Total != 1500 {
+		t.Fatalf("renewal %+v", inv)
+	}
+	e.svc.RecordPayment(ctx, inv.ID, PaymentInput{Gateway: "bank", Amount: 1500})
+	e.now = day(2026, 9, 21) // the whole period is unused
+	q, err := e.svc.QuotePlanChange(ctx, a.ID, "basic", "", true)
+	if err != nil || q.Credit != 1500 || q.Charge != 1000 || q.Total != -500 {
+		t.Fatalf("downgrade quote %+v %v", q, err)
+	}
+	res, err := e.svc.ChangePlan(ctx, a.ID, "basic", "", true, "jo")
 	if err != nil || !res.Applied {
 		t.Fatalf("downgrade %+v %v", res, err)
 	}
 	prof, _ := e.svc.Profile(ctx, a.ID)
-	if acct, _ := e.store.GetAccount(ctx, a.ID); acct.PlanID != "basic" || prof.Credit != 950-317 {
-		t.Fatalf("after downgrade: %s, credit %d", acct.PlanID, prof.Credit)
+	if prof.Credit != 500 || !prof.NextDueAt.Equal(day(2026, 10, 21)) {
+		t.Fatalf("after the downgrade: credit %d, next due %v", prof.Credit, prof.NextDueAt)
 	}
-	// Nothing overdue allowed.
-	e.now = day(2026, 10, 3)
-	e.setting(func(c *InvoicingSettings) { c.Automation.AutoApplyCredit = false })
-	e.svc.RunInvoicingOnce(ctx) // the renewal at the basic price, due Oct 1
-	if _, err := e.svc.QuotePlanChange(ctx, a.ID, "pro", "", true); !errors.Is(err, ErrConflict) {
-		t.Fatalf("change with an overdue invoice: %v", err)
+	// To a shorter cycle from a paid year: the unused year is credited, so
+	// the next due date may come back to the new cycle's end.
+	b := e.billed("Bee", "basic", "annually", day(2026, 9, 21))
+	e.run(day(2026, 9, 21))
+	var year *store.Invoice
+	for _, inv := range e.invoices(b.ID) {
+		year = inv
+	}
+	e.svc.RecordPayment(ctx, year.ID, PaymentInput{Gateway: "bank", Amount: year.Total})
+	res, err = e.svc.ChangePlan(ctx, b.ID, "basic", "monthly", true, "jo")
+	if err != nil || !res.Applied {
+		t.Fatalf("to monthly %+v %v", res, err)
+	}
+	prof, _ = e.svc.Profile(ctx, b.ID)
+	if !prof.NextDueAt.Equal(day(2026, 10, 21)) || prof.Credit != 10000-1000 || prof.Cycle != "monthly" {
+		t.Fatalf("to monthly: %+v", prof)
 	}
 }
 

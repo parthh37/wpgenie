@@ -115,7 +115,7 @@ func SelectRules(rules []*store.TaxRule, country, state string) []*store.TaxRule
 // the account is exempt, or it gave a tax ID and that exempts.
 func (s *Service) taxContext(ctx context.Context, cfg *InvoicingSettings, c store.BillingContact, exempt bool) (TaxContext, error) {
 	tc := TaxContext{Inclusive: cfg.Tax.Enabled && cfg.Tax.Inclusive}
-	if !cfg.Tax.Enabled || exempt || (cfg.Tax.ExemptWithTaxID && strings.TrimSpace(c.TaxID) != "") {
+	if !cfg.Tax.Enabled || exempt || ExemptByTaxID(cfg, c) {
 		return tc, nil
 	}
 	rules, err := s.Store.TaxRules(ctx)
@@ -124,6 +124,30 @@ func (s *Service) taxContext(ctx context.Context, cfg *InvoicingSettings, c stor
 	}
 	tc.Rules = SelectRules(rules, c.Country, c.State)
 	return tc, nil
+}
+
+var taxIDRe = regexp.MustCompile(`^[A-Za-z0-9 -]{5,30}$`)
+
+// PlausibleTaxID: 5-30 letters, digits, dashes or spaces, at least 4 of
+// them digits (a VAT or GST number, not "none" or "n/a").
+func PlausibleTaxID(id string) bool {
+	id = strings.TrimSpace(id)
+	if !taxIDRe.MatchString(id) {
+		return false
+	}
+	digits := 0
+	for _, r := range id {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	return digits >= 4
+}
+
+// ExemptByTaxID reports whether a client pays no tax for giving a tax ID
+// (the setting is on, and the ID looks like one).
+func ExemptByTaxID(cfg *InvoicingSettings, c store.BillingContact) bool {
+	return cfg.Tax.Enabled && cfg.Tax.ExemptWithTaxID && PlausibleTaxID(c.TaxID)
 }
 
 // ComputeTotals totals invoice items: the subtotal (everything but

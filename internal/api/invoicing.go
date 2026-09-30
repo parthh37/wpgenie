@@ -385,6 +385,7 @@ func (s *Server) buyBurstPack(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	forClient(r, out.Invoice)
 	return writeJSON(w, http.StatusCreated, out)
 }
 
@@ -483,7 +484,19 @@ func (s *Server) getInvoice(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	forClient(r, inv)
 	return writeJSON(w, http.StatusOK, inv)
+}
+
+// forClient hides from tenants what staff wrote for themselves: payment
+// notes.
+func forClient(r *http.Request, inv *billing.InvoiceDetail) {
+	if tenantOf(r) == nil || inv == nil {
+		return
+	}
+	for i := range inv.Payments {
+		inv.Payments[i].Note = ""
+	}
 }
 
 func (s *Server) createInvoice(w http.ResponseWriter, r *http.Request) error {
@@ -654,6 +667,7 @@ func (s *Server) applyCredit(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	forClient(r, inv)
 	return writeJSON(w, http.StatusOK, inv)
 }
 
@@ -715,6 +729,11 @@ func (s *Server) listTransactions(w http.ResponseWriter, r *http.Request) error 
 	list, err := s.Store.Payments(r.Context(), f)
 	if err != nil {
 		return err
+	}
+	if tenantOf(r) != nil {
+		for i := range list {
+			list[i].Note = "" // staff's notes stay staff's
+		}
 	}
 	return writeJSON(w, http.StatusOK, list)
 }

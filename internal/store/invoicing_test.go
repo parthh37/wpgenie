@@ -272,7 +272,9 @@ func testInvoicing(t *testing.T, s *Store) {
 	if i1, _ = s.GetInvoice(ctx, i1.ID); i1.Status != InvoiceRefunded {
 		t.Fatalf("refunded %+v", i1.Status)
 	}
-	if bp, _ := s.GetBillingProfile(ctx, a.ID); bp.Credit != 720+1000 {
+	// 220 of that payment was credit already (paid beyond the balance):
+	// refunding it to credit adds only the other 780.
+	if bp, _ := s.GetBillingProfile(ctx, a.ID); bp.Credit != 720+780 {
 		t.Fatalf("credit after refund to credit %d", bp.Credit)
 	}
 	if list, _ := s.Refunds(ctx, at, at.Add(time.Hour)); len(list) != 3 {

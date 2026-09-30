@@ -188,7 +188,7 @@ type LateFee struct {
 type Automation struct {
 	ReminderDaysBefore  int   `json:"reminder_days_before"`
 	OverdueReminderDays []int `json:"overdue_reminder_days"`
-	// SuspendAfterDays: 0 suspends as soon as an invoice is overdue.
+	// SuspendAfterDays: 0 never suspends (like TerminateAfterDays).
 	SuspendAfterDays int `json:"suspend_after_days"`
 	// TerminateAfterDays: 0 never terminates.
 	TerminateAfterDays    int     `json:"terminate_after_days"`

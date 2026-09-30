@@ -106,6 +106,7 @@ const invoicingSchema = `ALTER TABLE plans ADD COLUMN description TEXT NOT NULL 
 		pay_attempts    INTEGER NOT NULL DEFAULT 0,
 		units           INTEGER NOT NULL DEFAULT 0,
 		units_granted   INTEGER NOT NULL DEFAULT 0,
+		credit_through  INTEGER NOT NULL DEFAULT 0,
 		effects_done    INTEGER NOT NULL DEFAULT 0,
 		created_at      INTEGER NOT NULL,
 		updated_at      INTEGER NOT NULL
@@ -132,6 +133,7 @@ const invoicingSchema = `ALTER TABLE plans ADD COLUMN description TEXT NOT NULL 
 		amount     INTEGER NOT NULL,
 		fee        INTEGER NOT NULL DEFAULT 0,
 		refunded   INTEGER NOT NULL DEFAULT 0,
+		credited   INTEGER NOT NULL DEFAULT 0,
 		note       TEXT NOT NULL DEFAULT '',
 		by_name    TEXT NOT NULL DEFAULT '',
 		at         INTEGER NOT NULL,
@@ -212,6 +214,9 @@ var (
 	ErrOverRefund = errors.New("the refund exceeds what is left of the payment")
 	// ErrPromoUsedUp: the promotion reached its maximum uses (or is off).
 	ErrPromoUsedUp = errors.New("the promotion is no longer available")
+	// ErrCreditSpent: refunding a payment would take back credit it gave,
+	// which the account has used since.
+	ErrCreditSpent = errors.New("the payment's credit was used")
 )
 
 // Invoice statuses.
@@ -534,6 +539,10 @@ type Invoice struct {
 	// (UnitsGranted).
 	Units        int64
 	UnitsGranted bool
+	// CreditThrough (plan changes): the paid-through date whose unused
+	// part the invoice credits; paying it may move the next due date back
+	// to its period's end only while that date is still the account's.
+	CreditThrough time.Time
 	// EffectsDone: what paying it does (activation, renewal…) was applied.
 	EffectsDone bool
 	CreatedAt   time.Time
@@ -555,16 +564,16 @@ type Numbering struct{ Prefix string }
 const invoiceCols = `id, COALESCE(number, ''), account_id, account_name, kind, status, currency, issued_at, due_at, paid_at,
 	period_start, period_end, subtotal, discount, tax, total, credit_applied, amount_paid, amount_refunded, tax_lines,
 	billing_address, notes, plan_id, cycle, promo_id, COALESCE(dedupe_key, ''), late_fee_at, autocharge_day, pay_attempts,
-	units, units_granted, effects_done, created_at, updated_at`
+	units, units_granted, credit_through, effects_done, created_at, updated_at`
 
 func scanInvoice(row interface{ Scan(...any) error }) (*Invoice, error) {
 	var i Invoice
-	var issued, due, paid, pstart, pend, late, created, updated int64
+	var issued, due, paid, pstart, pend, late, through, created, updated int64
 	var lines, addr string
 	err := row.Scan(&i.ID, &i.Number, &i.AccountID, &i.AccountName, &i.Kind, &i.Status, &i.Currency, &issued, &due, &paid,
 		&pstart, &pend, &i.Subtotal, &i.Discount, &i.Tax, &i.Total, &i.CreditApplied, &i.AmountPaid, &i.AmountRefunded,
 		&lines, &addr, &i.Notes, &i.PlanID, &i.Cycle, &i.PromoID, &i.DedupeKey, &late, &i.AutochargeDay, &i.PayAttempts,
-		&i.Units, &i.UnitsGranted, &i.EffectsDone, &created, &updated)
+		&i.Units, &i.UnitsGranted, &through, &i.EffectsDone, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -573,7 +582,7 @@ func scanInvoice(row interface{ Scan(...any) error }) (*Invoice, error) {
 	}
 	i.IssuedAt, i.DueAt, i.PaidAt = unixTime(issued), unixTime(due), unixTime(paid)
 	i.PeriodStart, i.PeriodEnd, i.LateFeeAt = unixTime(pstart), unixTime(pend), unixTime(late)
-	i.CreatedAt, i.UpdatedAt = unixTime(created), unixTime(updated)
+	i.CreatedAt, i.UpdatedAt, i.CreditThrough = unixTime(created), unixTime(updated), unixTime(through)
 	if err := json.Unmarshal([]byte(lines), &i.TaxLines); err != nil {
 		return nil, err
 	}
@@ -619,12 +628,12 @@ func createInvoice(ctx context.Context, tx *Tx, inv *Invoice, numbering *Numberi
 	var id int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO invoices (account_id, account_name, kind, status, currency, issued_at, due_at,
 		paid_at, period_start, period_end, subtotal, discount, tax, total, tax_lines, billing_address, notes, plan_id, cycle,
-		promo_id, dedupe_key, units, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		promo_id, dedupe_key, units, credit_through, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`, inv.AccountID, inv.AccountName, inv.Kind, inv.Status, inv.Currency, unixOrZero(inv.IssuedAt),
 		unixOrZero(inv.DueAt), unixOrZero(inv.PaidAt), unixOrZero(inv.PeriodStart), unixOrZero(inv.PeriodEnd), inv.Subtotal,
 		inv.Discount, inv.Tax, inv.Total, string(lines), string(addr), inv.Notes, inv.PlanID, inv.Cycle, inv.PromoID,
-		nullable(inv.DedupeKey), inv.Units, now, now).Scan(&id)
+		nullable(inv.DedupeKey), inv.Units, unixOrZero(inv.CreditThrough), now, now).Scan(&id)
 	if isUnique(err) {
 		return 0, ErrExists
 	}
@@ -1051,10 +1060,23 @@ func (s *Store) CancelInvoice(ctx context.Context, id int64, by string, at time.
 		if _, err := tx.ExecContext(ctx, q, InvoiceCancelled, time.Now().Unix(), id); err != nil {
 			return err
 		}
+		// An order's promotion use is given back: only orders that go
+		// through count against max_uses.
+		if cur.Kind == "order" && cur.PromoID != 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE promotions SET uses = uses - 1 WHERE id = ? AND uses > 0`,
+				cur.PromoID); err != nil {
+				return err
+			}
+		}
 		if back := cur.CreditApplied + cur.AmountPaid - cur.AmountRefunded; back > 0 {
-			_, _, err := changeCredit(ctx, tx, cur.AccountID, back, "Invoice "+invoiceLabel(cur)+" cancelled: amounts paid returned",
-				id, by, fmt.Sprintf("cancel:%d", id), at)
-			return err
+			if _, _, err := changeCredit(ctx, tx, cur.AccountID, back, "Invoice "+invoiceLabel(cur)+" cancelled: amounts paid returned",
+				id, by, fmt.Sprintf("cancel:%d", id), at); err != nil {
+				return err
+			}
+			// The payments' money is credit now: refunding them takes it back.
+			if _, err := tx.ExecContext(ctx, `UPDATE payments SET credited = amount - refunded WHERE invoice_id = ?`, id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1101,6 +1123,13 @@ func (s *Store) GrantBurstMinutes(ctx context.Context, invoiceID int64) (int64, 
 		return nil
 	})
 	return granted, err
+}
+
+// SetInvoicePeriod records the period an invoice paid for (an order's
+// first period starts when the account is activated, not when ordered).
+func (s *Store) SetInvoicePeriod(ctx context.Context, id int64, start, end time.Time) error {
+	return s.exec1(ctx, `UPDATE invoices SET period_start = ?, period_end = ?, updated_at = ? WHERE id = ?`,
+		unixOrZero(start), unixOrZero(end), time.Now().Unix(), id)
 }
 
 // SetInvoiceEffectsDone records that what paying an invoice does was done.
@@ -1157,19 +1186,23 @@ func (s *Store) PaidInvoicesPending(ctx context.Context) ([]*Invoice, error) {
 // Payment is money received for an invoice (a transaction). Amount is
 // what came in; what went beyond the invoice's balance became credit.
 type Payment struct {
-	ID            int64     `json:"id"`
-	InvoiceID     int64     `json:"invoice_id"`
-	InvoiceNumber string    `json:"invoice_number,omitempty"`
-	AccountID     int64     `json:"account_id"`
-	AccountName   string    `json:"account_name,omitempty"`
-	Gateway       string    `json:"gateway"`
-	Reference     string    `json:"reference"`
-	Amount        int64     `json:"amount"`
-	Fee           int64     `json:"fee"`
-	Refunded      int64     `json:"refunded"`
-	Note          string    `json:"note"`
-	By            string    `json:"-"` // staff's names stay staff's
-	At            time.Time `json:"at"`
+	ID            int64  `json:"id"`
+	InvoiceID     int64  `json:"invoice_id"`
+	InvoiceNumber string `json:"invoice_number,omitempty"`
+	AccountID     int64  `json:"account_id"`
+	AccountName   string `json:"account_name,omitempty"`
+	Gateway       string `json:"gateway"`
+	Reference     string `json:"reference"`
+	Amount        int64  `json:"amount"`
+	Fee           int64  `json:"fee"`
+	Refunded      int64  `json:"refunded"`
+	// Credited is the part of the payment now in the account's credit
+	// (paid beyond the balance, or returned when its invoice was
+	// cancelled): refunding it takes that credit back.
+	Credited int64     `json:"credited"`
+	Note     string    `json:"note"`
+	By       string    `json:"-"` // staff's names stay staff's
+	At       time.Time `json:"at"`
 }
 
 // PaymentInput records a payment. Dedupe ("stripe:pi_…") makes the same
@@ -1253,6 +1286,9 @@ func (s *Store) RecordPayment(ctx context.Context, in PaymentInput) (*PaymentRes
 				inv.ID, in.By, fmt.Sprintf("payment:%d", id), in.At); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, `UPDATE payments SET credited = ? WHERE id = ?`, extra, id); err != nil {
+				return err
+			}
 			res.Credited = extra
 		}
 		res.Payment, err = scanPayment(tx.QueryRowContext(ctx, `SELECT `+paymentCols+` FROM payments p
@@ -1323,13 +1359,13 @@ func (s *Store) ApplyCredit(ctx context.Context, invoiceID, amount int64, by str
 }
 
 const paymentCols = `p.id, p.invoice_id, COALESCE(i.number, ''), p.account_id, i.account_name, p.gateway, p.reference, p.amount,
-	p.fee, p.refunded, p.note, p.by_name, p.at`
+	p.fee, p.refunded, p.credited, p.note, p.by_name, p.at`
 
 func scanPayment(row interface{ Scan(...any) error }) (*Payment, error) {
 	var p Payment
 	var at int64
 	err := row.Scan(&p.ID, &p.InvoiceID, &p.InvoiceNumber, &p.AccountID, &p.AccountName, &p.Gateway, &p.Reference, &p.Amount,
-		&p.Fee, &p.Refunded, &p.Note, &p.By, &at)
+		&p.Fee, &p.Refunded, &p.Credited, &p.Note, &p.By, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1426,6 +1462,9 @@ type Refund struct {
 	Reference string    `json:"reference"`
 	By        string    `json:"by"`
 	At        time.Time `json:"at"`
+	// Shortfall (a refund Made at the gateway): credit it should have
+	// taken back but that was already spent.
+	Shortfall int64 `json:"-"`
 }
 
 // RefundInput records a refund; Dedupe ("razorpay:rfnd_…") records a
@@ -1438,6 +1477,10 @@ type RefundInput struct {
 	By        string
 	At        time.Time
 	Dedupe    string
+	// Made is a refund already made at the gateway (reported by it): it
+	// is recorded even if the credit it should take back was spent (what
+	// is left of the credit goes); Shortfall reports the rest.
+	Made bool
 }
 
 // RecordRefund records a refund of (part of) a payment: the payment's and
@@ -1463,9 +1506,9 @@ func (s *Store) RecordRefund(ctx context.Context, in RefundInput) (*Refund, bool
 				return nil
 			}
 		}
-		var invoiceID, accountID, amount, refunded int64
-		err := tx.QueryRowContext(ctx, `SELECT invoice_id, account_id, amount, refunded FROM payments WHERE id = ? FOR UPDATE`,
-			in.PaymentID).Scan(&invoiceID, &accountID, &amount, &refunded)
+		var invoiceID, accountID, amount, refunded, credited int64
+		err := tx.QueryRowContext(ctx, `SELECT invoice_id, account_id, amount, refunded, credited FROM payments WHERE id = ?
+			FOR UPDATE`, in.PaymentID).Scan(&invoiceID, &accountID, &amount, &refunded, &credited)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -1479,6 +1522,10 @@ func (s *Store) RecordRefund(ctx context.Context, in RefundInput) (*Refund, bool
 		if err != nil {
 			return err
 		}
+		// The part of the payment that is credit now is refunded first; the
+		// rest is what the invoice was paid.
+		fromCredit := min(in.Amount, credited)
+		fromInvoice := in.Amount - fromCredit
 		out = &Refund{PaymentID: in.PaymentID, InvoiceID: invoiceID, AccountID: accountID, Amount: in.Amount,
 			ToCredit: in.ToCredit, Reference: in.Reference, By: in.By, At: in.At.UTC().Truncate(time.Second)}
 		if err := tx.QueryRowContext(ctx, `INSERT INTO refunds (payment_id, invoice_id, account_id, amount, to_credit, reference,
@@ -1486,24 +1533,49 @@ func (s *Store) RecordRefund(ctx context.Context, in RefundInput) (*Refund, bool
 			in.ToCredit, in.Reference, in.By, in.At.Unix(), nullable(in.Dedupe)).Scan(&out.ID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE payments SET refunded = refunded + ? WHERE id = ?`, in.Amount, in.PaymentID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE payments SET refunded = refunded + ?, credited = credited - ? WHERE id = ?`,
+			in.Amount, fromCredit, in.PaymentID); err != nil {
 			return err
 		}
-		status := inv.Status
-		switch inv.Status {
-		case InvoicePaid, InvoicePartiallyRefunded, InvoiceRefunded:
-			status = InvoicePartiallyRefunded
-			if inv.AmountRefunded+in.Amount >= inv.AmountPaid {
-				status = InvoiceRefunded
+		if fromInvoice > 0 {
+			status := inv.Status
+			switch inv.Status {
+			case InvoicePaid, InvoicePartiallyRefunded, InvoiceRefunded:
+				status = InvoicePartiallyRefunded
+				if inv.AmountRefunded+fromInvoice >= inv.AmountPaid {
+					status = InvoiceRefunded
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE invoices SET amount_refunded = amount_refunded + ?, status = ?,
+				updated_at = ? WHERE id = ?`, fromInvoice, status, time.Now().Unix(), invoiceID); err != nil {
+				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE invoices SET amount_refunded = amount_refunded + ?, status = ?, updated_at = ?
-			WHERE id = ?`, in.Amount, status, time.Now().Unix(), invoiceID); err != nil {
-			return err
-		}
+		// To the payer: the credit part leaves the account's credit (which
+		// must still be there). To credit: only what wasn't credit already.
+		change := -fromCredit
 		if in.ToCredit {
-			_, _, err := changeCredit(ctx, tx, accountID, in.Amount, "Refund of a payment on invoice "+invoiceLabel(inv),
+			change = fromInvoice
+		}
+		if change < 0 && in.Made {
+			if err := ensureProfile(ctx, tx, accountID); err != nil {
+				return err
+			}
+			var have int64
+			if err := tx.QueryRowContext(ctx, `SELECT credit FROM billing_profiles WHERE account_id = ? FOR UPDATE`,
+				accountID).Scan(&have); err != nil {
+				return err
+			}
+			out.Shortfall = -change - min(-change, have)
+			change = -min(-change, have)
+		}
+		if change != 0 {
+			_, _, err := changeCredit(ctx, tx, accountID, change, "Refund of a payment on invoice "+invoiceLabel(inv),
 				invoiceID, in.By, fmt.Sprintf("refund:%d", out.ID), in.At)
+			if errors.Is(err, ErrInsufficientCredit) {
+				return fmt.Errorf("%w: %d of this payment went to the account's credit, and the credit has been used since (%v)",
+					ErrCreditSpent, fromCredit, err)
+			}
 			return err
 		}
 		return nil
@@ -1512,6 +1584,23 @@ func (s *Store) RecordRefund(ctx context.Context, in RefundInput) (*Refund, bool
 		return nil, true, nil
 	}
 	return out, dup, err
+}
+
+// GatewayRefunded is how much of a payment was refunded to the payer (not
+// to the account's credit).
+func (s *Store) GatewayRefunded(ctx context.Context, paymentID int64) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM refunds WHERE payment_id = ? AND to_credit = 0`,
+		paymentID).Scan(&n)
+	return n, err
+}
+
+// AccountEmailExists reports whether an account has this e-mail address
+// (case-insensitively).
+func (s *Store) AccountEmailExists(ctx context.Context, email string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE email <> '' AND LOWER(email) = LOWER(?)`, email).Scan(&n)
+	return n > 0, err
 }
 
 // Refunds lists refunds made in [from, to) (from zero: all).

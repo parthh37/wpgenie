@@ -250,9 +250,13 @@ func (s *Service) RazorpayCallback(ctx context.Context, q url.Values) (int64, er
 	return invoiceID, s.razorpayPaid(ctx, cfg, invoiceID, pay)
 }
 
-// razorpayPaid records a captured Razorpay payment once.
+// razorpayPaid records a captured Razorpay payment once. An authorized
+// payment isn't money yet (it may never be captured): the webhook reports
+// it again once captured.
 func (s *Service) razorpayPaid(ctx context.Context, cfg *InvoicingSettings, invoiceID int64, pay *razorpayPayment) error {
-	if pay.Status != "captured" && pay.Status != "authorized" {
+	if pay.Status != "captured" {
+		s.Log.Info("Razorpay payment not captured (yet): not recorded", "invoice", invoiceID, "payment", pay.ID,
+			"status", pay.Status)
 		return nil
 	}
 	s.payMu.Lock()
@@ -341,13 +345,14 @@ func (s *Service) HandleRazorpayWebhook(ctx context.Context, body []byte, sig st
 		s.payMu.Lock()
 		defer s.payMu.Unlock()
 		out, _, err := s.Store.RecordRefund(ctx, store.RefundInput{PaymentID: pay.ID, Amount: r.Amount, Reference: r.ID,
-			By: "razorpay", At: s.now(), Dedupe: "razorpay:" + r.ID})
+			By: "razorpay", At: s.now(), Dedupe: "razorpay:" + r.ID, Made: true})
 		if errors.Is(err, store.ErrOverRefund) {
 			s.Log.Warn("Razorpay reports a refund beyond the payment", "payment", pay.ID, "refund", r.ID)
 			return nil
 		}
 		if err == nil && out != nil {
 			s.event(ctx, pay.AccountID, "billing", "Refund made in Razorpay recorded on invoice "+pay.InvoiceNumber)
+			s.refundShortfall(ctx, out, pay.AccountID)
 		}
 		return err
 	}
