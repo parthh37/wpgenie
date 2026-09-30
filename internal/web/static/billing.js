@@ -1136,7 +1136,7 @@ async function fillAccountBilling(box, a) {
     ['Balance due', h('span', { class: p.overdue ? 'st-failed' : '' }, money(p.balance_due || 0), p.overdue ? ' · overdue' : '')],
     ['Credit', money(p.credit || 0)],
     ['Card', card + (p.auto_pay ? ' · pays automatically' : '')],
-    ['Tax', p.tax_exempt ? 'exempt' : 'charged by the tax rules'],
+    ['Tax', p.tax_exempt ? 'exempt' : p.tax_exempt_by_tax_id ? `exempt: tax ID ${(p.contact || {}).tax_id || ''}` : 'charged by the tax rules'],
   ];
   if (p.cancel_at) rows.push(['Cancellation', h('span', { class: 'st-warning' }, `ends ${fmtDate(p.cancel_at)}${p.cancel_reason ? ' — ' + p.cancel_reason : ''}`)]);
   const acts = [];

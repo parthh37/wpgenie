@@ -132,29 +132,36 @@ issue candidate once its phase starts.
 - [x] Built-in billing, WHMCS-style ([BILLING.md](BILLING.md)): plans with prices per cycle and setup fees, one store
       currency, invoices (gapless numbers on issue or on payment, drafts, printable pages, CSV exports), credit,
       promo codes, prorated plan changes, cancellation at the end of the period, bandwidth overage invoices,
-      burst minute packs; the operator bills customers and resellers, never resellers' customers
+      burst minute packs (offers that are never chased); the operator bills customers and resellers, never
+      resellers' customers
 - [x] Payments: Stripe Checkout with saved cards charged on the due date, Razorpay Payment Links (signed callback
       and webhook), bank transfer recorded by staff; every payment recorded once by its gateway reference,
-      refunds through the gateway or to credit, refunds made in the gateways' dashboards picked up by webhook
+      refunds through the gateway or to credit (taking back the credit a payment created), refunds made in the
+      gateways' dashboards picked up by webhook
 - [x] Taxes by country and state, two levels (CGST + SGST, GST + PST) with compounding, tax-inclusive prices,
       exemptions (per account, or with a tax ID), presets (India GST, EU VAT, Canada, UK, Australia)
 - [x] Public order page creating pending accounts that the first payment activates (optional approval),
       rate-limited per address
 - [x] Dunning automation every 15 minutes, idempotent: renewal invoices, reminders, overdue reminders, late fee,
-      suspension, optional termination, lifted on payment; a due date is a whole UTC day
+      suspension, optional termination, lifted on payment; a due date is a whole UTC day; cancelling a renewal
+      waives its period, and the next due date never moves back
 - [x] Client area (balance, pay, plan change, auto-pay, invoices, payments, billing details, e-mails) and a staff
       overview (MRR, income, outstanding and overdue, renewals)
-- [x] Support tickets: departments, statuses, priorities, internal notes, attachments (served so they can't run
-      on the panel's origin), canned replies, auto-close, e-mail notifications; resellers handle their customers'
-      tickets and can escalate
-- [x] E-mail to people: SMTP settings (TLS required with a password), editable templates with sandboxed
-      previews, an outbox with retries and dedupe keys, an e-mail log for staff and clients
-- [x] Log shipping to S3-compatible storage: Vector in a hardened container, eleven log types (tailed, spooled by
-      the daemon, or exported from tables), a capped spool for outages, bucket retention, fewer local access logs
-      and capped container logs while shipped, archive browser, every server shipping its own
+- [x] Support tickets: departments, statuses, priorities, internal and staff-only notes, attachments (served so
+      they can't run on the panel's origin), canned replies, auto-close, e-mail notifications; resellers handle
+      their customers' tickets and can escalate; tickets deleted with their account
+- [x] E-mail to people: SMTP settings (TLS required with a password, re-entered for another server), editable
+      templates with sandboxed, bounded previews, an outbox with retries, dedupe keys kept 400 days and unsent
+      mail expiring after 7 days, an e-mail log for staff and clients
+- [x] Log shipping to S3-compatible storage: Vector (pinned by digest) in a container without capabilities, keys in
+      a credentials file, eleven log types (tailed, spooled by the daemon, or exported from tables), a capped
+      spool for outages, bucket retention, fewer local access logs and capped container logs while shipped,
+      archive browser, every server shipping its own (settings retried until each has them)
 - [ ] Follow-ups (not needed for the phase): inbound e-mail for tickets (reply by e-mail); per-account ticket rate
       limits and a disk cap for attachments; PDF attachments on invoice e-mails (invoices are printable HTML:
       the browser's Save as PDF); multi-currency; PayPal; Stripe's processing fees on payments; log exporters
       backfilling on first enable; previewing zstd archives (they download); capped logs for containers created
-      before shipping was turned on (they keep theirs until recreated); two panels on one PostgreSQL would
-      export the database's logs twice
+      before shipping was turned on (they keep theirs until recreated); container output written while the
+      daemon was down (offsets are kept in memory); bucket credentials per server (all servers share one key,
+      so a compromised server can read, or with delete permission remove, the others' logs: versioning or
+      object lock meanwhile); two panels on one PostgreSQL would export the database's logs twice

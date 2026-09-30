@@ -280,8 +280,9 @@ For every tenant route, the wrapper checks centrally, before any handler runs:
 
 Tenants can't attach a domain whose mail this server hosts (the mail server treats every address on it as
 local: a site there would get a sender mailbox on someone else's mail domain, DKIM-signed as theirs).
-Usernames that the audit log uses for non-users (`api-token`, `system`, `scheduler`, `sso`, `stripe`)
-are reserved.
+Usernames that the audit log and billing's ledgers use for non-users (`api-token`, `system`, `scheduler`,
+`sso`, `stripe`, `razorpay`, `store`, `auto-pay`, `automation`, `billing`) are reserved, so nobody (the
+public order page included) can register one and pass their actions off as the system's.
 
 Lists (sites, jobs, security events, accounts, usage, plans, invoices, payments, tickets) are filtered to
 the tenant's scope. Tenants
@@ -396,10 +397,12 @@ gateways in `stripe_checkout.go` and `razorpay.go`; tables in `internal/store/in
 (the Stripe flow above) or *whmcs*; without a profile the mode follows the external IDs. Only top-level
 accounts are billed. A reseller's customer can't be put on *invoice* and no invoice can be made for it: its
 reseller bills it, at its own prices and under its own name, with its own WHMCS through the provisioning
-API or otherwise. The profile
-holds the cycle, the next due date and its anchor day, an optional price override, credit, tax exemption,
-the billing contact (whose country and state decide taxes), a pending cancellation, a recurring promotion,
-and the Stripe customer and saved card (payment method ID, brand, last four digits, expiry: never the number).
+API or otherwise. The profile holds the cycle, the next due date and its anchor day, an optional price
+override, credit, tax exemption, the billing contact (whose country and state decide taxes), a pending
+cancellation, a recurring promotion, and the Stripe customer and saved card (payment method ID, brand, last
+four digits, expiry: never the number). The next due date only moves forward: a payment, a plan change or a
+waived period can push it later, never back over time already paid for (a plan change may only return to
+where it credited the unused time from).
 
 **Money.** One store currency (ISO code, symbol, 0–3 decimals). Every amount is an int64 of minor units
 and every percentage an integer of hundredths. Every total is computed on the server, never taken from a
@@ -410,12 +413,21 @@ Mar 31). A due date is a whole UTC day: an invoice is overdue from the next day 
 the most specific rule for the client's country and state (state, then country, then everywhere). A level-2
 rule may compound on level 1. Each line is rounded half up once, on the taxable amount after discounts.
 Tax-inclusive prices are backed out exactly, with the rounding difference on the last line so the lines
-add up to gross − net. Clients giving a tax ID can be exempted (reverse charge), and accounts individually.
+add up to gross − net. Accounts can be exempted individually, and clients giving a tax ID can be exempted
+(reverse charge) when the ID looks like one: 5–30 letters, digits, spaces or dashes, at least 4 of them digits,
+so "none" exempts nobody. The profile reports an exemption by tax ID (`tax_exempt_by_tax_id`).
 
 **Invoices.** Kinds: *order*, *renewal*, *plan_change*, *overage*, *burst_topup*, *manual*. Statuses:
 *draft*, *unpaid*, *paid*, *cancelled*, *refunded*, *partially_refunded*. *Overdue* is derived, never
 stored, so it can't disagree with the dates. An invoice freezes its lines, totals, tax lines and bill-to
 address when it is made. Only a draft's lines change; an unpaid invoice's due date and notes still can.
+
+- **Debts and offers.** Burst top-ups and plan changes are offers the client may leave (`Chased`): due in
+  7 days, never overdue for the account, never reminded, fined or suspended for, and withdrawn after 7
+  unpaid days. Everything else is a debt the dunning chases.
+- **Cancelling** an invoice returns what was paid on it to credit. Cancelling a renewal *waives* its
+  period: the next due date moves past it, and billing goes on with the next period. An order's promotion
+  use is given back.
 
 - **Numbers** are a prefix plus a sequence of at least six digits from a single counter row. The number is
   assigned inside the transaction that makes the invoice final: on issue, or on payment with
@@ -436,16 +448,21 @@ address when it is made. Only a draft's lines change; an unpaid invoice's due da
   payment reported concurrently (PostgreSQL) are therefore one payment.
 - **Settling.** In the same transaction the invoice's paid amount moves, the invoice settles when nothing
   is left, and money beyond its balance becomes credit. So does money paid on an invoice no longer unpaid
-  (cancelled meanwhile). Credit is a ledger whose entries carry unique references.
+  (cancelled meanwhile). Credit is a ledger whose entries carry unique references, and each payment
+  remembers how much of it is sitting in credit.
 - **Effects.** What paying does comes after, step by idempotent step: activate the order, move the next
   due date, switch the plan, grant the burst minutes, lift a billing suspension, send the receipt, post the
   `invoice.paid` webhook. The invoice is marked done only when all have succeeded; the automation retries
   the others.
 - **Other currencies.** A payment in a different currency from its invoice's isn't recorded; it is noted in
   the account's activity for staff to record by hand.
-- **Refunds** go back through the gateway (Stripe's with an idempotency key) or to credit. Refunds made in
-  the gateways' own dashboards arrive by webhook and are recorded as the difference from what is already
-  known.
+- **Refunds** go back through the gateway (Stripe's with an idempotency key) or to credit. The part of a
+  payment that became credit is refunded first and taken back out of the credit. If the client has spent
+  it since, the refund is refused (409) before any money moves at the gateway, so no one is paid twice.
+  Refunds made in the gateways' own dashboards arrive by webhook and are recorded all the same (they
+  already happened), as the difference from what went back through that gateway. When they take back
+  credit that was spent, the account's activity says so.
+- **Notes.** Staff's payment notes are hidden from tenants.
 - **Fees.** Razorpay's fees are recorded; Stripe's aren't.
 
 **Gateways.**
@@ -464,8 +481,8 @@ address when it is made. Only a draft's lines change; an unpaid invoice's due da
   notifications off, callback to `/api/v1/billing/razorpay/callback`.
   - The callback is public and trusted only through `razorpay_signature`: HMAC-SHA256 of
     `link_id|reference_id|status|payment_id` with the key secret. Even then the payment is fetched from
-    Razorpay's API, and only a captured or authorised one in the invoice's currency is recorded, with
-    Razorpay's amount.
+    Razorpay's API, and only a captured one in the invoice's currency is recorded, with Razorpay's amount.
+    An authorised payment isn't money yet: it may never be captured.
   - The webhook (`/api/v1/billing/razorpay/webhook`, handling `payment_link.paid` and `refund.processed`)
     is trusted only through `X-Razorpay-Signature`: HMAC-SHA256 of the raw body (at most 1 MB) with a
     separate webhook secret.
@@ -481,7 +498,9 @@ catalog (public plans with a price), quotes, and orders.
   path's bounded slots, so a flood of orders can't starve the server.
 - **Placing an order.** One transaction creates the account with status *pending*, its first user (tenant
   role from the plan's account kind), the billing profile, the order and the first invoice (due that day),
-  and counts the promotion's use against its limit. The user is then signed in, as by the sign-in form.
+  and counts the promotion's use against its limit (given back if the invoice is cancelled). A promotion
+  for new clients only is refused to an e-mail address that already belongs to an account. The user is
+  then signed in, as by the sign-in form.
 - **A pending account** is suspended in every check (`Suspended`: anything but active), so it has no sites.
   Its users can still sign in and use the routes open while suspended. It can't be suspended or unsuspended,
   only accepted or cancelled.
@@ -489,18 +508,32 @@ catalog (public plans with a price), quotes, and orders.
   approval. Orders still unpaid after 14 days are cancelled: the invoice is cancelled and the account
   terminated (it has nothing to delete).
 
+**Plan changes and cancellations.**
+
+- **Plan changes.** The quote credits the unused part of what was actually paid for the current period
+  (the plan, pro-rata and discount lines of the paid invoice covering it, less refunds), not the list
+  price. A free or waived period credits nothing. A change is refused while a chased invoice is overdue
+  or a renewal is unpaid: that period would be paid twice. Issuing a renewal withdraws an unpaid plan
+  change, whose price was for the period the renewal now bills.
+- **Cancellation at the end of the period.** It cancels (and releases) renewals already made for later
+  periods, and no new one is made. Withdrawing it lets them be made again.
+- **Resellers.** A reseller with customer accounts that aren't terminated can't cancel (409). If customers
+  appear before the date, the cancellation suspends the reseller instead (reason *admin*, which billing
+  never lifts), until they are gone. Termination by the dunning waits for them the same way.
+
 **Automation** (`RunInvoicing`). It runs every 15 minutes, starting 2 minutes after the daemon, one run at a
 time (`TryLock`). Every step is keyed so that repeating it, or resuming after a crash, does nothing twice.
 In order:
 
 1. Retry the effects of paid invoices.
 2. Make renewal invoices `days_before_due` ahead of the due date, unless a cancellation takes effect first.
-3. Dunning over unpaid invoices, oldest first:
+3. Dunning over unpaid invoices, oldest first. Offers left unpaid for 7 days are withdrawn. For debts:
    - automatic payment;
    - a reminder before the due date;
    - overdue reminders, only the latest one due (a panel that was down for a week doesn't send a burst);
-   - a late fee, once (not taxed: the invoice's taxes stay as issued);
-   - for accounts billed by invoice, suspension (reason *billing*) and optional termination.
+   - a late fee, once (not taxed: the invoice's taxes stay as issued; 0 days: from the first overdue day);
+   - for accounts billed by invoice, suspension (reason *billing*; 0 days: never) and optional termination,
+     each decided on the invoice as it is then, under `payMu`, since a payment may have landed meanwhile.
 4. Lift billing suspensions once nothing is overdue. Paying does this at once too.
 5. Apply the cancellations that are due.
 6. Invoice last month's bandwidth overage per started GB: the higher of what was recorded during the month
@@ -508,7 +541,8 @@ In order:
 7. Cancel stale orders.
 
 E-mails carry dedupe keys (`invoice.overdue:<invoice>:<day>`), so a crash between a step and its record
-doesn't mail twice. Each run records its counts and errors (`GET /api/v1/billing/automation`).
+doesn't mail twice. Each run records its counts (renewals, reminders, suspensions…, `offers_cancelled`,
+`plan_changes_replaced`, `cancellations_blocked`) and errors (`GET /api/v1/billing/automation`).
 
 **Tenancy of billing routes.**
 
@@ -535,17 +569,21 @@ Nodes serve none of it.
   *General* department is created on first use. The last visible one can't be hidden, and one with tickets
   can't be deleted.
 - **A ticket** has a public mask (`WPG-` and six random digits, unique) and records:
-  - its account, the user who opened it, and its **handler account**: 0 for the operator's staff, or the
-    reseller for its customers' tickets;
+  - its account and the user who opened it. Its **handler** isn't stored but derived when read: the
+    account's *current* reseller (so a customer moved to another reseller, or away from one, takes its
+    tickets along), or the operator's staff when there is none, when the reseller escalated it, or when
+    staff opened it;
   - a department, and optionally a site (which must be the opener's);
   - a status: *open*, *customer_reply*, *in_progress*, *on_hold*, *answered* or *closed*;
   - a priority: *low*, *medium*, *high* or *urgent*;
   - an assignee, and the times of the last reply, the first response, escalation and closing.
-- **Messages** have a side (*customer*, *handler*, *staff*, *system*) and an internal flag.
+- **Messages** have a side (*customer*, *handler*, *staff*, *system*), an internal flag, and a staff-only
+  flag.
 - **Canned replies** belong to staff.
 
 A client's reply sets *customer_reply*, which reopens a closed ticket. A provider's public reply sets
-*answered*. Clients may only close a ticket, or reopen a closed one.
+*answered*, and so does setting that status by hand, which also restarts the auto-close clock. Clients
+may only close a ticket, or reopen a closed one.
 
 **Access.**
 
@@ -553,10 +591,11 @@ A client's reply sets *customer_reply*, which reopens a closed ticket. A provide
   customers'.
 - **Providers** are staff, and the reseller handling the ticket. Only providers set a status other than
   closed or reopened, change the priority and department, and write internal notes; only staff assign.
-- **Internal notes** are hidden from the customer everywhere: the conversation, list previews, e-mails, and
-  attachment downloads (404). They are shared between staff and the handling reseller.
-- **Escalation** hands a reseller's ticket to staff (the handler becomes 0), adds an internal system note
-  and e-mails staff. It is one-way.
+- **Notes.** *Internal notes* are hidden from the customer everywhere: the conversation, list previews,
+  e-mails, and attachment downloads (404). They are shared between staff and the account's reseller.
+  *Staff-only notes* are hidden from the reseller too.
+- **Escalation** hands a reseller's ticket to staff, adds an internal system note and e-mails staff. It is
+  one-way. The reseller still sees the ticket and its internal notes.
 - **Suspended and pending accounts.** Opening, replying, updating and escalating are `whileSuspended`: a
   suspended client can still ask why. A terminated account can't open tickets.
 - **Staff roles:** viewers read; operators work tickets and canned replies; admins manage departments and
@@ -582,8 +621,12 @@ session.
 
 **E-mail** (through the outbox, below). `ticket.opened`, `ticket.reply` and `ticket.closed` go to the client
 account's address. `ticket.new_staff` (a new or escalated ticket) and `ticket.customer_reply` go to the
-handler: the reseller's address, or for staff the settings' notify addresses plus the department's. Only
-public messages are ever mailed.
+handler: the reseller's address, or for staff the settings' notify addresses plus the department's. Each
+recipient gets a message of its own, so one refused address holds up no one else and each has its line in
+the e-mail log. Only public messages are ever mailed.
+
+**Deleting an account** deletes its tickets in the same transaction, then their attachment folders. The
+hourly sweep removes folders of tickets that no longer exist, in case that clean-up didn't finish.
 
 **Known gaps:**
 
@@ -605,16 +648,22 @@ Reply-To and an optional Bcc (envelope only). Security is one of:
 - *none*: only without a username and password, so credentials never cross the network in clear.
 
 TLS is 1.2 or later, with the certificate verified against the host. The password is write-only
-(`password_set`); omitted on update, it is kept. A test message is sent at once, bypassing the queue, and
-reports the server's answer.
+(`password_set`). Omitted on update it is kept, but only while the host, port and username stay the same:
+otherwise it must be entered again, or an administrator (or a stolen session) could point the host at a
+server of their own and collect the stored password with a test message. A test message is sent at once,
+bypassing the queue, and reports the server's answer. The "this server's Mail" preset is offered only while
+the panel's mail server runs, with its hostname (the name its certificate carries).
 
 **Queueing.** Features call `Queue` with a template name, data, the account the message concerns and a dedupe
-key. The message is rendered then and stored in `mail_outbox`. The dedupe key is unique, so the billing
-automation, replayed webhooks and repeated runs each queue once.
+key. The message is rendered then and stored in `mail_outbox`. Dedupe keys are kept in a table of their
+own (`mail_dedupe`) for 400 days, longer than any automation looks back, so the billing automation, replayed
+webhooks and repeated runs each queue once, and trimming the log never lets an old reminder go out again.
 
 - **Templates** are Go `text/template`, registered by each feature with sample data. Admin overrides are
   stored as settings and must render against the sample data before they're saved; an override that fails
-  at send time falls back to the default.
+  at send time falls back to the default. Staff write templates, so they are bounded: `range` over a
+  number (the one way to loop without producing output) is refused, and a rendered subject or body stops
+  at 256 KB.
 - **Bodies are plain text.** The HTML part is generated from it with everything escaped (paragraphs,
   `[[Label|URL]]` buttons, the brand), so neither a template nor its data (a ticket's text) can inject markup.
 - **Headers** take bare addresses only (no CR/LF, commas or angle brackets). The subject has control
@@ -624,9 +673,12 @@ automation, replayed webhooks and repeated runs each queue once.
 
 **Delivery.** One sender loop wakes on every new message and every 30 seconds. It sends in batches of 20, one
 message at a time, with 15 seconds to connect and 90 seconds per message. A failure is retried after
-1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours, then the message is marked *failed*. While sending is
-off or unconfigured, messages wait as *pending*. The newest 10 000 rows are kept, and pending ones are never
-pruned.
+1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours, then the message is marked *failed*; a resend starts
+that schedule again. A recipient the server refuses is skipped and named in the log: the message fails only
+if no recipient accepts it. While sending is off or unconfigured, messages wait as *pending*, for 7 days at
+most: then they are marked failed, since a payment reminder weeks late is worse than none. The newest
+10 000 rows are kept. If a delivery can't be recorded, the round stops rather than send the message again
+in a loop.
 
 **Branding.** Mail carries built-in billing's company when billing is on and names one, otherwise the panel's
 branding. The logo is the panel's.
@@ -639,7 +691,8 @@ branding. The logo is the panel's.
   sandboxed to popups only. The panel's own CSP forbids the inline styles mail needs, and a `srcdoc` frame
   would inherit it; this way nothing in a template or a logged message runs in the panel's origin.
 - **The log** (the outbox itself) is shown the same way. Operators read it, admins resend, and tenants read
-  the messages filed under their account.
+  the messages filed under their account: whether each went, never the SMTP server's answers (they can
+  name internal relay hosts).
 
 ## Analytics
 
@@ -1324,34 +1377,44 @@ S3-compatible storage, and the server keeps only a little of them locally.
 | `daemon` | WPGenie's own log (a tee `slog.Handler`, Info and up) | spooled |
 | `audit`, `jobs`, `account_events`, `email` | rows of those tables (for e-mail, the outbox's metadata, never bodies) | exported |
 | `mail` | docker-mailserver's log files (the panel only) | tailed |
-| `containers` | Docker's json-file logs of `wpg-*` and `wpgenie-*` containers | tailed |
+| `containers` | Docker's json-file logs of `wpg-*` and `wpgenie-*` containers | read by the daemon, spooled |
 
 Some types are spooled instead of tailed because the daemon reads those files and then truncates them
 (PHP's error logs, the WAF log): a tail would race the truncation. So the daemon's readers tee what they
-read. Exported types keep a cursor per type in `ingest_state`, which moves only once the rows are flushed to
-the spool. Nothing is backfilled on first enable: tails start at the end, exporters at the newest row, and
-the spool takes records only while shipping is on.
+read. Containers' output is read by the daemon too: Vector could tail it only with Docker's containers
+directory mounted, and that directory also holds every container's configuration (database passwords,
+keys). The daemon keeps its offsets in memory. It reads a container from the end the first time it sees it
+after starting, and a container that appears later from its start, so output written while the daemon was
+down isn't shipped. Exported types keep a cursor per type in `ingest_state`, which moves only once the rows
+are in the spool and fsynced. Nothing is backfilled on first enable: tails start at the end, exporters at
+the newest row, and the spool takes records only while shipping is on.
 
-**Vector.** Logs are shipped by Vector (`timberio/vector`, pinned by `vector_image` in `config.json`) in the
-container `wpgenie-vector`.
+**Vector.** Logs are shipped by Vector (`timberio/vector`, pinned by digest in `vector_image` in
+`config.json`) in the container `wpgenie-vector`.
 
-- **Hardening.** Every capability is dropped except `DAC_READ_SEARCH`, which it needs to read logs other
-  users own. It runs with `no-new-privileges`, a read-only root, a 16 MB `noexec` `/tmp`, 384 MB of memory,
-  256 PIDs and the default bridge network, never the sites' network.
-- **Mounts.** Everything is read-only except its data directory (checkpoints and a 256 MB disk buffer) and
-  the spool, whose files it deletes once shipped.
+- **Hardening.** It runs as root with no capabilities at all (`--cap-drop ALL`), `no-new-privileges`, a
+  read-only root, a 16 MB `noexec` `/tmp`, 384 MB of memory, 256 PIDs and the default bridge network, never
+  the sites' network. Without `DAC_READ_SEARCH` it can't read files it doesn't own. So the daemon makes the
+  logs it tails readable to their group and adds that group to the container: Caddy writes the access log
+  `0640`, and the mail server's logs and their directory are made group-readable. The WAF log next to the
+  access log stays `0600`.
+- **Mounts.** Everything is read-only except its data directory (checkpoints and a disk buffer of about
+  256 MB) and the spool, whose files it deletes once shipped.
 - **Configuration.** The daemon generates `vector.yaml` (0600) with a writer that quotes every value. The
-  access keys are in `vector.env` (0600), passed with `--env-file`. They never appear in argv. Docker does
-  keep them in the container's configuration, where root and the `docker` group can read them, as they
-  can read the panel's database.
-- **Restarts.** The container is recreated only when the hash of its configuration, environment and
+  access keys are in an AWS credentials file (0600, `auth.credentials_file`) in a directory mounted
+  read-only. They are never in argv or the container's environment, which `docker inspect` shows.
+- **Lifecycle.** The container is recreated only when the hash of its configuration, credentials and
   arguments changes. A change to the enrichment tables alone is a `SIGHUP`. Both are checked every minute and
-  on save.
+  on save. Starting it (which may pull the image) is bounded at 10 minutes. A container that keeps crashing
+  is left to Docker's restart policy and its growing backoff, and the status shows its exit code and
+  restarts. `logship/tmp/` (archives being read) is cleared at start.
 - **Status.** Vector's Prometheus exporter listens on the container's own loopback, and the daemon reads it
-  through `docker exec`. It supplies events and bytes sent, errors, the last upload and the buffer.
+  through `docker exec`. It supplies events and bytes sent, errors, the last upload and the buffer, which is
+  shown apart from the spool.
 
 Objects are written as `<prefix><server>/<type>/YYYY/MM/DD/HH-<uuid>.log.gz` (or `.zst`): newline-delimited
-JSON, UTC hours. A batch closes at `batch_max_mb` (10, uncompressed) or `batch_max_seconds` (300).
+JSON, UTC hours. A batch closes at `batch_max_mb` (10, uncompressed; at most 16, since up to a dozen batches
+sit in the container's 384 MB at once) or `batch_max_seconds` (300).
 
 **Spool.** Files are named `logship/spool/<type>/<YYYYMMDDHH>-<n>.jsonl`.
 
@@ -1360,11 +1423,12 @@ JSON, UTC hours. A batch closes at `batch_max_mb` (10, uncompressed) or `batch_m
 - Each file starts with a random marker line, because Vector recognises files by their first bytes; the
   marker is dropped before shipping. Records are capped at 256 KiB.
 - The request path never waits on the spool: records go through a queue of 8192, and overflow is dropped and
-  counted.
+  counted. Exporters write synchronously and fsync before their cursors move. If a file can't be finished,
+  its synced lines are kept, so nothing a cursor has passed is lost.
 - The spool is capped at `spool_cap_mb` (1 GB), checked every 10 seconds. Past the cap the oldest complete
   files are deleted and counted as dropped.
 - While the storage is unreachable, Vector's disk buffer fills first. Vector then stops reading, and the spool
-  grows up to its cap.
+  grows up to its cap. The buffer (about 256 MB) comes on top of the spool's cap.
 
 **Keeping the local disk small** while logs ship:
 
@@ -1375,24 +1439,34 @@ JSON, UTC hours. A batch closes at `batch_max_mb` (10, uncompressed) or `batch_m
 - The compose stack's containers are always capped at 10 MB × 3.
 - In the bucket, `archive_retention_days` (default 90; 0 keeps everything) is enforced by the panel. At most
   once a day it deletes older objects with rclone (a throwaway container, keys on stdin), touching only keys
-  of the archive's own shape under the current prefix.
+  of the archive's own shape under the current prefix. After a first run that lists the whole prefix, it
+  lists only the day prefixes that have expired since, for every server it knows.
 
 **Settings and access** (setting `logship`, admin). The secret key is write-only, and is kept on update only
 while the endpoint, bucket and access key stay the same: an administrator can't redirect a stored secret to
-a server of their choosing. Endpoints are validated as for uploads offload.
+a server of their choosing. Endpoints are validated as for uploads offload. Link-local addresses and cloud
+metadata services are refused too, since the shipper and rclone would send them the keys and report what they
+answer.
 
-- *Test connection* writes and deletes a small object through rclone.
-- The archive browser lists one server, type and day. It opens gzip objects decompressed (at most 20 MB
-  shown) and hands zstd ones over as they are. Keys are checked against the prefix and the archive's
-  shape.
+- *Test connection* writes and deletes a small object through rclone. Rclone uses the same path-style
+  addressing as Vector, as the archive browser and retention do, so the test tells the truth about shipping.
+- The archive browser lists one server, type and day. It shows gzip objects decompressed (at most 20 MB),
+  and downloads stream any object whole, as stored. zstd objects can only be downloaded. Keys are checked
+  against the prefix and the archive's shape.
 - Status is open to staff viewers; everything else is admin-only.
 
 **Several servers.** Every server runs its own Vector and exporters, and names its objects by its node ID
-(the panel's are `panel`). Saving on the panel pushes the settings, secret included, to every node over the
-cluster's mutual TLS, and they are sent again when a node is paired or comes back. Nodes have no mail logs
-and don't trim the archive. Exporters read each server's own database, whose cursors are its own; two panel
-processes on one PostgreSQL would export the panel's tables twice (several panels on one database isn't
-supported yet).
+(the panel's are `panel`; node IDs `panel` and `unpaired` are reserved). Saving on the panel pushes the
+settings, secret included, to every node over the cluster's mutual TLS. Every minute the panel sends them
+again to any server that doesn't have the current version, so a server that was down gets them. Nodes have
+no mail logs and don't trim the archive. Exporters read each server's own database, whose cursors are its
+own; two panel processes on one PostgreSQL would export the panel's tables twice (several panels on one
+database isn't supported yet).
+
+The servers share the bucket and its key, so a compromised server can read, and if the key may delete,
+remove, every server's logs. Where that matters, turn on versioning or object lock. Or let a lifecycle rule
+expire old logs (retention *Forever* in WPGenie) and give the key no delete permission; *Test connection*
+then reports that deleting its test object failed.
 
 ## Panel database
 
@@ -1693,9 +1767,9 @@ replace the unit file, keep it a node.
 /var/lib/wpgenie/updates/         staged WPGenie releases, status.json
 /var/lib/wpgenie/mail/            mailboxes (data/), mail server config, Roundcube DB
 /var/lib/wpgenie/support/<ticket>/  ticket attachments under random names (0600); .staging/ while uploading
-/var/lib/wpgenie/logship/         log shipping: vector.yaml, vector.env (0600), tables/ (host → site),
-                                  data/ (Vector's checkpoints and disk buffer), spool/<type>/ (what the
-                                  daemon ships)
+/var/lib/wpgenie/logship/         log shipping: vector.yaml and secrets/credentials (0600), tables/
+                                  (host → site), data/ (Vector's checkpoints and disk buffer), spool/<type>/
+                                  (what the daemon ships), tmp/ (archives being read; cleared at start)
 /var/log/wpgenie/access.log       JSON access log (rotated by Caddy: 10 old files kept, `local_access_logs`
                                   while shipped)
 /var/log/wpgenie/waf.log          Coraza audit log (read and truncated by the daemon)

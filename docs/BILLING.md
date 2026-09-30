@@ -38,11 +38,13 @@ Invoices, reminders, receipts and ticket replies are e-mailed. Set up sending fi
 
 Security is **STARTTLS** (usually port 587) or **TLS** (usually 465). Both check the server's
 certificate. *None* (port 25) is only allowed without a username and password, so a password never
-crosses the network in clear.
+crosses the network in clear. The password is never shown again. Changing the server, port or
+username asks for it again, so a saved password only ever goes to the server it was entered for.
 
 To use the mail server WPGenie runs itself (the **Mail** tab), create a mailbox such as
-`billing@example.com` and use your mail hostname (e.g. `mail.example.com`), port 587, STARTTLS, and
-that mailbox's address and password.
+`billing@example.com` and choose **This server's Mail** (listed while the Mail server is on). It fills
+in your mail hostname (e.g. `mail.example.com`), port 587 and STARTTLS. Then enter that mailbox's
+address and password.
 
 **Templates.** **Billing → E-mail → Templates** lists every message, grouped (Billing, Support), with
 a preview. Edit the subject and body in plain text. A blank line starts a new paragraph, and a line
@@ -50,9 +52,16 @@ a preview. Edit the subject and body in plain text. A blank line starts a new pa
 to the original. A template that fails to render isn't saved.
 
 **Sent e-mail** is the log of every message: when it was sent, to whom, and whether it arrived.
-Messages that fail are retried after 1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours; after that
-they are marked *failed*. Open one to see it as the client did, or **Resend** it. Messages written
-while sending is off wait in the log and go out once it's on.
+
+- Messages that fail are retried after 1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours. After
+  that they are marked *failed*.
+- If the mail server refuses one recipient of a message, the others still get it, and the log names who
+  was refused.
+- Open a message to see it as the client did. **Resend** sends it again, with the full retry schedule.
+- Messages that can't go out within **7 days** (sending off, or the server refusing them all along) are
+  dropped, marked *failed*. Turning sending on later doesn't deliver weeks-old reminders.
+
+Clients see the messages sent to them, and whether each went out, but never the mail server's answers.
 
 ## 2. Company and currency
 
@@ -85,8 +94,10 @@ while sending is off wait in the log and go out once it's on.
 - **Your prices**: *don't include tax* (tax is added on top: a 100.00 plan with 18% tax costs 118.00)
   or *include tax* (the price is what clients pay: 84.75 plus 15.25 tax).
 - **No tax for clients with a tax ID**: for business clients who account for the tax themselves
-  (EU reverse charge). It applies to every client who enters a tax ID, wherever they are. The number
-  isn't validated.
+  (EU reverse charge). It applies to every client who enters a tax ID, wherever they are. The ID must
+  look like one: 5 to 30 letters, digits, spaces or dashes, at least 4 of them digits (so "none" or
+  "n/a" doesn't exempt anyone). It isn't checked with the tax authority. The account's Billing panel shows "exempt: tax ID …"
+  when it is exempt this way (`tax_exempt_by_tax_id` in the API).
 
 Single accounts can also be marked **tax exempt** (Accounts → the account → Billing).
 
@@ -208,9 +219,10 @@ invoice.
 3. Paste the same secret into WPGenie's **Webhook secret**, turn on **Offer Razorpay** and save.
 
 The return address (`/api/v1/billing/razorpay/callback`) is set on each link by WPGenie. You don't
-configure it. The webhook catches payments whose client closed the page before coming back. Your
-store currency must be one your Razorpay account accepts (INR, unless international payments are
-enabled).
+configure it. The webhook catches payments whose client closed the page before coming back. Only
+*captured* payments count: one that is only authorised isn't recorded until it's captured, so keep
+automatic capture on in Razorpay. Your store currency must be one your Razorpay account accepts (INR,
+unless international payments are enabled).
 
 ### Bank transfer (and other offline payments)
 
@@ -221,7 +233,7 @@ number as the reference.
 When the money arrives, open the invoice and click **Record payment**. Give the amount, the method
 (bank transfer, cash, cheque, other), the reference and the date. A payment smaller than the balance
 leaves the invoice unpaid with what's left. Anything paid beyond the balance becomes the account's
-credit.
+credit. The payment's note is for your team: clients don't see it.
 
 ### Credit
 
@@ -243,8 +255,8 @@ counted from the due date (day 0):
 | day −3 | Friendly reminder, if still unpaid (0: none) | `invoice.reminder` |
 | day 0 | Due. For clients who turned on automatic payment, the saved card is charged, and tried again each day while unpaid (*Charge saved cards on the due date*) | `invoice.payment_failed` if declined |
 | day 1, 3, 7 | Overdue reminders (a comma-separated list of days) | `invoice.overdue` |
-| day 3 | Late fee, if you set one: a fixed amount or a percentage of the balance (default: none) | |
-| day 5 | The account is **suspended**: its sites show a "suspended" page, nothing is deleted | `account.suspended` |
+| day 3 | Late fee, if you set one: a fixed amount or a percentage of the balance (default: none; 0 days: as soon as it's overdue) | |
+| day 5 | The account is **suspended** (0: never): its sites show a "suspended" page, nothing is deleted | `account.suspended` |
 | never | **Close the account** after N days (0: never). Its sites are deleted only if you also turn on *Delete the sites of closed accounts* | `account.cancelled` |
 
 Paying (or crediting, or cancelling) the overdue invoices lifts a billing suspension at once, and the
@@ -253,7 +265,16 @@ sent, not a burst of old ones. **Run now** runs the checks immediately, and the 
 what each run did and any errors.
 
 Accounts not billed by invoice still get reminders (and late fees) for invoices you send them by hand,
-but are never suspended or closed by this timeline.
+but are never suspended or closed by this timeline. A reseller that still has customer accounts isn't
+closed either: it stays suspended until its customers are gone.
+
+**Offers aren't debts.** Invoices for a burst minute pack or a plan change are due in 7 days, but are
+never chased: no reminders, late fees or suspension. Left unpaid for 7 days, they are withdrawn
+(cancelled).
+
+**Cancelling an invoice.** Cancelling an unpaid renewal *waives* that period: the account isn't billed
+for it, and its next due date moves past it. What was paid on a cancelled invoice goes to the
+account's credit.
 
 ## 7. The order page
 
@@ -288,7 +309,9 @@ payment already made is left for you to refund.
 **Promo codes** (**Billing → Promotions**): a percentage or a fixed amount off the plan's price (not
 the setup fee), for some plans and cycles or all, between two dates, a limited number of times.
 *Recurring* codes also discount every renewal. Otherwise only the first invoice is discounted. Codes
-are entered on the order page.
+are entered on the order page. A *new clients only* code is refused to anyone whose e-mail address
+already belongs to an account. A use counts when the order is placed, and is given back if the order's
+invoice is cancelled.
 
 The order page limits each address to 5 orders an hour and refuses what looks automated.
 
@@ -319,6 +342,9 @@ reseller user ([integrations/whmcs](../integrations/whmcs)). WHMCS then creates,
 the customer accounts as they pay or don't.
 
 If a reseller's account is suspended for an unpaid invoice, its customers' sites are suspended too.
+A reseller can't cancel its service while it still has customer accounts: it closes them first. If a
+reseller's cancellation date comes and customers have appeared since, it is suspended instead, until
+they are gone.
 
 ## 9. Burst minute packs
 
@@ -330,10 +356,11 @@ and clients billed by invoice can buy more:
 2. Clients see **Buy more minutes** in their Billing overview and next to a site's burst settings.
    They choose a pack and pay by any method, or from their credit.
 
-A pack is an invoice like any other. Once it's paid, its minutes are added to the account's burst
-credit, exactly once. Bought minutes never expire, and they are used after the plan's monthly minutes.
-Sites paused for lack of minutes start bursting again by themselves. (Resellers sell packs to their own
-customers from their WHMCS: see the module's *Add burst minutes* button.)
+A pack is an invoice, due in 7 days and never chased: left unpaid for 7 days, it is withdrawn. Once
+it's paid, its minutes are added to the account's burst credit, exactly once. Bought minutes never
+expire, and they are used after the plan's monthly minutes. Sites paused for lack of minutes start
+bursting again by themselves. (Resellers sell packs to their own customers from their WHMCS: see the
+module's *Add burst minutes* button.)
 
 ## 10. What clients see
 
@@ -350,16 +377,22 @@ Customers and resellers get a **Billing** tab (the client area):
   their taxes) and **E-mails** (every message sent to them).
 
 **Changing plan.** A client can move to any public plan of the same kind (customer or reseller) that
-has a price for the chosen cycle. The quote shows the unused part of what they paid as a credit line and
-the new plan's price pro rata until their next due date (or a whole new cycle if they change the cycle).
-The plan switches when that invoice is paid. A change that costs nothing (a downgrade) applies at once,
-and anything left over goes to credit. A client with an overdue invoice must pay it first. Staff can
-also move an account to a plan that isn't public.
+has a price for the chosen cycle.
 
-**Cancelling.** Clients cancel *at the end of the period they paid for*. No renewal invoice is made
-after that date. On that day the account is closed (sites deleted only if *Delete the sites of closed
-accounts* is on), and they get `account.cancelled`. They can withdraw the cancellation until then.
-Staff can also cancel immediately.
+- The quote shows, as a credit line, the unused part of what they actually paid for the current period
+  (nothing for a free or waived period). It then charges the new plan's price pro rata until their next
+  due date, or a whole new cycle if they change the cycle.
+- The plan switches when that invoice is paid. A change that costs nothing (a downgrade) applies at once,
+  and anything left over goes to credit. The next due date never moves back over time already paid for.
+- A client with an overdue invoice, or an unpaid renewal, must pay it first. When a renewal invoice is
+  issued, an unpaid plan change invoice is withdrawn: its price was for the period the renewal now
+  bills. The client asks again once the renewal is paid.
+- Staff can also move an account to a plan that isn't public.
+
+**Cancelling.** Clients cancel *at the end of the period they paid for*. A renewal already made for a
+later period is cancelled, and no new one is made. On that day the account is closed (sites deleted only
+if *Delete the sites of closed accounts* is on), and they get `account.cancelled`. They can withdraw the
+cancellation until then, and billing resumes as before. Staff can also cancel immediately.
 
 **Your side** (**Billing**): the **Overview** shows monthly recurring revenue, income this month against
 last, outstanding and overdue amounts, pending orders, a 12-month income chart, recent payments,
@@ -367,6 +400,10 @@ overdue invoices (with **Send reminder**) and upcoming renewals. **Invoices** ha
 **New invoice** (a draft or issued now, e-mailed or not), and on each invoice: **Record payment**,
 **Refund**, **Send reminder**, **Cancel**. A refund goes back through Stripe or Razorpay, or to the
 account's credit. A payment recorded by hand is only marked refunded: send the money back yourself.
+If part of the payment became credit (paid beyond the balance, or returned when its invoice was
+cancelled), refunding it takes that credit back. If the client has spent the credit since, the refund
+is refused and names the most you can refund. Refunds made in Stripe's or Razorpay's own dashboard are
+still recorded.
 **Transactions** lists payments. **Invoices** and **Transactions** both export to CSV for your
 accountant (admins).
 
@@ -394,17 +431,23 @@ Clients open tickets from **Support → New ticket** (a department, an optional 
 reply in the conversation. Suspended and pending clients can still write. Your team replies, sets the
 status (*New, Customer replied, In progress, On hold, Answered, Closed*), the priority, the department
 and who handles it, and writes **internal notes** that the client never sees. **Reply & close** answers
-and closes at once. A client's reply reopens a closed ticket.
+and closes at once. A client's reply reopens a closed ticket. Setting a ticket to *Answered* by hand
+starts the auto-close countdown, as a reply does.
 
-**Resellers' customers.** Their tickets go to their reseller first, not to you. The reseller answers
-them, and can **Escalate** a ticket to you with a note, which e-mails your notify addresses. Internal
-notes on those tickets are shared between your team and the reseller. The customer still never sees
-them.
+**Resellers' customers.** Their tickets go to the customer's current reseller first, not to you. The
+reseller answers them, and can **Escalate** a ticket to you with a note, which e-mails your notify
+addresses. A ticket your team opens for a reseller's customer stays with your team.
+
+- **Internal notes** on these tickets are shared between your team and the reseller. The customer never
+  sees them.
+- **Staff-only notes** are for your team alone: neither the reseller nor the customer sees them.
 
 Clients are e-mailed when a ticket is opened, answered and closed by you (`ticket.opened`,
 `ticket.reply`, `ticket.closed`). Your team (or the reseller) is e-mailed about new tickets,
-escalations and client replies (`ticket.new_staff`, `ticket.customer_reply`). Replying to these
-e-mails doesn't add to the ticket yet: people reply in the panel.
+escalations and client replies (`ticket.new_staff`, `ticket.customer_reply`), one message per
+address. Replying to these e-mails doesn't add to the ticket yet: people reply in the panel.
+
+Deleting an account deletes its tickets and their attachments.
 
 ## 12. Logs in your own storage
 
@@ -424,10 +467,23 @@ DigitalOcean Spaces, MinIO…) instead of filling the server's disk. Open the **
    container's log may grow (default 10 MB).
 
 Logs appear in the bucket as `logs/<server>/<kind>/YYYY/MM/DD/HH-….log.gz`, one JSON object per
-line. **Archive** in the Logs tab lists a day's files and opens them (zstd files are downloaded,
-not shown). Shipping starts from the moment it's turned on: older logs aren't sent. If the storage is
-unreachable, logs wait on the server (up to 1 GB by default, oldest dropped first) and are sent once
-it's back. With several servers, each ships its own logs with the panel's settings.
+line. **Archive** in the Logs tab lists a day's files. It shows gzip files and downloads any file as
+stored in the bucket (zstd files can only be downloaded). Shipping starts from the moment it's turned
+on: older logs aren't sent. Container output written while WPGenie itself was stopped isn't sent
+either.
+
+If the storage is unreachable, logs wait on the server and are sent once it's back. They wait in two
+places: the shipper's own buffer (about 256 MB), then the waiting logs (up to 1 GB by default, oldest
+dropped first). Plan for both on the disk; the status shows each.
+
+**Several servers** each ship their own logs, with the panel's settings, into the same bucket with the
+same key. A server that is broken into could therefore read, and (if the key may delete) remove, the
+other servers' logs. To keep logs tamper-proof:
+
+- turn on versioning or object lock on the bucket;
+- or let a lifecycle rule on the bucket delete old logs (set WPGenie's retention to *Forever*), and
+  give the key no delete permission. **Test connection** then reports that deleting its test file
+  failed: that is expected.
 
 ## 13. Troubleshooting
 
@@ -456,8 +512,9 @@ and have a price for its cycle (or a price override). It must not be cancelled b
 **Reminders & suspension → the runs list** for errors, or click **Run now**.
 
 **A client was suspended but has paid.** A billing suspension lifts once none of the account's
-invoices is overdue. Check for another overdue invoice (an overage or burst pack invoice, for example).
-A suspension by an administrator is only lifted by an administrator.
+invoices is overdue. Check for another overdue invoice (an overage invoice, or one made by hand).
+A suspension by an administrator is only lifted by an administrator; so is the suspension of a reseller
+whose cancellation came while it still had customers.
 
 **The order page says no plans are for sale.** Built-in billing must be on, and at least one plan must
 be public with a price.
