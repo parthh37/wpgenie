@@ -787,7 +787,12 @@ async function staffInvoice(box, id) {
     }
     if (st === 'draft' || st === 'unpaid') {
       acts.push(actionButton('Cancel invoice', async () => {
-        if (!await ask(`Cancel ${invoiceTitle(inv)}? The client no longer needs to pay it. Payments already made stay recorded.`,
+        // A cancelled renewal waives its period (the server moves the next
+        // due date past it), so billing carries on with the next one.
+        const what = inv.kind === 'renewal'
+          ? 'Cancelling a renewal invoice waives that period: the client isn\'t billed for it, and their next due date moves to the end of the period. Billing continues with the next period.'
+          : 'The client no longer needs to pay it.';
+        if (!await ask(`Cancel ${invoiceTitle(inv)}? ${what} Payments already made stay recorded.`,
           { ok: 'Cancel invoice', danger: true })) return;
         await api('POST', `/invoices/${inv.id}/cancel`);
         notify('Invoice cancelled');
