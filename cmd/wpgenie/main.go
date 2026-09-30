@@ -35,6 +35,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/mailer"
 	"github.com/parthh37/wpgenie/internal/monitor"
 	"github.com/parthh37/wpgenie/internal/offload"
 	"github.com/parthh37/wpgenie/internal/phpmyadmin"
@@ -498,6 +499,23 @@ func serve(cfg *config.Config, node bool) error {
 	if cfg.PanelDomain != "" {
 		panelURL = "https://" + cfg.PanelDomain
 	}
+	// E-mail to people (invoices, reminders, ticket replies): the panel's
+	// outbox, branded like the panel.
+	var mailr *mailer.Service
+	if !node {
+		mailr = &mailer.Service{Store: st, Log: log, PanelURL: panelURL, Brand: func(ctx context.Context) mailer.Brand {
+			b, err := svc.Branding(ctx)
+			if err != nil || !b.Enabled() {
+				return mailer.Brand{}
+			}
+			out := mailer.Brand{Name: b.Name, URL: b.URL}
+			if v := b.LogoVersion(); v != "" {
+				out.LogoURL = panelURL + site.BrandLogoPath + "?v=" + v
+			}
+			return out
+		}}
+		go mailr.Run(ctx)
+	}
 
 	// IP reputation: blocklists (saved, so a restart without network keeps
 	// them) and the country database, downloaded once a site uses it.
@@ -606,7 +624,7 @@ func serve(cfg *config.Config, node bool) error {
 	apiSrv := &api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
 		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, PHPMyAdmin: pmaSvc, WPLogin: wpLoginSvc,
 		Files: files.New(st, cfg.SiteRoot), Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
-		Billing: bill, PanelURL: panelURL}
+		Billing: bill, PanelURL: panelURL, Mailer: mailr}
 	apiHandler := apiSrv.Handler()
 	if node {
 		// Requests the panel forwards arrive over the cluster listener, and
