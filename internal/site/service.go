@@ -102,7 +102,7 @@ type Service struct {
 	Images  ImageBuilder
 	// Version is WPGenie's version, recorded in backups.
 	Version string
-	// SiteRemoved is told about deleted sites (SFTP logins, Adminer
+	// SiteRemoved is told about deleted sites (SFTP logins, phpMyAdmin
 	// sessions).
 	SiteRemoved func(ctx context.Context, id string)
 	// AccessChanged is told when SFTP logins changed other than through the
@@ -134,7 +134,7 @@ type Service struct {
 	remoteMu, remoteErr sync.Map
 	tun                 tunnels
 	// SiteSuspended is told when a site is suspended or back (SFTP logins
-	// and Adminer sessions end while it is suspended).
+	// and phpMyAdmin sessions end while it is suspended).
 	SiteSuspended func(ctx context.Context, id string, suspended bool)
 
 	// opsMu serialises everything that allocates ports or starts/stops

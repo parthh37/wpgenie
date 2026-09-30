@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/auth"
 	"github.com/parthh37/wpgenie/internal/billing"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
@@ -73,7 +73,7 @@ func newTenancyEnv(t *testing.T) *tenancyEnv {
 	e.api = &Server{Token: "tok", Version: "v0", Sites: svc, Store: st, Mail: ml, Log: log, Jobs: svc.Jobs,
 		Shield:  shield.New(shield.Options{Secret: []byte("k"), Sites: svc.ShieldLookup}),
 		Updater: &updater.Updater{Current: "v0", Repo: "o/r", StateDir: t.TempDir(), APIBase: "http://127.0.0.1:1"},
-		SFTP:    &sftp.Service{Store: st, Log: log}, Adminer: &adminer.Service{Store: st, Log: log},
+		SFTP:    &sftp.Service{Store: st, Log: log}, PHPMyAdmin: &phpmyadmin.Service{Store: st, Log: log},
 		Billing: b, PanelURL: "https://panel.test", Now: func() time.Time { return e.now }}
 	e.srv = httptest.NewServer(e.api.Handler())
 	t.Cleanup(e.srv.Close)

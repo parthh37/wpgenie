@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/site"
 )
 
@@ -46,7 +46,7 @@ func visit(t *testing.T, s *Service, link, siteID string) *httptest.ResponseReco
 	}
 	req := httptest.NewRequest("GET", u.RequestURI(), nil)
 	req.Host = u.Host
-	req.Header.Set(adminer.SiteHeader, siteID)
+	req.Header.Set(phpmyadmin.SiteHeader, siteID)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
 	return w

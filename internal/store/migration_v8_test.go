@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,7 +65,7 @@ func TestFilesFeatureMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	raw, _ := sql.Open("sqlite", "file:"+path)
 	raw.Exec(`CREATE TABLE schema_version (v INTEGER NOT NULL)`)
-	last := slices.IndexFunc(migrations, func(m string) bool { return strings.Contains(m, "',files'") })
+	last := migrationIndex(t, "',files'")
 	for i := 0; i < last; i++ {
 		if _, err := raw.Exec(migrations[i]); err != nil {
 			t.Fatal(i, err)
@@ -97,13 +96,26 @@ func TestFilesFeatureMigration(t *testing.T) {
 	}
 }
 
+// migrationIndex finds the migration containing marker: tests of one
+// migration run those before it, whatever is appended after.
+func migrationIndex(t *testing.T, marker string) int {
+	t.Helper()
+	for i, m := range migrations {
+		if strings.Contains(m, marker) {
+			return i
+		}
+	}
+	t.Fatalf("no migration contains %q", marker)
+	return 0
+}
+
 // Autoscaled sites become automatic burst and every plan keeps them
 // scaling (the feature, unlimited minutes); the others start with burst off.
 func TestBurstMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	raw, _ := sql.Open("sqlite", "file:"+path)
 	raw.Exec(`CREATE TABLE schema_version (v INTEGER NOT NULL)`)
-	last := slices.IndexFunc(migrations, func(m string) bool { return strings.Contains(m, "burst_mode") })
+	last := migrationIndex(t, "burst_mode")
 	for i := 0; i < last; i++ {
 		if _, err := raw.Exec(migrations[i]); err != nil {
 			t.Fatal(i, err)

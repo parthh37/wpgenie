@@ -202,7 +202,7 @@ const (
 )
 
 // SetMaintenance puts a site into (or out of) WordPress's maintenance mode
-// for the final copy of a move; its logins (SFTP, Adminer) are off
+// for the final copy of a move; its logins (SFTP, phpMyAdmin) are off
 // meanwhile, so nothing is written that the copy would miss.
 func (s *Service) SetMaintenance(ctx context.Context, id string, on bool) error {
 	root := s.Cfg.SiteRoot(id)

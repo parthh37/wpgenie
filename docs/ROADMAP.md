@@ -44,7 +44,7 @@ issue candidate once its phase starts.
 - [x] Staging environments: clone, search-replace URLs (regex: plain and JSON-escaped links, never a longer hostname),
       push staging → live (code / all files / database or chosen tables; exported with links rewritten, live backed
       up first); staging is `WP_ENVIRONMENT_TYPE=staging`, noindex, no cron, no mail
-- [x] Per-site SFTP (one OpenSSH container, every login chrooted to its site, SFTP only), Adminer on demand on the
+- [x] Per-site SFTP (one OpenSSH container, every login chrooted to its site, SFTP only), phpMyAdmin on demand on the
       site's own domain with one-time tokens and temporary database accounts
 - [x] File manager in the dashboard (browse, upload, edit, download as zip, move, copy, permissions, extract), jailed
       to the docroot with `os.Root` and acting as the site user

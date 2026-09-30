@@ -41,7 +41,7 @@ const (
 	FeatureBackups      = "backups"      // backups, restores, downloads, backup policy
 	FeatureSFTP         = "sftp"         // SFTP logins
 	FeatureFiles        = "files"        // the dashboard's file manager
-	FeatureAdminer      = "adminer"      // Adminer database access
+	FeaturePHPMyAdmin   = "phpmyadmin"   // phpMyAdmin database access
 	FeatureCertificates = "certificates" // their own TLS certificates
 	FeatureCDN          = "cdn"          // Cloudflare / pull-zone CDNs
 	FeatureSMTP         = "smtp"         // WordPress mail through the mail server
@@ -49,7 +49,7 @@ const (
 )
 
 // Features lists every plan feature.
-var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureFiles, FeatureAdminer, FeatureCertificates, FeatureCDN,
+var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureFiles, FeaturePHPMyAdmin, FeatureCertificates, FeatureCDN,
 	FeatureSMTP, FeatureBurst}
 
 // Suspension reasons: who suspended an account. Only the same party, or an

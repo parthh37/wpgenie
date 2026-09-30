@@ -20,7 +20,7 @@ import (
 )
 
 // CLI for Phase 2: jobs, backups, staging, domains, certificates, PHP,
-// SFTP and Adminer. Like the rest of the CLI, a client of the local API.
+// SFTP and phpMyAdmin. Like the rest of the CLI, a client of the local API.
 
 type jobView struct {
 	Job    store.Job      `json:"job"`
@@ -600,7 +600,7 @@ func phpCmd(cfg *config.Config, args []string) error {
 	return err
 }
 
-// ---- SFTP and Adminer ----
+// ---- SFTP and phpMyAdmin ----
 
 func sftpCmd(cfg *config.Config, id string, args []string) error {
 	usage := errors.New(`usage: wpgenie site sftp <site-id> [ls | add [--suffix NAME] [--password] [--key FILE] | rm <login>
@@ -698,12 +698,12 @@ func sftpCmd(cfg *config.Config, id string, args []string) error {
 	return usage
 }
 
-func adminerCmd(cfg *config.Config, id string) error {
+func phpMyAdminCmd(cfg *config.Config, id string) error {
 	var out struct {
 		URL       string    `json:"url"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if err := call(cfg, "POST", "/sites/"+id+"/adminer", nil, &out); err != nil {
+	if err := call(cfg, "POST", "/sites/"+id+"/phpmyadmin", nil, &out); err != nil {
 		return err
 	}
 	fmt.Printf("Open within %s (single use):\n\n  %s\n\nThe session ends after 15 minutes idle or an hour.\n",

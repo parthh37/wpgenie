@@ -154,7 +154,7 @@ var tenantRoutes = map[string]tenantRule{
 	"PUT /api/v1/sites/{id}/sftp/{user}/keys":                 feature(billing.FeatureSFTP),
 	"PUT /api/v1/sites/{id}/sftp/{user}/password":             feature(billing.FeatureSFTP),
 	"DELETE /api/v1/sites/{id}/sftp/{user}":                   feature(billing.FeatureSFTP),
-	"POST /api/v1/sites/{id}/adminer":                         feature(billing.FeatureAdminer),
+	"POST /api/v1/sites/{id}/phpmyadmin":                      feature(billing.FeaturePHPMyAdmin),
 	"GET /api/v1/sites/{id}/files":                            feature(billing.FeatureFiles),
 	"GET /api/v1/sites/{id}/files/content":                    feature(billing.FeatureFiles),
 	"GET /api/v1/sites/{id}/files/download":                   feature(billing.FeatureFiles),
