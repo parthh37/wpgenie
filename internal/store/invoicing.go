@@ -787,7 +787,8 @@ type InvoiceFilter struct {
 	Q string
 	// From/To: issued (created, for drafts) in [From, To).
 	From, To time.Time
-	// OverdueAt: unpaid invoices due before it.
+	// OverdueAt: unpaid invoices due at or before it (see
+	// billing.OverdueCutoff).
 	OverdueAt time.Time
 	// NoDrafts leaves drafts out (what clients see).
 	NoDrafts bool
@@ -854,7 +855,7 @@ func invoiceWhere(f InvoiceFilter) (string, []any) {
 		add(`(CASE WHEN issued_at > 0 THEN issued_at ELSE created_at END) < ?`, f.To.Unix())
 	}
 	if !f.OverdueAt.IsZero() {
-		add(`status = ? AND due_at > 0 AND due_at < ?`, InvoiceUnpaid, f.OverdueAt.Unix())
+		add(`status = ? AND due_at > 0 AND due_at <= ?`, InvoiceUnpaid, f.OverdueAt.Unix())
 	}
 	if f.NoDrafts {
 		add(`status <> ?`, InvoiceDraft)
@@ -865,8 +866,8 @@ func invoiceWhere(f InvoiceFilter) (string, []any) {
 	return strings.Join(conds, " AND "), args
 }
 
-// InvoiceStats are the totals of unpaid invoices: all, and those overdue
-// at a time.
+// InvoiceStats are the totals of unpaid invoices: all, and those due at or
+// before cutoff (overdue: see billing.OverdueCutoff).
 type InvoiceStats struct {
 	UnpaidCount  int
 	Outstanding  int64
@@ -874,12 +875,12 @@ type InvoiceStats struct {
 	OverdueTotal int64
 }
 
-func (s *Store) InvoiceStats(ctx context.Context, now time.Time) (*InvoiceStats, error) {
+func (s *Store) InvoiceStats(ctx context.Context, cutoff time.Time) (*InvoiceStats, error) {
 	var st InvoiceStats
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(total - credit_applied - amount_paid + amount_refunded), 0),
-		COALESCE(SUM(CASE WHEN due_at > 0 AND due_at < ? THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN due_at > 0 AND due_at < ? THEN total - credit_applied - amount_paid + amount_refunded ELSE 0 END), 0)
-		FROM invoices WHERE status = ?`, now.Unix(), now.Unix(), InvoiceUnpaid).
+		COALESCE(SUM(CASE WHEN due_at > 0 AND due_at <= ? THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN due_at > 0 AND due_at <= ? THEN total - credit_applied - amount_paid + amount_refunded ELSE 0 END), 0)
+		FROM invoices WHERE status = ?`, cutoff.Unix(), cutoff.Unix(), InvoiceUnpaid).
 		Scan(&st.UnpaidCount, &st.Outstanding, &st.OverdueCount, &st.OverdueTotal)
 	return &st, err
 }

@@ -139,7 +139,7 @@ func (s *Service) Profile(ctx context.Context, accountID int64) (*ProfileView, e
 	now := s.now()
 	for _, inv := range unpaid {
 		v.BalanceDue += max(inv.Balance(), 0)
-		if !inv.DueAt.IsZero() && inv.DueAt.Before(now) {
+		if PastDue(inv.DueAt, now) {
 			v.Overdue = true
 		}
 	}
@@ -507,7 +507,7 @@ func (s *Service) invoiceView(cfg *InvoicingSettings, inv *store.Invoice, now ti
 	}
 	if inv.Status == store.InvoiceUnpaid {
 		v.Balance = max(inv.Balance(), 0)
-		v.Overdue = !inv.DueAt.IsZero() && inv.DueAt.Before(now)
+		v.Overdue = PastDue(inv.DueAt, now)
 		if v.Balance > 0 {
 			v.PayMethods = cfg.methodIDs()
 		}
@@ -884,7 +884,7 @@ func (s *Service) Remind(ctx context.Context, id int64) error {
 		return fmt.Errorf("%w: the invoice is %s", ErrConflict, inv.Status)
 	}
 	now := s.now()
-	if !inv.DueAt.IsZero() && inv.DueAt.Before(now) {
+	if PastDue(inv.DueAt, now) {
 		days := int(now.Sub(inv.DueAt).Hours() / 24)
 		s.mailInvoice(ctx, cfg, inv, "invoice.overdue", "", map[string]any{"Days": max(days, 1), "SuspendDate": s.suspendDate(cfg, inv)})
 	} else {
@@ -897,7 +897,7 @@ func (s *Service) Remind(ctx context.Context, id int64) error {
 // suspendDate is when an overdue invoice suspends the account ("" when it
 // doesn't: not billed by invoice, or already past).
 func (s *Service) suspendDate(cfg *InvoicingSettings, inv *store.Invoice) string {
-	at := inv.DueAt.AddDate(0, 0, cfg.Automation.SuspendAfterDays)
+	at := inv.DueAt.AddDate(0, 0, max(cfg.Automation.SuspendAfterDays, 1))
 	if inv.DueAt.IsZero() || !at.After(s.now()) {
 		return ""
 	}
@@ -1092,7 +1092,7 @@ func (s *Service) liftBillingSuspension(ctx context.Context, accountID int64) er
 	if ModeOf(a, p) != ModeInvoice {
 		return nil // a Stripe subscription's suspension is Stripe's to lift
 	}
-	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: s.now(), Limit: 1})
+	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: OverdueCutoff(s.now()), Limit: 1})
 	if err != nil || len(overdue) > 0 {
 		return err
 	}
@@ -1250,7 +1250,7 @@ func (s *Service) quotePlanChange(ctx context.Context, cfg *InvoicingSettings, a
 		return nil, fmt.Errorf("%w: the account is already on %s, %s", ErrInvalid, plan.Name, cycle)
 	}
 	now := s.now()
-	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: now, Limit: 1})
+	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: OverdueCutoff(now), Limit: 1})
 	if err != nil {
 		return nil, err
 	}

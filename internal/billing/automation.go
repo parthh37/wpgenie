@@ -274,8 +274,8 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 				r.Counts[CountAutochargeFailed]++
 			}
 		}
-		// 3. Reminders.
-		if r.now.Before(due) {
+		// 3. Reminders (the due date itself is still "due", not overdue).
+		if !PastDue(due, r.now) {
 			if a.ReminderDaysBefore > 0 && !r.now.Before(days(due, -a.ReminderDaysBefore)) &&
 				s.mailInvoice(ctx, r.cfg, inv, "invoice.reminder", fmt.Sprintf("invoice.reminder:%d", inv.ID), nil) {
 				r.Counts[CountReminders]++
@@ -296,7 +296,7 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 			break
 		}
 		// 4. Late fee.
-		if a.LateFee.Type != "none" && a.LateFee.Amount > 0 && inv.LateFeeAt.IsZero() && !r.now.Before(days(due, a.LateFeeAfterDays)) {
+		if a.LateFee.Type != "none" && a.LateFee.Amount > 0 && inv.LateFeeAt.IsZero() && !r.now.Before(days(due, max(a.LateFeeAfterDays, 1))) {
 			fee := a.LateFee.Amount
 			if a.LateFee.Type == "percent" {
 				fee = MulDiv(inv.Balance(), a.LateFee.Amount, 10000)
@@ -325,7 +325,7 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 			continue // the rest is for accounts billed here
 		}
 		// 5. Suspension.
-		if acct.Status == store.AccountActive && !r.now.Before(days(due, a.SuspendAfterDays)) {
+		if acct.Status == store.AccountActive && !r.now.Before(days(due, max(a.SuspendAfterDays, 1))) {
 			if _, err := s.Suspend(ctx, acct.ID, ReasonBilling); err != nil {
 				r.fail(fmt.Sprintf("suspending account %d", acct.ID), err)
 			} else {

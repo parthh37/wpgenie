@@ -83,6 +83,19 @@ var cycleMonths = map[string]int{"monthly": 1, "quarterly": 3, "semiannually": 6
 func CycleMonths(cycle string) int { return cycleMonths[cycle] }
 
 // Day is the start of t's UTC day: due dates and periods are whole days.
+// A due date is a whole day (UTC): an invoice due on the 21st may be paid
+// all that day, and is overdue from the 22nd. Automation's "N days after
+// the due date" counts from the due date itself (the 26th for 5 days), and
+// never acts before the invoice is overdue.
+const dueGrace = 24 * time.Hour
+
+// PastDue reports whether something due at due is overdue at now.
+func PastDue(due, now time.Time) bool { return !due.IsZero() && !now.Before(due.Add(dueGrace)) }
+
+// OverdueCutoff is the latest due date that is overdue at now (for the
+// store's filters: due_at <= cutoff).
+func OverdueCutoff(now time.Time) time.Time { return now.Add(-dueGrace) }
+
 func Day(t time.Time) time.Time {
 	t = t.UTC()
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)

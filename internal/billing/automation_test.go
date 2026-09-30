@@ -220,3 +220,38 @@ func TestOverview(t *testing.T) {
 		t.Fatalf("overview %+v", o)
 	}
 }
+
+// A due date is a whole day: nothing is overdue on it, and "0 days after
+// the due date" means as soon as it is overdue (the next day), never on it.
+func TestDueDateIsAWholeDay(t *testing.T) {
+	if PastDue(day(2026, 10, 1), day(2026, 10, 1).Add(23*time.Hour+59*time.Minute)) || !PastDue(day(2026, 10, 1), day(2026, 10, 2)) ||
+		PastDue(time.Time{}, day(2030, 1, 1)) {
+		t.Fatal("PastDue")
+	}
+	e := newInvEnv(t)
+	ctx := context.Background()
+	e.setting(func(c *InvoicingSettings) { c.Automation.SuspendAfterDays = 0 })
+	a := e.billed("Acme", "basic", "monthly", day(2026, 10, 1))
+	e.run(day(2026, 9, 24)) // the renewal
+	inv := e.invoices(a.ID)[0]
+
+	noon := day(2026, 10, 1).Add(12 * time.Hour)
+	if c := e.run(noon); c[CountOverdueReminders] != 0 || c[CountSuspended] != 0 {
+		t.Fatalf("on the due date: %v", c)
+	}
+	if v, err := e.svc.Invoice(ctx, inv.ID); err != nil || v.Overdue {
+		t.Fatalf("overdue on its due date: %+v %v", v, err)
+	}
+	if o, err := e.svc.Overview(ctx); err != nil || o.OverdueCount != 0 {
+		t.Fatalf("overview on the due date: %+v %v", o, err)
+	}
+	if st, _ := e.status(a.ID); st != store.AccountActive {
+		t.Fatalf("suspended on the due date: %s", st)
+	}
+	if c := e.run(day(2026, 10, 2)); c[CountOverdueReminders] != 1 || c[CountSuspended] != 1 {
+		t.Fatalf("the day after: %v", c)
+	}
+	if v, _ := e.svc.Invoice(ctx, inv.ID); !v.Overdue {
+		t.Fatal("not overdue the day after")
+	}
+}

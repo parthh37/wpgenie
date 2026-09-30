@@ -102,7 +102,10 @@ const fmtDate = (t) => (t ? new Date(t).toLocaleDateString([], { dateStyle: 'med
 const dateInput = (t) => (t ? new Date(t).toISOString().slice(0, 10) : '');
 const fromDateInput = (v) => (v ? new Date(v + 'T00:00:00Z').toISOString() : null);
 const todayInput = (plusDays = 0) => new Date(Date.now() + plusDays * 864e5).toISOString().slice(0, 10);
-const daysUntil = (t) => Math.round((new Date(t).getTime() - Date.now()) / 864e5);
+// Due dates are whole UTC days (shown in UTC by fmtDate): count calendar
+// days, not 24-hour spans, so "due 21 Sept" is "today" all that day.
+const utcDay = (d) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+const daysUntil = (t) => Math.round((utcDay(new Date(t)) - utcDay(new Date())) / 864e5);
 
 function monthLabel(ym, long) {
   const [y, m] = String(ym).split('-').map(Number);

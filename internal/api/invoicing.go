@@ -445,12 +445,12 @@ func (s *Server) invoiceFilter(r *http.Request, def, maxLimit int) (store.Invoic
 		store.InvoicePartiallyRefunded:
 		f.Status = st
 	case "overdue":
-		f.OverdueAt = s.now()
+		f.OverdueAt = billing.OverdueCutoff(s.now())
 	default:
 		return f, fmt.Errorf("%w: unknown status %q", errBadRequest, st)
 	}
 	if q.Get("overdue") == "1" || q.Get("overdue") == "true" {
-		f.OverdueAt = s.now()
+		f.OverdueAt = billing.OverdueCutoff(s.now())
 	}
 	f.Q = strings.TrimSpace(q.Get("q"))
 	if len(f.Q) > 100 {

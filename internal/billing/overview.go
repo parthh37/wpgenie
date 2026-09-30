@@ -54,7 +54,7 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	}
 	now := s.now()
 	o := &Overview{Currency: cfg.Currency, IncomeByMonth: []MonthIncome{}, UpcomingRenewals: []Renewal{}}
-	st, err := s.Store.InvoiceStats(ctx, now)
+	st, err := s.Store.InvoiceStats(ctx, OverdueCutoff(now))
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	if o.RecentPayments, err = s.Store.Payments(ctx, store.PaymentFilter{Limit: 10}); err != nil {
 		return nil, err
 	}
-	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{OverdueAt: now, Limit: 10})
+	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{OverdueAt: OverdueCutoff(now), Limit: 10})
 	if err != nil {
 		return nil, err
 	}
