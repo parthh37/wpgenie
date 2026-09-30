@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -56,4 +57,52 @@ func testSlowRequestsAreCapped(t *testing.T, st *Store) {
 	if n != maxSlowRequests {
 		t.Fatalf("%d slow URLs kept, want %d", n, maxSlowRequests)
 	}
+}
+
+// Plans that included SFTP before the file manager existed get it too;
+// others don't, and running the migration can't add it twice.
+func TestFilesFeatureMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	raw, _ := sql.Open("sqlite", "file:"+path)
+	raw.Exec(`CREATE TABLE schema_version (v INTEGER NOT NULL)`)
+	last := migrationIndex(t, "',files'")
+	for i := 0; i < last; i++ {
+		if _, err := raw.Exec(migrations[i]); err != nil {
+			t.Fatal(i, err)
+		}
+		raw.Exec(`INSERT INTO schema_version (v) VALUES (?)`, i+1)
+	}
+	for id, feats := range map[string]string{"a": "sftp", "b": "backups,sftp,cdn", "c": "backups", "d": "", "e": "sftp,files", "f": "sftpx"} {
+		if _, err := raw.Exec(`INSERT INTO plans (id, name, features, created_at, updated_at) VALUES (?, ?, ?, 0, 0)`, id, id, feats); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw.Close()
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for id, want := range map[string]string{"a": "sftp,files", "b": "backups,sftp,cdn,files", "c": "backups", "d": "", "e": "sftp,files", "f": "sftpx"} {
+		p, err := st.GetPlan(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(p.Features, ","); got != want {
+			t.Errorf("plan %s: %q, want %q", id, got, want)
+		}
+	}
+}
+
+// migrationIndex finds the migration containing marker: tests of one
+// migration run those before it, whatever is appended after.
+func migrationIndex(t *testing.T, marker string) int {
+	t.Helper()
+	for i, m := range migrations {
+		if strings.Contains(m, marker) {
+			return i
+		}
+	}
+	t.Fatalf("no migration contains %q", marker)
+	return 0
 }

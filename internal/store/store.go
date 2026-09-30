@@ -619,6 +619,10 @@ var migrations = []string{
 	// WordPress performance tweaks (the optimize mu-plugin): a list of
 	// site.Optimizations keys.
 	`ALTER TABLE sites ADD COLUMN optimize TEXT NOT NULL DEFAULT '';`,
+	// The file manager ("files") reaches what SFTP does: plans that
+	// already include SFTP get it too.
+	`UPDATE plans SET features = features || ',files'
+	WHERE ',' || features || ',' LIKE '%,sftp,%' AND ',' || features || ',' NOT LIKE '%,files,%';`,
 	// Database access moved from Adminer to phpMyAdmin: plans keep it.
 	`UPDATE plans SET features = REPLACE(features, 'adminer', 'phpmyadmin');`,
 }

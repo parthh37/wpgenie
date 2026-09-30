@@ -44,6 +44,7 @@ with one command.
 | 🌐 | Domain aliases, www ↔ bare-domain redirects, primary domain changes, your own TLS certificates | ✅ |
 | 🐘 | PHP 8.2 / 8.3 / 8.4 per site (health-checked, switched back if the site breaks), per-site PHP limits | ✅ |
 | 📂 | Per-site **SFTP** (chrooted, keys or password) and **phpMyAdmin** on demand (one-time link, temporary DB account) | ✅ |
+| 🗂️ | **File manager** in the dashboard: browse, drag-and-drop uploads, edit text files (conflict-safe saves), download files or folders as zip, rename, copy, permissions, extract zip archives; jailed to the site's files | ✅ |
 | ⏳ | Job queue: long operations run in the background with progress in the dashboard and CLI | ✅ |
 | ⚡ | Full-page cache served by Caddy (Brotli/gzip precompressed, mobile copies when a theme needs them, admin-bar purge), Redis object cache, system cron | ✅ |
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
@@ -235,6 +236,7 @@ internal/jobs/      background jobs with progress (create, backup, restore, clon
 internal/backup/    restic in throwaway containers (local, S3, B2, SFTP repositories)
 internal/offload/   rclone in throwaway containers: uploads offload to S3-compatible storage
 internal/sftp/      the chrooted SFTP server's accounts (SHA-512 crypt, authorized_keys)
+internal/files/     the dashboard's file manager (os.Root-jailed, acts as the site user)
 internal/phpmyadmin/ phpMyAdmin sessions: one-time tokens, temporary DB accounts, proxy
 internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
 internal/updater/   WPGenie self-update (signed releases, applier with rollback)

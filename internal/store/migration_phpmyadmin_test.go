@@ -15,7 +15,7 @@ func TestMigrationAdminerToPHPMyAdmin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	raw, _ := sql.Open("sqlite", "file:"+path)
 	raw.Exec(`CREATE TABLE schema_version (v INTEGER NOT NULL)`)
-	for i := 0; i < len(migrations)-1; i++ {
+	for i := 0; i < migrationIndex(t, "'phpmyadmin'"); i++ {
 		if _, err := raw.Exec(migrations[i]); err != nil {
 			t.Fatal(i, err)
 		}

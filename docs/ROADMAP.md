@@ -46,6 +46,8 @@ issue candidate once its phase starts.
       up first); staging is `WP_ENVIRONMENT_TYPE=staging`, noindex, no cron, no mail
 - [x] Per-site SFTP (one OpenSSH container, every login chrooted to its site, SFTP only), phpMyAdmin on demand on the
       site's own domain with one-time tokens and temporary database accounts
+- [x] File manager in the dashboard (browse, upload, edit, download as zip, move, copy, permissions, extract), jailed
+      to the docroot with `os.Root` and acting as the site user
 - [x] Domain aliases (served or redirecting), www ↔ apex redirects, primary domain change (links rewritten),
       custom SSL certificates (validated, expiry warnings)
 - [x] PHP version switching (8.2 / 8.3 / 8.4, image built on first use, health-checked with automatic switch back),
