@@ -585,7 +585,7 @@ func errorLines(out []byte) string {
 
 // EnsureBuilt builds an image from the sources in dir unless the image
 // already carries their hash (label wpgenie.src), and returns its ID. For
-// images the daemon builds on first use (SFTP, Adminer): an upgrade that
+// images the daemon builds on first use (SFTP, phpMyAdmin): an upgrade that
 // changes their sources rebuilds them the next time they are needed.
 func (d *Docker) EnsureBuilt(ctx context.Context, tag, dir string) (string, error) {
 	hash, err := dirHash(dir)

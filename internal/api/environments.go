@@ -20,7 +20,7 @@ import (
 )
 
 // Phase 2 endpoints: jobs, backups, staging, domains and certificates, PHP,
-// SFTP and Adminer. Long operations answer 202 with a job ID; GET
+// SFTP and phpMyAdmin. Long operations answer 202 with a job ID; GET
 // /jobs/{id} follows them.
 
 func jobAccepted(w http.ResponseWriter, id int64, extra map[string]any) error {
@@ -579,7 +579,7 @@ func (s *Server) setPHP(w http.ResponseWriter, r *http.Request) error {
 	return jobAccepted(w, id, nil)
 }
 
-// ---- SFTP and Adminer ----
+// ---- SFTP and phpMyAdmin ----
 
 func (s *Server) listSFTP(w http.ResponseWriter, r *http.Request) error {
 	st, err := s.Store.GetSite(r.Context(), r.PathValue("id"))
@@ -591,7 +591,7 @@ func (s *Server) listSFTP(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, map[string]any{"users": users, "server": s.SFTP.Info(r.Context()),
-		"host": st.PrimaryDomain, "adminer_sessions": s.Adminer.Sessions(st.ID)})
+		"host": st.PrimaryDomain, "phpmyadmin_sessions": s.PHPMyAdmin.Sessions(st.ID)})
 }
 
 func (s *Server) addSFTP(w http.ResponseWriter, r *http.Request) error {
@@ -642,8 +642,8 @@ func (s *Server) deleteSFTP(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Server) openAdminer(w http.ResponseWriter, r *http.Request) error {
-	u, exp, err := s.Adminer.Open(r.Context(), r.PathValue("id"), principalFrom(r.Context()).Name)
+func (s *Server) openPHPMyAdmin(w http.ResponseWriter, r *http.Request) error {
+	u, exp, err := s.PHPMyAdmin.Open(r.Context(), r.PathValue("id"), principalFrom(r.Context()).Name)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package adminer
+package phpmyadmin
 
 import (
 	"context"
@@ -42,13 +42,13 @@ func (f *fakeAccounts) list() []string {
 	return append([]string(nil), f.dropped...)
 }
 
-// harness: an Adminer stand-in that echoes what it received.
+// harness: an phpMyAdmin stand-in that echoes what it received.
 func harness(t *testing.T) (*Service, *fakeAccounts, *time.Time, chan *http.Request) {
 	t.Helper()
 	seen := make(chan *http.Request, 10)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r
-		io.WriteString(w, "adminer")
+		io.WriteString(w, "phpmyadmin")
 	}))
 	t.Cleanup(up.Close)
 	u, _ := url.Parse(up.URL)
@@ -90,7 +90,7 @@ func TestTokenIsSingleUseAndBoundToItsSite(t *testing.T) {
 	}
 	s.addPending("tok1", "s1")
 	res := get(s, "s1", Path+"?wpgenie_token=tok1")
-	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != Path {
+	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != Path+"index.php?route=/database/structure&db=wp_s1" {
 		t.Fatalf("redeem: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
 	cookie := res.Cookies()[0]
@@ -101,23 +101,23 @@ func TestTokenIsSingleUseAndBoundToItsSite(t *testing.T) {
 		t.Fatal("a token worked twice")
 	}
 
-	res = get(s, "s1", Path+"?select=wp_posts", cookie, &http.Cookie{Name: "adminer_sid", Value: "a"})
+	res = get(s, "s1", Path+"?select=wp_posts", cookie, &http.Cookie{Name: "phpMyAdmin", Value: "a"})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("session request: %d", res.StatusCode)
 	}
 	r := <-seen
 	if r.Header.Get("X-WPGenie-DB-User") != "wpga_s1x1" || r.Header.Get("X-WPGenie-DB-Pass") != "pw-s1" ||
-		r.Header.Get("X-WPGenie-Adminer") != "s3cret" || r.Header.Get("X-WPGenie-DB-Name") != "wp_s1" {
-		t.Errorf("headers to Adminer: %v", r.Header)
+		r.Header.Get("X-WPGenie-Secret") != "s3cret" || r.Header.Get("X-WPGenie-DB-Name") != "wp_s1" {
+		t.Errorf("headers to phpMyAdmin: %v", r.Header)
 	}
 	if _, ok := r.Header["X_WPGenie-DB-Host"]; ok {
-		t.Error("an underscore spelling of a credentials header reached Adminer")
+		t.Error("an underscore spelling of a credentials header reached phpMyAdmin")
 	}
-	if c := r.Header.Get("Cookie"); strings.Contains(c, cookieName) || !strings.Contains(c, "adminer_sid=a") {
-		t.Errorf("cookies to Adminer: %q", c)
+	if c := r.Header.Get("Cookie"); strings.Contains(c, cookieName) || !strings.Contains(c, "phpMyAdmin=a") {
+		t.Errorf("cookies to phpMyAdmin: %q", c)
 	}
 	if r.URL.Path != Path {
-		t.Errorf("path %q: Adminer builds its links from it", r.URL.Path)
+		t.Errorf("path %q: phpMyAdmin builds its links from it", r.URL.Path)
 	}
 	if res := get(s, "s2", Path, cookie); res.StatusCode != http.StatusForbidden {
 		t.Error("a session cookie worked on another site")
@@ -164,20 +164,20 @@ func TestNoSessionNoProxy(t *testing.T) {
 	}
 	select {
 	case <-seen:
-		t.Fatal("a request without a session reached Adminer")
+		t.Fatal("a request without a session reached phpMyAdmin")
 	default:
 	}
 }
 
 func TestWithoutCookie(t *testing.T) {
-	if got := withoutCookie("a=1; wpgenie_adminer=x; adminer_sid=2", "wpgenie_adminer"); got != "a=1; adminer_sid=2" {
+	if got := withoutCookie("a=1; wpgenie_pma=x; phpMyAdmin=2", "wpgenie_pma"); got != "a=1; phpMyAdmin=2" {
 		t.Fatal(got)
 	}
 }
 
-// TestAdminerEndToEnd opens a real Adminer on a real MariaDB: token, cookie,
+// TestPHPMyAdminEndToEnd opens a real phpMyAdmin on a real MariaDB: token, cookie,
 // temporary account, the site's tables; and the account dropped at the end.
-func TestAdminerEndToEnd(t *testing.T) {
+func TestPHPMyAdminEndToEnd(t *testing.T) {
 	net := os.Getenv("E2E_NET")
 	if os.Getenv("WPGENIE_TEST_E2E") != "1" || net == "" {
 		t.Skip("set WPGENIE_TEST_E2E=1 and E2E_NET (run in a container on that network)")
@@ -210,7 +210,7 @@ func TestAdminerEndToEnd(t *testing.T) {
 	st.CreateSite(ctx, &store.Site{ID: "sadm", Name: "x", PrimaryDomain: "adm.test", PHPVersion: "8.3", FPMPort: 19000,
 		DBName: "wp_sadm", Status: store.StatusActive, ShieldMode: "standard", MemoryMB: 512, CPUs: 1, Replicas: 1})
 	s := &Service{Store: st, Docker: docker, Accounts: db, Log: slog.New(slog.DiscardHandler),
-		Cfg: Config{Image: "wpgenie/adminer:test", ImageDir: "../../images/adminer", Port: 18090, Network: net,
+		Cfg: Config{Image: "wpgenie/phpmyadmin:test", ImageDir: "../../images/phpmyadmin", Port: 18090, Network: net,
 			DBHost: dbName, Upstream: container + ":8080"}}
 
 	link, _, err := s.Open(ctx, "sadm", "tester")
@@ -225,24 +225,43 @@ func TestAdminerEndToEnd(t *testing.T) {
 	if res.StatusCode != http.StatusSeeOther {
 		t.Fatalf("redeem %d", res.StatusCode)
 	}
-	cookie := res.Cookies()[0]
-	jar := []*http.Cookie{cookie}
-	// Adminer logs in with the temporary account and redirects; follow like a browser.
-	target := Path
+	jar := res.Cookies()
+	// Redirected to the site's tables; follow phpMyAdmin like a browser.
+	target := res.Header.Get("Location")
 	var body string
 	for range 5 {
 		r := get(s, "sadm", target, jar...)
 		b, _ := io.ReadAll(r.Body)
 		body = string(b)
 		jar = append(jar, r.Cookies()...)
-		loc := r.Header.Get("Location")
-		if loc == "" {
+		loc, _ := url.Parse(r.Header.Get("Location"))
+		if loc == nil || loc.Path == "" {
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("%s: %d\n%.2000s", target, r.StatusCode, body)
+			}
 			break
 		}
-		target = Path + strings.TrimPrefix(loc, Path)
+		target = loc.RequestURI()
 	}
 	if !strings.Contains(body, "wp_secret_marker") {
 		t.Fatalf("the site's tables aren't shown:\n%.2000s", body)
+	}
+	// Its static files come through; its code and the container itself don't.
+	for _, p := range []string{"favicon.ico", "js/messages.php", "themes/pmahomme/css/theme.css"} {
+		if r := get(s, "sadm", Path+p, jar...); r.StatusCode != http.StatusOK {
+			t.Errorf("%s: %d", p, r.StatusCode)
+		}
+	}
+	if r := get(s, "sadm", Path+"libraries/classes/Config.php", jar...); r.StatusCode != http.StatusNotFound {
+		t.Errorf("phpMyAdmin's libraries are served: %d", r.StatusCode)
+	}
+	if r, err := http.Get("http://" + s.Cfg.Upstream + Path); err != nil || r.StatusCode != http.StatusForbidden {
+		t.Errorf("phpMyAdmin answers without the daemon's secret: %v %v", r, err)
+	}
+	var pmaTables int
+	raw.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_NAME LIKE 'pma\\_\\_%'").Scan(&pmaTables)
+	if pmaTables != 0 {
+		t.Errorf("phpMyAdmin created %d configuration tables", pmaTables)
 	}
 	var n int
 	raw.QueryRowContext(ctx, "SELECT COUNT(*) FROM mysql.user WHERE User LIKE 'wpga\\_%'").Scan(&n)

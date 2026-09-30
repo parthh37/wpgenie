@@ -23,7 +23,6 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/analytics"
 	"github.com/parthh37/wpgenie/internal/api"
 	"github.com/parthh37/wpgenie/internal/backup"
@@ -38,6 +37,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/monitor"
 	"github.com/parthh37/wpgenie/internal/offload"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/proxy"
 	"github.com/parthh37/wpgenie/internal/runtime"
 	"github.com/parthh37/wpgenie/internal/sftp"
@@ -114,7 +114,7 @@ Usage:
                           [--max-execution-time S] [--max-input-vars N]
   wpgenie site sftp <site-id> [ls | add [--suffix NAME] [--password] [--key FILE] | rm <login>
                           | passwd <login> | nopasswd <login> | keys <login> <file>]
-  wpgenie site adminer <site-id>        one-time link to Adminer on the site's database
+  wpgenie site phpmyadmin <site-id>     one-time link to phpMyAdmin on the site's database
   wpgenie site wp <site-id> login [user-id] | users | password <user-id>
                                         one-time link into wp-admin (no WordPress password),
                                         administrators, reset an administrator's password
@@ -434,7 +434,7 @@ func serve(cfg *config.Config, node bool) error {
 		go mailSvc.Run(ctx)
 	}
 
-	// SFTP (one chrooted OpenSSH server for every site) and Adminer (on
+	// SFTP (one chrooted OpenSSH server for every site) and phpMyAdmin (on
 	// demand, on sites' own domains).
 	sftpSvc := &sftp.Service{Store: st, Docker: docker, Log: log, Cfg: sftp.Config{
 		DataDir: filepath.Join(cfg.DataDir, "sftp"), SitesDir: cfg.SitesDir(), Image: cfg.SFTPImage,
@@ -444,10 +444,10 @@ func serve(cfg *config.Config, node bool) error {
 			log.Error("sftp: starting the server", "err", err)
 		}
 	}()
-	adminerSvc := &adminer.Service{Store: st, Docker: docker, Accounts: db, Log: log, Cfg: adminer.Config{
-		Image: cfg.AdminerImage, ImageDir: filepath.Join(cfg.ImagesDir, "adminer"), Port: cfg.AdminerPort,
+	pmaSvc := &phpmyadmin.Service{Store: st, Docker: docker, Accounts: db, Log: log, Cfg: phpmyadmin.Config{
+		Image: cfg.PHPMyAdminImage, ImageDir: filepath.Join(cfg.ImagesDir, "phpmyadmin"), Port: cfg.PHPMyAdminPort,
 		Network: cfg.DockerNetwork, DBHost: cfg.MariaDBHost}}
-	go adminerSvc.Run(ctx)
+	go pmaSvc.Run(ctx)
 	// Signing in to sites' wp-admin from the panel (links on their domains).
 	wpLoginSvc := &wplogin.Service{Sites: svc, Log: log}
 	// Logins that arrived with a site moved here.
@@ -458,7 +458,7 @@ func serve(cfg *config.Config, node bool) error {
 	}
 	svc.SiteRemoved = func(ctx context.Context, id string) {
 		sftpSvc.SiteRemoved(ctx, id)
-		adminerSvc.SiteRemoved(ctx, id)
+		pmaSvc.SiteRemoved(ctx, id)
 		wpLoginSvc.SiteRemoved(ctx, id)
 	}
 	// A suspended site's SFTP logins and database sessions end until it is
@@ -466,7 +466,7 @@ func serve(cfg *config.Config, node bool) error {
 	svc.SiteSuspended = func(ctx context.Context, id string, suspended bool) {
 		if suspended {
 			sftpSvc.SiteRemoved(ctx, id)
-			adminerSvc.SiteRemoved(ctx, id)
+			pmaSvc.SiteRemoved(ctx, id)
 			wpLoginSvc.SiteRemoved(ctx, id)
 			return
 		}
@@ -587,7 +587,7 @@ func serve(cfg *config.Config, node bool) error {
 	go ing.Run(ctx)
 
 	apiSrv := &api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
-		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, Adminer: adminerSvc, WPLogin: wpLoginSvc,
+		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, PHPMyAdmin: pmaSvc, WPLogin: wpLoginSvc,
 		Files: files.New(st, cfg.SiteRoot), Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
 		Billing: bill, PanelURL: panelURL}
 	apiHandler := apiSrv.Handler()
@@ -654,7 +654,7 @@ func serve(cfg *config.Config, node bool) error {
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|" +
-			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|adminer|wp|optimize|analyse")
+			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|phpmyadmin|wp|optimize|analyse")
 	}
 	switch args[0] {
 	case "ls":
@@ -694,7 +694,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return spreadCmd(cfg, args[1:])
 	case "offload":
 		return offloadCmd(cfg, args[1:])
-	case "backup", "staging", "push", "domain", "cert", "sftp", "adminer", "wp", "optimize", "analyse":
+	case "backup", "staging", "push", "domain", "cert", "sftp", "phpmyadmin", "wp", "optimize", "analyse":
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return fmt.Errorf("usage: wpgenie site %s <site-id> ...", args[0])
 		}
@@ -719,7 +719,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		case "analyse":
 			return analyseCmd(cfg, id, rest)
 		default:
-			return adminerCmd(cfg, id)
+			return phpMyAdminCmd(cfg, id)
 		}
 	case "purge":
 		if len(args) != 2 {

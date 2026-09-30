@@ -29,7 +29,7 @@ test-postgres:
 	  go test -race -count=1 ./...; status=$$?; docker rm -f wpgenie-test-postgres >/dev/null; exit $$status
 
 # Phase 2 and 3 end to end (backups, restores, staging, pushes, domains,
-# PHP 8.4, SFTP, Adminer; page cache, images, PHP errors, CDN links; uploads
+# PHP 8.4, SFTP, phpMyAdmin; page cache, images, PHP errors, CDN links; uploads
 # offload) against real WordPress, MariaDB, Valkey, restic, rclone and MinIO. Runs the tests in
 # a container on a Docker network shared with the database; the temporary
 # directory is mounted at the same path so sibling containers' bind mounts

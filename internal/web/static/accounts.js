@@ -4,7 +4,7 @@
 // with app.js and panels.js. Everything shown here is also enforced by the
 // server; hiding a button is only a convenience.
 
-const FEATURES = ['staging', 'backups', 'sftp', 'files', 'adminer', 'certificates', 'cdn', 'smtp'];
+const FEATURES = ['staging', 'backups', 'sftp', 'files', 'phpmyadmin', 'certificates', 'cdn', 'smtp'];
 const EVENTS = ['account.created', 'account.suspended', 'account.unsuspended', 'account.terminated',
   'account.payment_failed', 'plan.changed', 'usage.threshold', 'site.created', 'site.deleted'];
 

@@ -1,5 +1,5 @@
 'use strict';
-// Jobs, backups, staging, domains & SSL, PHP, SFTP & Adminer. Shares api(),
+// Jobs, backups, staging, domains & SSL, PHP, SFTP & phpMyAdmin. Shares api(),
 // h(), table(), status(), showError() and showSecret() with app.js and
 // panels.js.
 
@@ -380,16 +380,16 @@ async function showAccess(el, site) {
       await showAccess(el, site);
     } catch (e) { showError(e); add.disabled = false; }
   });
-  const adminer = h('button', {}, 'Open Adminer');
-  adminer.addEventListener('click', async () => {
+  const pma = h('button', {}, 'Open phpMyAdmin');
+  pma.addEventListener('click', async () => {
     // Opened now, in the click: a window opened after the request would be blocked as a pop-up.
     const win = window.open('about:blank', '_blank');
-    adminer.disabled = true;
+    pma.disabled = true;
     try {
-      const r = await api('POST', `/sites/${site.id}/adminer`);
-      if (win) { win.opener = null; win.location = r.url; } else { showSecret('Adminer link (single use, 2 minutes)', [r.url]); }
+      const r = await api('POST', `/sites/${site.id}/phpmyadmin`);
+      if (win) { win.opener = null; win.location = r.url; } else { showSecret('phpMyAdmin link (single use, 2 minutes)', [r.url]); }
     } catch (e) { if (win) win.close(); showError(e); }
-    finally { adminer.disabled = false; }
+    finally { pma.disabled = false; }
   });
   fill(body, 
     h('h3', {}, 'SFTP'),
@@ -402,10 +402,10 @@ async function showAccess(el, site) {
     h('p', { class: 'muted small' }, 'Logins only see this site\'s directory (the WordPress install in public/) and can\'t run commands. ' +
       'Files they upload belong to the site, like WordPress\'s own.'),
     h('h3', {}, 'Database'),
-    h('p', { class: 'muted small' }, 'Adminer opens on the site\'s own domain with a temporary database account for this site only. ' +
+    h('p', { class: 'muted small' }, 'phpMyAdmin opens on the site\'s own domain with a temporary database account for this site only. ' +
       'The link works once, within 2 minutes; the session ends after 15 minutes idle or an hour.' +
-      (info.adminer_sessions ? ` Open sessions: ${info.adminer_sessions}.` : '')),
-    h('div', { class: 'actions' }, adminer));
+      (info.phpmyadmin_sessions ? ` Open sessions: ${info.phpmyadmin_sessions}.` : '')),
+    h('div', { class: 'actions' }, pma));
 }
 
 // ---- Backups tab: destinations and every backup in them ----

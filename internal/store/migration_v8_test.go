@@ -65,7 +65,7 @@ func TestFilesFeatureMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	raw, _ := sql.Open("sqlite", "file:"+path)
 	raw.Exec(`CREATE TABLE schema_version (v INTEGER NOT NULL)`)
-	last := len(migrations) - 1
+	last := migrationIndex(t, "',files'")
 	for i := 0; i < last; i++ {
 		if _, err := raw.Exec(migrations[i]); err != nil {
 			t.Fatal(i, err)
@@ -92,4 +92,17 @@ func TestFilesFeatureMigration(t *testing.T) {
 			t.Errorf("plan %s: %q, want %q", id, got, want)
 		}
 	}
+}
+
+// migrationIndex finds the migration containing marker: tests of one
+// migration run those before it, whatever is appended after.
+func migrationIndex(t *testing.T, marker string) int {
+	t.Helper()
+	for i, m := range migrations {
+		if strings.Contains(m, marker) {
+			return i
+		}
+	}
+	t.Fatalf("no migration contains %q", marker)
+	return 0
 }

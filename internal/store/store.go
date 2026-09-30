@@ -623,6 +623,8 @@ var migrations = []string{
 	// already include SFTP get it too.
 	`UPDATE plans SET features = features || ',files'
 	WHERE ',' || features || ',' LIKE '%,sftp,%' AND ',' || features || ',' NOT LIKE '%,files,%';`,
+	// Database access moved from Adminer to phpMyAdmin: plans keep it.
+	`UPDATE plans SET features = REPLACE(features, 'adminer', 'phpmyadmin');`,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

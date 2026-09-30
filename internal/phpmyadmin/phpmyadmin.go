@@ -1,21 +1,21 @@
-// Package adminer opens Adminer on a site's database, on demand.
+// Package phpmyadmin opens phpMyAdmin on a site's database, on demand.
 //
 // Opening it from the panel creates a temporary MariaDB account with
 // rights on that one database and a one-time token (valid for two
 // minutes), and returns a link on the site's own domain:
-// https://<site>/_wpgenie/adminer/?wpgenie_token=…. Caddy routes /_wpgenie/*
+// https://<site>/_wpgenie/phpmyadmin/?wpgenie_token=…. Caddy routes /_wpgenie/*
 // to the daemon; the token is exchanged for a session cookie scoped to that
-// path, and requests are proxied to the Adminer container with the
+// path, and requests are proxied to the phpMyAdmin container with the
 // session's account in headers. Sessions end after 15 minutes idle or an
 // hour, when the account is dropped (open connections killed); the
 // container stops once no session is left.
 //
-// Why the site's own domain and not the panel's: Adminer renders whatever
+// Why the site's own domain and not the panel's: phpMyAdmin renders whatever
 // the database holds, and a compromised plugin controls that. If an XSS in
-// Adminer ran on the panel's origin, it could act with the operator's
+// phpMyAdmin ran on the panel's origin, it could act with the operator's
 // panel session. On the site's origin it reaches nothing the site's own
 // code couldn't already.
-package adminer
+package phpmyadmin
 
 import (
 	"context"
@@ -56,11 +56,11 @@ type Accounts interface {
 
 type Config struct {
 	Image    string
-	ImageDir string // images/adminer
-	Port     int    // Adminer on 127.0.0.1
+	ImageDir string // images/phpmyadmin
+	Port     int    // phpMyAdmin on 127.0.0.1
 	Network  string // where MariaDB is
 	DBHost   string // MariaDB's name on that network
-	// Upstream is where the daemon reaches Adminer (default
+	// Upstream is where the daemon reaches phpMyAdmin (default
 	// 127.0.0.1:<Port>; tests use the container's network address).
 	Upstream string
 }
@@ -69,14 +69,17 @@ type Config struct {
 const SiteHeader = "X-WPGenie-Site"
 
 const (
-	container   = "wpgenie-adminer"
-	Path        = "/_wpgenie/adminer/"
-	cookieName  = "wpgenie_adminer"
-	tokenParam  = "wpgenie_token"
-	tokenTTL    = 2 * time.Minute
-	sessionIdle = 15 * time.Minute
-	sessionMax  = time.Hour
-	idleStop    = 5 * time.Minute
+	container = "wpgenie-phpmyadmin"
+	// Adminer's container, which this replaced: removed if an upgrade
+	// left it running.
+	legacyContainer = "wpgenie-adminer"
+	Path            = "/_wpgenie/phpmyadmin/"
+	cookieName      = "wpgenie_pma"
+	tokenParam      = "wpgenie_token"
+	tokenTTL        = 2 * time.Minute
+	sessionIdle     = 15 * time.Minute
+	sessionMax      = time.Hour
+	idleStop        = 5 * time.Minute
 )
 
 type session struct {
@@ -147,12 +150,12 @@ func (s *Service) Open(ctx context.Context, siteID, actor string) (string, time.
 	s.pending[hash(token)] = sess
 	s.lastUsed = s.now()
 	s.mu.Unlock()
-	s.Log.Info("adminer session opened", "site", siteID, "actor", actor, "db_user", sess.user)
+	s.Log.Info("phpmyadmin session opened", "site", siteID, "actor", actor, "db_user", sess.user)
 	u := url.URL{Scheme: "https", Host: st.PrimaryDomain, Path: Path, RawQuery: tokenParam + "=" + token}
 	return u.String(), sess.created.Add(tokenTTL), nil
 }
 
-// ServeHTTP handles /_wpgenie/adminer/ on sites' domains (via Caddy).
+// ServeHTTP handles /_wpgenie/phpmyadmin/ on sites' domains (via Caddy).
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	siteID := r.Header.Get(SiteHeader)
 	w.Header().Set("Referrer-Policy", "no-referrer")
@@ -168,7 +171,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := r.Cookie(cookieName)
 	if err != nil {
-		denied(w, "Open Adminer from the WPGenie panel (Site → SFTP & database).")
+		denied(w, "Open phpMyAdmin from the WPGenie panel (Site → SFTP & database).")
 		return
 	}
 	s.mu.Lock()
@@ -187,19 +190,19 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy := s.proxy
 	s.mu.Unlock()
 	if sess == nil || proxy == nil {
-		denied(w, "This database session has ended. Open Adminer again from the WPGenie panel.")
+		denied(w, "This database session has ended. Open phpMyAdmin again from the WPGenie panel.")
 		return
 	}
 	r = r.Clone(r.Context())
 	for k := range r.Header {
 		// PHP turns "_" into "-" too (HTTP_X_WPGENIE_…): X_WPGenie-DB-Host
-		// must not reach Adminer as the database host.
+		// must not reach phpMyAdmin as the database host.
 		if strings.HasPrefix(strings.ToLower(strings.ReplaceAll(k, "_", "-")), "x-wpgenie-") {
 			delete(r.Header, k)
 		}
 	}
 	r.Header.Set("Cookie", withoutCookie(r.Header.Get("Cookie"), cookieName))
-	r.Header.Set("X-WPGenie-Adminer", s.secret)
+	r.Header.Set("X-WPGenie-Secret", s.secret)
 	r.Header.Set("X-WPGenie-DB-Host", s.Cfg.DBHost)
 	r.Header.Set("X-WPGenie-DB-User", sess.user)
 	r.Header.Set("X-WPGenie-DB-Pass", sess.pass)
@@ -216,11 +219,11 @@ func (s *Service) redeem(w http.ResponseWriter, r *http.Request, siteID, tok str
 	if sess != nil {
 		delete(s.pending, key) // single use, whatever happens next
 	}
-	var cookie string
+	var cookie, db string
 	ok := sess != nil && sess.siteID == siteID && s.now().Sub(sess.created) <= tokenTTL
 	if ok {
 		cookie = randHex(32)
-		sess.redeemed, sess.touched = true, s.now()
+		sess.redeemed, sess.touched, db = true, s.now(), sess.db
 		s.sessions[hash(cookie)] = sess
 	}
 	s.mu.Unlock()
@@ -228,12 +231,13 @@ func (s *Service) redeem(w http.ResponseWriter, r *http.Request, siteID, tok str
 		if sess != nil {
 			go s.drop(sess)
 		}
-		denied(w, "This link has expired or was already used. Open Adminer again from the WPGenie panel.")
+		denied(w, "This link has expired or was already used. Open phpMyAdmin again from the WPGenie panel.")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: cookie, Path: Path, HttpOnly: true, Secure: true,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(sessionMax / time.Second)})
-	http.Redirect(w, r, Path, http.StatusSeeOther)
+	// Straight to the site's tables (phpMyAdmin's home page is the server's).
+	http.Redirect(w, r, Path+"index.php?route=/database/structure&db="+url.QueryEscape(db), http.StatusSeeOther)
 }
 
 func denied(w http.ResponseWriter, msg string) {
@@ -244,7 +248,7 @@ func denied(w http.ResponseWriter, msg string) {
 		`<p style="font:16px system-ui;margin:3rem auto;max-width:36rem">%s</p>`, html.EscapeString(msg))
 }
 
-// withoutCookie removes one cookie from a Cookie header: Adminer never
+// withoutCookie removes one cookie from a Cookie header: phpMyAdmin never
 // sees WPGenie's session cookie.
 func withoutCookie(header, name string) string {
 	var keep []string
@@ -260,7 +264,7 @@ func (s *Service) drop(sess *session) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.Accounts.DropTempUser(ctx, sess.user); err != nil {
-		s.Log.Warn("adminer: dropping a temporary database account", "user", sess.user, "err", err)
+		s.Log.Warn("phpmyadmin: dropping a temporary database account", "user", sess.user, "err", err)
 	}
 }
 
@@ -298,13 +302,13 @@ func (s *Service) Sessions(siteID string) int {
 // CloseSite ends every session on a site's database now.
 func (s *Service) CloseSite(ctx context.Context, siteID string) { s.SiteRemoved(ctx, siteID) }
 
-// Run expires sessions and stops Adminer when nobody uses it. At start it
+// Run expires sessions and stops phpMyAdmin when nobody uses it. At start it
 // cleans up after a previous run (sessions live in memory only).
 func (s *Service) Run(ctx context.Context) {
 	c, cancel := context.WithTimeout(ctx, time.Minute)
-	s.Docker.Run(c, nil, "rm", "-f", container)
+	s.Docker.Run(c, nil, "rm", "-f", container, legacyContainer)
 	if err := s.Accounts.DropTempUsers(c); err != nil {
-		s.Log.Warn("adminer: dropping leftover temporary database accounts", "err", err)
+		s.Log.Warn("phpmyadmin: dropping leftover temporary database accounts", "err", err)
 	}
 	cancel()
 	t := time.NewTicker(time.Minute)
@@ -352,11 +356,11 @@ func (s *Service) sweep(ctx context.Context) {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
 		s.Docker.Run(c, nil, "rm", "-f", container)
-		s.Log.Info("adminer stopped (no sessions)")
+		s.Log.Info("phpmyadmin stopped (no sessions)")
 	}
 }
 
-// ensureRunning starts the Adminer container (and gives it a new secret)
+// ensureRunning starts the phpMyAdmin container (and gives it a new secret)
 // unless it runs.
 func (s *Service) ensureRunning(ctx context.Context) error {
 	// Two Opens at once must not both start the container: the secret one
@@ -365,7 +369,7 @@ func (s *Service) ensureRunning(ctx context.Context) error {
 	defer s.startMu.Unlock()
 	s.mu.Lock()
 	running := s.proxy != nil
-	// Counts as use: the sweeper must not stop Adminer between here and
+	// Counts as use: the sweeper must not stop phpMyAdmin between here and
 	// the session being recorded.
 	s.lastUsed = s.now()
 	s.mu.Unlock()
@@ -376,21 +380,21 @@ func (s *Service) ensureRunning(ctx context.Context) error {
 		}
 	}
 	if _, err := s.Docker.EnsureBuilt(ctx, s.Cfg.Image, s.Cfg.ImageDir); err != nil {
-		return fmt.Errorf("building the Adminer image: %w", err)
+		return fmt.Errorf("building the phpMyAdmin image: %w", err)
 	}
 	s.Docker.Run(ctx, nil, "rm", "-f", container)
-	if _, err := s.Docker.Run(ctx, nil, "run", "-d", "--name", container, "--label", "wpgenie.adminer=1",
+	if _, err := s.Docker.Run(ctx, nil, "run", "-d", "--name", container, "--label", "wpgenie.phpmyadmin=1",
 		"--network", s.Cfg.Network, "-p", "127.0.0.1:"+strconv.Itoa(s.Cfg.Port)+":8080",
-		"--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-		"--tmpfs", "/run/wpg:rw,noexec,nosuid,size=64k,uid=100,gid=101,mode=0700",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "256m", "--pids-limit", "64",
+		"--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m",
+		"--tmpfs", "/run/wpg:rw,noexec,nosuid,size=64k,uid=82,gid=82,mode=0700",
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--pids-limit", "64",
 		s.Cfg.Image); err != nil {
-		return fmt.Errorf("starting Adminer: %w", err)
+		return fmt.Errorf("starting phpMyAdmin: %w", err)
 	}
 	secret := randHex(32)
 	if _, err := s.Docker.Run(ctx, strings.NewReader(secret), "exec", "-i", container, "sh", "-c",
 		"umask 077; cat > /run/wpg/secret"); err != nil {
-		return fmt.Errorf("starting Adminer: %w", err)
+		return fmt.Errorf("starting phpMyAdmin: %w", err)
 	}
 	upstream := s.Cfg.Upstream
 	if upstream == "" {
@@ -399,8 +403,8 @@ func (s *Service) ensureRunning(ctx context.Context) error {
 	target := &url.URL{Scheme: "http", Host: upstream}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		s.Log.Warn("adminer proxy", "err", err)
-		denied(w, "Adminer is not answering. Open it again from the WPGenie panel.")
+		s.Log.Warn("phpmyadmin proxy", "err", err)
+		denied(w, "phpMyAdmin is not answering. Open it again from the WPGenie panel.")
 	}
 	// Wait until the PHP server listens.
 	deadline := time.Now().Add(30 * time.Second)
@@ -411,7 +415,7 @@ func (s *Service) ensureRunning(ctx context.Context) error {
 			break
 		}
 		if time.Now().After(deadline) {
-			return errors.New("Adminer did not start")
+			return errors.New("phpMyAdmin did not start")
 		}
 		select {
 		case <-ctx.Done():

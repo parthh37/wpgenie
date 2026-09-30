@@ -174,7 +174,7 @@ func TestRolesAndCSRF(t *testing.T) {
 		{op, "POST", "/api/v1/backups/repos", `{"name":"x","kind":"local","path":"/srv/b"}`, 403},
 		{op, "POST", "/api/v1/backups/repos/local/password", "", 403},
 		{viewer, "POST", "/api/v1/sites/slive/backups", "", 403},
-		{viewer, "POST", "/api/v1/sites/slive/adminer", "", 403},
+		{viewer, "POST", "/api/v1/sites/slive/phpmyadmin", "", 403},
 		{viewer, "GET", "/api/v1/sites/slive/backups/local/0123abcd/download", "", 403},
 		{viewer, "PUT", "/api/v1/sites/x/cache", `{"page_cache":true,"object_cache":true}`, 403},
 		{op, "PUT", "/api/v1/sites/x/cache", `{"page_cache":true,"object_cache":true}`, 404}, // allowed; no such site

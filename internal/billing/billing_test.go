@@ -134,9 +134,9 @@ func TestPlanValidationAndFit(t *testing.T) {
 		t.Fatalf("should fit: %v", err)
 	}
 	for _, c := range []*store.Plan{
-		{ID: "c", MaxSites: 11, DiskMB: 500, MaxReplicas: 1},                               // more sites
-		{ID: "c", MaxSites: 0, DiskMB: 500, MaxReplicas: 1},                                // unlimited under a limit
-		{ID: "c", MaxSites: 5, DiskMB: 500, MaxReplicas: 1, Features: []string{"adminer"}}, // a feature it lacks
+		{ID: "c", MaxSites: 11, DiskMB: 500, MaxReplicas: 1},                                  // more sites
+		{ID: "c", MaxSites: 0, DiskMB: 500, MaxReplicas: 1},                                   // unlimited under a limit
+		{ID: "c", MaxSites: 5, DiskMB: 500, MaxReplicas: 1, Features: []string{"phpmyadmin"}}, // a feature it lacks
 	} {
 		if err := Fits(c, parent); !errors.Is(err, ErrForbidden) {
 			t.Errorf("%+v fits", c)
