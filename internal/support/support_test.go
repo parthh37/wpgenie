@@ -824,3 +824,127 @@ func TestUpdateRefusesStaleStatus(t *testing.T) {
 		t.Errorf("%d closed e-mails", n)
 	}
 }
+
+// Staff-only notes: staff see them; the handling reseller doesn't (nor
+// their attachments, nor anything in e-mail), and only staff write them.
+func TestStaffOnlyNotes(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	id := e.open(carl(e), "Carl's").Ticket.ID
+	st, _ := e.svc.Settings(ctx)
+	f, err := e.svc.Stage(st, "evidence.txt", strings.NewReader("the reseller's server is compromised"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := e.svc.Reply(ctx, staff, id, ReplyInput{Body: "STAFFONLY: watch this reseller", StaffOnly: true}, []*Staged{f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := th.Messages[len(th.Messages)-1]
+	if !last.StaffOnly || !last.Internal || th.Ticket.Status != store.TicketOpen || th.Ticket.Reseller != "R" {
+		t.Fatalf("staff view: %+v %+v", last, th.Ticket)
+	}
+	attID := last.Files[0].ID
+	e.svc.Reply(ctx, staff, id, ReplyInput{Body: "shared note", Internal: true}, nil)
+	for _, who := range []Actor{rita(e), carl(e)} {
+		th, err := e.svc.Get(ctx, who, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range th.Messages {
+			if m.StaffOnly || strings.Contains(m.Body, "STAFFONLY") {
+				t.Errorf("%s sees a staff-only note", who.Name)
+			}
+		}
+		if _, _, err := e.svc.Attachment(ctx, who, id, attID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s got a staff-only note's attachment: %v", who.Name, err)
+		}
+	}
+	if th, _ := e.svc.Get(ctx, rita(e), id); th.Messages[len(th.Messages)-1].Body != "shared note" {
+		t.Error("the reseller lost the shared note")
+	}
+	if _, f, err := e.svc.Attachment(ctx, staff, id, attID); err != nil {
+		t.Errorf("staff: %v", err)
+	} else {
+		f.Close()
+	}
+	if _, err := e.svc.Reply(ctx, rita(e), id, ReplyInput{Body: "x", StaffOnly: true}, nil); !errors.Is(err, ErrForbidden) {
+		t.Errorf("the reseller wrote a staff-only note: %v", err)
+	}
+	if _, err := e.svc.Reply(ctx, carl(e), id, ReplyInput{Body: "x", StaffOnly: true}, nil); !errors.Is(err, ErrForbidden) {
+		t.Errorf("the customer wrote a staff-only note: %v", err)
+	}
+	for _, m := range e.mails("") {
+		if strings.Contains(m.Text, "STAFFONLY") {
+			t.Errorf("a staff-only note was e-mailed: %s", m.Template)
+		}
+	}
+	if list, _ := e.svc.List(ctx, rita(e), ListInput{}); len(list) != 1 || strings.Contains(list[0].Preview, "STAFFONLY") {
+		t.Errorf("reseller's list: %+v", list)
+	}
+}
+
+// Setting a ticket answered by hand starts the auto-close clock then, not
+// at the customer's last reply.
+func TestAnsweredByHandResetsAutoClose(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	byUpdate := e.open(alice(e), "set answered").Ticket.ID
+	byNote := e.open(alice(e), "noted answered").Ticket.ID
+	e.now = e.now.Add(10 * 24 * time.Hour) // the customer wrote 10 days ago
+	answered := store.TicketAnswered
+	if _, err := e.svc.Update(ctx, staff, byUpdate, UpdateInput{Status: &answered}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Reply(ctx, staff, byNote, ReplyInput{Body: "waiting on them", Internal: true, Status: answered}, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(time.Hour)
+	if n, _ := e.svc.AutoClose(ctx); n != 0 {
+		t.Fatalf("closed %d tickets just answered", n)
+	}
+	e.now = e.now.Add(7 * 24 * time.Hour)
+	if n, _ := e.svc.AutoClose(ctx); n != 2 {
+		t.Errorf("closed %d after a week", n)
+	}
+}
+
+// Attachments of tickets deleted with their account are removed from
+// disk: at once by RemoveTicketFiles, or by the sweep.
+func TestDeletedTicketsFiles(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	st, _ := e.svc.Settings(ctx)
+	withFile := func(a Actor) int64 {
+		f, err := e.svc.Stage(st, "a.txt", strings.NewReader("hello"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		th, err := e.svc.Open(ctx, a, OpenInput{Subject: "x", Body: "x"}, []*Staged{f})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return th.Ticket.ID
+	}
+	a1, a2, c1 := withFile(alice(e)), withFile(alice(e)), withFile(carl(e))
+	dir := func(id int64) bool { _, err := os.Stat(e.svc.ticketDir(id)); return err == nil }
+	if !dir(a1) || !dir(a2) || !dir(c1) {
+		t.Fatal("attachments not stored")
+	}
+	if err := e.st.DeleteAccount(ctx, e.acct["A"].ID); err != nil {
+		t.Fatal(err)
+	}
+	e.svc.RemoveTicketFiles([]int64{a1})
+	if dir(a1) || !dir(a2) {
+		t.Error("RemoveTicketFiles")
+	}
+	if n, err := e.svc.RemoveOrphanFiles(ctx); n != 1 || err != nil {
+		t.Errorf("sweep: %d %v", n, err)
+	}
+	if dir(a2) || !dir(c1) {
+		t.Error("the sweep removed the wrong folders")
+	}
+	if _, err := os.Stat(e.svc.stagingDir()); err != nil {
+		t.Errorf("the staging folder went: %v", err)
+	}
+}

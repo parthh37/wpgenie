@@ -67,6 +67,7 @@ const supportSchema = `CREATE TABLE support_departments (
 		author     TEXT NOT NULL,
 		side       TEXT NOT NULL,
 		internal   INTEGER NOT NULL DEFAULT 0,
+		staff_only INTEGER NOT NULL DEFAULT 0,
 		body       TEXT NOT NULL,
 		created_at INTEGER NOT NULL
 	);
@@ -140,6 +141,9 @@ type Ticket struct {
 	// HandlerAccountID is who handles it now (derived: see handlerExpr):
 	// the account's reseller, or 0 for the operator's staff.
 	HandlerAccountID int64
+	// ResellerName is the account's reseller, a party to the ticket whoever
+	// handles it ("": none, or terminated).
+	ResellerName string
 	// Escalated: its reseller handed it to staff; StaffOpened: staff
 	// opened it. Either keeps it with staff whatever the account's reseller.
 	Escalated       bool
@@ -165,12 +169,15 @@ type Ticket struct {
 // TicketMessage is a message on a ticket (Attachments filled by the
 // reads that say so).
 type TicketMessage struct {
-	ID          int64
-	TicketID    int64
-	UserID      int64
-	Author      string
-	Side        string
-	Internal    bool
+	ID       int64
+	TicketID int64
+	UserID   int64
+	Author   string
+	Side     string
+	Internal bool
+	// StaffOnly: an internal note for the operator's staff alone, not the
+	// reseller handling (or once handling) the ticket.
+	StaffOnly   bool
 	Body        string
 	CreatedAt   time.Time
 	Attachments []*TicketAttachment
@@ -286,6 +293,7 @@ const handlerExpr = `(CASE WHEN t.escalated = 1 OR t.staff_opened = 1 OR pa.id I
 	THEN 0 ELSE pa.id END)`
 
 const ticketCols = `t.id, t.mask, t.account_id, COALESCE(a.name, ''), t.user_id, t.opened_by, ` + handlerExpr + `,
+	(CASE WHEN pa.id IS NULL OR pa.status = 'terminated' THEN '' ELSE pa.name END),
 	t.escalated, t.staff_opened, t.escalated_at, t.department_id, COALESCE(d.name, ''), t.site_id, t.subject, t.status, t.priority, t.assigned_user_id,
 	COALESCE(u.username, ''), t.created_at, t.updated_at, t.last_reply_at, t.first_response_at, t.closed_at,
 	COALESCE((SELECT SUBSTR(m.body, 1, 240) FROM ticket_messages m WHERE m.ticket_id = t.id AND m.internal = 0
@@ -299,7 +307,7 @@ const ticketFrom = ` FROM tickets t` + ticketJoins + `
 func scanTicket(row interface{ Scan(...any) error }) (*Ticket, error) {
 	var t Ticket
 	var escalated, created, updated, lastReply, firstResponse, closed int64
-	err := row.Scan(&t.ID, &t.Mask, &t.AccountID, &t.AccountName, &t.UserID, &t.OpenedBy, &t.HandlerAccountID, &t.Escalated,
+	err := row.Scan(&t.ID, &t.Mask, &t.AccountID, &t.AccountName, &t.UserID, &t.OpenedBy, &t.HandlerAccountID, &t.ResellerName, &t.Escalated,
 		&t.StaffOpened, &escalated,
 		&t.DepartmentID, &t.DepartmentName, &t.SiteID, &t.Subject, &t.Status, &t.Priority, &t.AssignedUserID, &t.AssignedTo,
 		&created, &updated, &lastReply, &firstResponse, &closed, &t.Preview)
@@ -358,9 +366,9 @@ func (s *Store) CreateTicket(ctx context.Context, t *Ticket, first *TicketMessag
 }
 
 func insertMessage(ctx context.Context, tx *Tx, m *TicketMessage) error {
-	if err := tx.QueryRowContext(ctx, `INSERT INTO ticket_messages (ticket_id, user_id, author, side, internal, body, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`, m.TicketID, m.UserID, m.Author, m.Side, m.Internal, m.Body,
-		m.CreatedAt.Unix()).Scan(&m.ID); err != nil {
+	if err := tx.QueryRowContext(ctx, `INSERT INTO ticket_messages (ticket_id, user_id, author, side, internal, staff_only,
+		body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, m.TicketID, m.UserID, m.Author, m.Side, m.Internal,
+		m.StaffOnly, m.Body, m.CreatedAt.Unix()).Scan(&m.ID); err != nil {
 		return err
 	}
 	for _, a := range m.Attachments {
@@ -473,6 +481,13 @@ func (s *Store) UpdateTicket(ctx context.Context, id int64, c TicketChanges) err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				return ErrConflict
+			}
+			// Answered by hand: the customer's turn starts now, and so does
+			// the auto-close clock (last_reply_at).
+			if *c.Status == TicketAnswered {
+				if _, err := tx.ExecContext(ctx, `UPDATE tickets SET last_reply_at = ? WHERE id = ?`, at, id); err != nil {
+					return err
+				}
 			}
 		}
 		if c.Priority != nil {
@@ -672,7 +687,7 @@ func (s *Store) CountTickets(ctx context.Context, f TicketFilter) (int, error) {
 // TicketMessages returns a ticket's messages, oldest first, with their
 // attachments.
 func (s *Store) TicketMessages(ctx context.Context, ticketID int64) ([]*TicketMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, ticket_id, user_id, author, side, internal, body, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, ticket_id, user_id, author, side, internal, staff_only, body, created_at
 		FROM ticket_messages WHERE ticket_id = ? ORDER BY id`, ticketID)
 	if err != nil {
 		return nil, err
@@ -683,7 +698,7 @@ func (s *Store) TicketMessages(ctx context.Context, ticketID int64) ([]*TicketMe
 	for rows.Next() {
 		var m TicketMessage
 		var created int64
-		if err := rows.Scan(&m.ID, &m.TicketID, &m.UserID, &m.Author, &m.Side, &m.Internal, &m.Body, &created); err != nil {
+		if err := rows.Scan(&m.ID, &m.TicketID, &m.UserID, &m.Author, &m.Side, &m.Internal, &m.StaffOnly, &m.Body, &created); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = time.Unix(created, 0).UTC()
@@ -751,9 +766,9 @@ func (s *Store) GetTicketAttachment(ctx context.Context, ticketID, id int64) (*T
 func (s *Store) GetTicketMessage(ctx context.Context, ticketID, id int64) (*TicketMessage, error) {
 	var m TicketMessage
 	var created int64
-	err := s.db.QueryRowContext(ctx, `SELECT id, ticket_id, user_id, author, side, internal, body, created_at
+	err := s.db.QueryRowContext(ctx, `SELECT id, ticket_id, user_id, author, side, internal, staff_only, body, created_at
 		FROM ticket_messages WHERE id = ? AND ticket_id = ?`, id, ticketID).Scan(&m.ID, &m.TicketID, &m.UserID, &m.Author,
-		&m.Side, &m.Internal, &m.Body, &created)
+		&m.Side, &m.Internal, &m.StaffOnly, &m.Body, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -861,4 +876,63 @@ func (s *Store) UpdateCannedReply(ctx context.Context, c *CannedReply) error {
 
 func (s *Store) DeleteCannedReply(ctx context.Context, id int64) error {
 	return s.exec1(ctx, `DELETE FROM support_canned WHERE id = ?`, id)
+}
+
+// deleteAccountTickets removes an account's tickets, their messages and
+// their attachments' records (DeleteAccount's transaction; the files are
+// the support service's: see its RemoveTicketFiles).
+func deleteAccountTickets(ctx context.Context, tx *Tx, accountID int64) error {
+	for _, q := range []string{
+		`DELETE FROM ticket_attachments WHERE ticket_id IN (SELECT id FROM tickets WHERE account_id = ?)`,
+		`DELETE FROM ticket_messages WHERE ticket_id IN (SELECT id FROM tickets WHERE account_id = ?)`,
+		`DELETE FROM tickets WHERE account_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, accountID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AccountTicketIDs lists an account's tickets.
+func (s *Store) AccountTicketIDs(ctx context.Context, accountID int64) ([]int64, error) {
+	return s.ticketIDs(ctx, `SELECT id FROM tickets WHERE account_id = ? ORDER BY id`, accountID)
+}
+
+// ExistingTicketIDs returns which of ids are tickets.
+func (s *Store) ExistingTicketIDs(ctx context.Context, ids []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	for len(ids) > 0 {
+		n := min(len(ids), 200)
+		args := make([]any, n)
+		for i, id := range ids[:n] {
+			args[i] = id
+		}
+		found, err := s.ticketIDs(ctx, `SELECT id FROM tickets WHERE id IN (`+placeholders(n)+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range found {
+			out[id] = true
+		}
+		ids = ids[n:]
+	}
+	return out, nil
+}
+
+func (s *Store) ticketIDs(ctx context.Context, q string, args ...any) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

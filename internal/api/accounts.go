@@ -344,9 +344,11 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	removeTicketFiles := s.ticketFilesOf(r.Context(), id)
 	if err := s.Billing.DeleteAccount(r.Context(), id); err != nil {
 		return err
 	}
+	removeTicketFiles()
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }

@@ -9,8 +9,9 @@ import (
 )
 
 // Run closes answered tickets nobody replied to (see AutoClose) every
-// hour until ctx ends, and clears uploads interrupted requests left in
-// the staging folder.
+// hour until ctx ends, clears uploads interrupted requests left in the
+// staging folder, and removes attachments of tickets deleted without
+// their clean-up.
 func (s *Service) Run(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -21,6 +22,11 @@ func (s *Service) Run(ctx context.Context) {
 			s.Log.Info("support: closed tickets without a reply", "tickets", n)
 		}
 		s.CleanStaging(6 * time.Hour)
+		if n, err := s.RemoveOrphanFiles(ctx); err != nil {
+			s.Log.Warn("support: removing deleted tickets' attachments", "err", err)
+		} else if n > 0 {
+			s.Log.Info("support: removed deleted tickets' attachments", "tickets", n)
+		}
 		select {
 		case <-ctx.Done():
 			return

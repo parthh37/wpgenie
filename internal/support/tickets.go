@@ -120,7 +120,10 @@ type TicketView struct {
 	You Party `json:"you"`
 
 	// Providers only.
-	Handler         string    `json:"handler,omitempty"` // "staff" or "reseller"
+	Handler string `json:"handler,omitempty"` // "staff" or "reseller"
+	// Reseller is the account's reseller, who sees internal notes (but
+	// not staff-only ones) whoever handles the ticket ("": none).
+	Reseller        string    `json:"reseller,omitempty"`
 	HandlerAccount  int64     `json:"handler_account_id,omitempty"`
 	Escalated       bool      `json:"escalated,omitempty"`
 	StaffOpened     bool      `json:"staff_opened,omitempty"`
@@ -135,13 +138,15 @@ type MessageView struct {
 	ID int64 `json:"id"`
 	// Side: customer, staff or system; providers also see handler (a
 	// reseller's reply) where customers see staff.
-	Side     string           `json:"side"`
-	Staff    bool             `json:"staff"`
-	Internal bool             `json:"internal"`
-	Author   string           `json:"author"`
-	Body     string           `json:"body"`
-	At       time.Time        `json:"at"`
-	Files    []AttachmentView `json:"attachments"`
+	Side     string `json:"side"`
+	Staff    bool   `json:"staff"`
+	Internal bool   `json:"internal"`
+	// StaffOnly: a note staff keep from the reseller too (staff only).
+	StaffOnly bool             `json:"staff_only,omitempty"`
+	Author    string           `json:"author"`
+	Body      string           `json:"body"`
+	At        time.Time        `json:"at"`
+	Files     []AttachmentView `json:"attachments"`
 }
 
 // AttachmentView is an attachment's description (the file itself is at
@@ -188,7 +193,7 @@ func view(t *store.Ticket, p Party, a Actor) *TicketView {
 			v.Handler = "reseller"
 		}
 		v.HandlerAccount, v.EscalatedAt, v.FirstResponseAt = t.HandlerAccountID, t.EscalatedAt, t.FirstResponseAt
-		v.Escalated, v.StaffOpened = t.Escalated, t.StaffOpened
+		v.Escalated, v.StaffOpened, v.Reseller = t.Escalated, t.StaffOpened, t.ResellerName
 		v.AssignedUserID, v.AssignedTo = t.AssignedUserID, t.AssignedTo
 	}
 	return v
@@ -202,13 +207,25 @@ var previewTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image
 // inline.
 func Previewable(contentType string) bool { return previewTypes[contentType] }
 
+// visible says whether a party sees a message: internal notes are the
+// providers', staff-only notes the staff's alone.
+func visible(m *store.TicketMessage, p Party) bool {
+	switch {
+	case m.StaffOnly:
+		return p == PartyStaff
+	case m.Internal:
+		return p.provider()
+	}
+	return true
+}
+
 func messageView(m *store.TicketMessage, p Party) *MessageView {
 	side := m.Side
 	if p == PartyCustomer && side == store.SideHandler {
 		side = store.SideStaff // a reseller's customers see their provider, whoever it is
 	}
 	v := &MessageView{ID: m.ID, Side: side, Staff: m.Side == store.SideHandler || m.Side == store.SideStaff,
-		Internal: m.Internal, Author: m.Author, Body: m.Body, At: m.CreatedAt, Files: []AttachmentView{}}
+		Internal: m.Internal, StaffOnly: m.StaffOnly, Author: m.Author, Body: m.Body, At: m.CreatedAt, Files: []AttachmentView{}}
 	for _, a := range m.Attachments {
 		v.Files = append(v.Files, AttachmentView{ID: a.ID, Name: a.Name, Size: a.Size, Type: a.ContentType, Image: Previewable(a.ContentType)})
 	}
@@ -347,7 +364,7 @@ func (s *Service) Get(ctx context.Context, a Actor, id int64) (*Thread, error) {
 		}
 	}
 	for _, m := range msgs {
-		if m.Internal && !p.provider() {
+		if !visible(m, p) {
 			continue
 		}
 		th.Messages = append(th.Messages, messageView(m, p))
@@ -660,6 +677,9 @@ type ReplyInput struct {
 	Body string `json:"body"`
 	// Internal: a note between providers.
 	Internal bool `json:"internal"`
+	// StaffOnly (staff): a note the reseller of the ticket's account
+	// doesn't see either. Implies Internal.
+	StaffOnly bool `json:"staff_only"`
 	// Status (providers): the ticket's status after this message ("":
 	// answered for a reply, unchanged for a note). "closed" is Reply &
 	// close.
@@ -687,6 +707,12 @@ func (s *Service) Reply(ctx context.Context, a Actor, id int64, in ReplyInput, f
 	if err != nil {
 		return nil, err
 	}
+	if in.StaffOnly {
+		if p != PartyStaff {
+			return nil, fmt.Errorf("%w: only the operator's staff write staff-only notes", ErrForbidden)
+		}
+		in.Internal = true
+	}
 	act := store.TicketActivity{Reply: !in.Internal}
 	side := store.SideCustomer
 	switch {
@@ -708,9 +734,14 @@ func (s *Service) Reply(ctx context.Context, a Actor, id int64, in ReplyInput, f
 		if act.Status == "" && !in.Internal {
 			act.Status = store.TicketAnswered
 		}
+		// A note marking it answered starts the customer's turn, and the
+		// auto-close clock, as a reply would.
+		if act.Status == store.TicketAnswered {
+			act.Reply = true
+		}
 	}
 	now := s.now().UTC().Truncate(time.Second)
-	m := &store.TicketMessage{TicketID: t.ID, UserID: a.UserID, Author: a.Name, Side: side, Internal: in.Internal, Body: body,
+	m := &store.TicketMessage{TicketID: t.ID, UserID: a.UserID, Author: a.Name, Side: side, Internal: in.Internal, StaffOnly: in.StaffOnly, Body: body,
 		CreatedAt: now, Attachments: attachmentRows(files, now)}
 	if err := s.Store.AddTicketMessage(ctx, m, act); err != nil {
 		return nil, err

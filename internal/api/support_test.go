@@ -437,3 +437,53 @@ func TestRefusedUploadsAreNotStaged(t *testing.T) {
 		t.Errorf("reply while support is off: %d %s", c, body)
 	}
 }
+
+// Deleting an account deletes its tickets and their attachments on disk.
+func TestDeletingAnAccountDeletesItsTickets(t *testing.T) {
+	e := newSupportEnv(t)
+	ctx := context.Background()
+	d, _, _, err := e.st.CreateAccount(ctx, &store.Account{Name: "D", Kind: store.AccountCustomer, PlanID: "basic"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, body := e.upload("tok", "/api/v1/tickets", fmt.Sprintf(`{"account_id":%d,"subject":"x","body":"x"}`, d.ID), [2]string{"a.txt", "hello"})
+	var th support.Thread
+	if c != 201 || json.Unmarshal(body, &th) != nil {
+		t.Fatalf("open for D: %d %s", c, body)
+	}
+	dir := filepath.Join(e.api.Support.Dir, strconv.FormatInt(th.Ticket.ID, 10))
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	e.st.SetAccountStatus(ctx, d.ID, store.AccountTerminated, "terminated", e.now)
+	if c := e.as("tok", "DELETE", fmt.Sprintf("/api/v1/accounts/%d", d.ID), "", nil); c != 204 {
+		t.Fatalf("delete: %d", c)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("attachments left on disk: %v", err)
+	}
+	if c := e.as("tok", "GET", fmt.Sprintf("/api/v1/tickets/%d", th.Ticket.ID), "", nil); c != 404 {
+		t.Errorf("ticket after its account: %d", c)
+	}
+	// Other accounts' tickets stay.
+	if c := e.as("alice", "GET", e.path("alice", ""), "", nil); c != 200 {
+		t.Errorf("alice's ticket: %d", c)
+	}
+}
+
+// A staff-only note never reaches the reseller over the API.
+func TestStaffOnlyNotesOverHTTP(t *testing.T) {
+	e := newSupportEnv(t)
+	if c := e.as("tok", "POST", e.path("carl", "/replies"), `{"body":"STAFFONLY","staff_only":true}`, nil); c != 201 {
+		t.Fatalf("staff-only note: %d", c)
+	}
+	if raw := e.raw("rita", "GET", e.path("carl", "")); strings.Contains(raw, "STAFFONLY") || strings.Contains(raw, "staff_only") {
+		t.Errorf("the reseller sees a staff-only note: %s", raw)
+	}
+	if raw := e.raw("tok", "GET", e.path("carl", "")); !strings.Contains(raw, `"staff_only":true`) || !strings.Contains(raw, `"reseller":"R"`) {
+		t.Errorf("staff view: %s", raw)
+	}
+	if c := e.as("rita", "POST", e.path("carl", "/replies"), `{"body":"x","staff_only":true}`, nil); c != 403 {
+		t.Errorf("reseller staff-only note: %d", c)
+	}
+}

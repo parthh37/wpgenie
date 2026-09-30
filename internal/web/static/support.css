@@ -116,6 +116,7 @@ button.tk-chip[aria-pressed="true"] { background: var(--accent-soft); color: var
 .tk-reply.internal { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); background: linear-gradient(180deg, var(--warn-soft), transparent 60%), var(--panel); }
 .tk-reply-label { color: var(--text); font-weight: 600; font-size: .9rem; }
 .tk-reply.internal .tk-reply-label { color: var(--warn); }
+.tk-note-help { margin: .15rem 0 0; }
 .tk-reply textarea { min-height: 7rem; resize: vertical; }
 .tk-reply-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .75rem; }
 .tk-reply-bar .actions button { margin-top: 0; }
