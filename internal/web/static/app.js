@@ -151,6 +151,7 @@ function renderSite(site) {
   renderPlugins(el, site);
   renderUpdates(el, site);
   renderEnvironments(el, site);
+  renderFiles(el, site);
   const log = $('.log', el);
   log.addEventListener('toggle', () => { if (log.open) loadEvents(el, site); });
 

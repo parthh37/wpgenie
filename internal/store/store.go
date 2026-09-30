@@ -616,6 +616,10 @@ var migrations = []string{
 	);
 	CREATE INDEX webhook_deliveries_due ON webhook_deliveries (status, next_attempt_at);
 	ALTER TABLE jobs ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
+	// The file manager ("files") reaches what SFTP does: plans that
+	// already include SFTP get it too.
+	`UPDATE plans SET features = features || ',files'
+	WHERE ',' || features || ',' LIKE '%,sftp,%' AND ',' || features || ',' NOT LIKE '%,files,%';`,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

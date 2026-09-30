@@ -327,6 +327,8 @@ body.site-focus .site:not(.is-open) { display: none; }
 /* Viewers see settings but can't change them; they may still look at other periods. */
 .readonly .controls button, .readonly .actions button, .readonly input, .readonly select { pointer-events: none; opacity: .55; }
 .readonly .insights .insights-hours, .readonly .insights .insights-refresh { pointer-events: auto; opacity: 1; }
+/* Viewers browse, open and download files (files.js offers them nothing else). */
+.readonly .files select, .readonly .files .files-bar button { pointer-events: auto; opacity: 1; }
 
 .empty { padding: 3.5rem 1.5rem; text-align: center; border: 1px dashed var(--line-2); border-radius: var(--r); }
 .empty h2 { font-size: 1.15rem; margin: 0 0 .35rem; }
@@ -498,3 +500,33 @@ body:not(.is-admin):not(.is-reseller) .accounts-create { display: none !importan
   .icon-btn { width: 44px; height: 44px; }
   input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
 }
+
+/* ---- File manager (files.js) ---- */
+button.link { justify-content: flex-start; background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
+button.link:hover { text-decoration: underline; background: none; }
+.files-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; margin-top: .25rem; }
+.files-bar .actions button { margin-top: 0; }
+.crumbs { font-size: .9rem; overflow-wrap: anywhere; }
+.file-drop { margin-top: .5rem; border: 1px dashed transparent; border-radius: var(--r-sm); transition: border-color .15s, background-color .15s; }
+.file-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.file-drop > p { padding: 1.25rem .6rem; }
+.files-table td { vertical-align: middle; }
+/* The workspace's rail takes part of the width: go by the panel's own. */
+.files-body { container-type: inline-size; }
+@container (max-width: 560px) { .files-table tr > :nth-child(3), .files-table tr > :nth-child(4) { display: none; } }
+button.link.file-name { display: inline-flex; align-items: center; gap: .45rem; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+button.link.file-name:hover { color: var(--accent); }
+.file-name .i { width: 16px; height: 16px; color: var(--muted); }
+.files-table .badge { margin-left: .4rem; }
+.files-table .file-menu { max-width: 9rem; }
+.file-uploads:empty { display: none; }
+.file-upload { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 1rem; align-items: center; margin-top: .5rem; }
+
+.modal.editor { width: min(1100px, calc(100vw - 2rem)); height: min(840px, calc(100vh - 2rem)); padding: 1rem 1.25rem; }
+.editor form { display: flex; flex-direction: column; height: 100%; }
+.editor-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.editor-head h2 { font: 600 .92rem/1.4 var(--mono); }
+.editor textarea { flex: 1; min-height: 0; width: 100%; resize: none; margin: 0; font: .84rem/1.55 var(--mono); tab-size: 4; white-space: pre; overflow: auto; background: var(--well); }
+.editor .actions { align-items: center; margin-top: .75rem; }
+.editor-hint { margin-right: auto; }
+@media (max-width: 640px) { .editor-hint { display: none; } }

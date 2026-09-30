@@ -40,6 +40,7 @@ const (
 	FeatureStaging      = "staging"      // staging copies and pushes
 	FeatureBackups      = "backups"      // backups, restores, downloads, backup policy
 	FeatureSFTP         = "sftp"         // SFTP logins
+	FeatureFiles        = "files"        // the dashboard's file manager
 	FeatureAdminer      = "adminer"      // Adminer database access
 	FeatureCertificates = "certificates" // their own TLS certificates
 	FeatureCDN          = "cdn"          // Cloudflare / pull-zone CDNs
@@ -47,7 +48,7 @@ const (
 )
 
 // Features lists every plan feature.
-var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureAdminer, FeatureCertificates, FeatureCDN, FeatureSMTP}
+var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureFiles, FeatureAdminer, FeatureCertificates, FeatureCDN, FeatureSMTP}
 
 // Suspension reasons: who suspended an account. Only the same party, or an
 // administrator, lifts a suspension; a stronger reason replaces a weaker
