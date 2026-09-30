@@ -50,6 +50,7 @@ const timeEl = (t) => h('time', { datetime: t, title: fmtTime(t) }, ago(t));
 
 function duration(secs) {
   if (secs < 0) return '–';
+  if (secs < 60) return 'under a minute';
   if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))} min`;
   if (secs < 86400) return `${(secs / 3600).toFixed(secs < 36000 ? 1 : 0)} h`;
   return `${(secs / 86400).toFixed(1)} days`;

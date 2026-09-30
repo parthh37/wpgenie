@@ -71,7 +71,7 @@ var invoicePage = template.Must(template.New("invoice").Parse(`<!doctype html>
 <table class="totals">
 <tbody>
 <tr class="subtotal"><th scope="row">Subtotal</th><td>{{.Subtotal}}</td></tr>
-{{if .Discount}}<tr class="discount"><th scope="row">Discount</th><td>-{{.Discount}}</td></tr>{{end}}
+{{if .Discount}}<tr class="discount"><th scope="row">{{or .DiscountLabel "Discount"}}</th><td>-{{.Discount}}</td></tr>{{end}}
 {{range .TaxLines}}<tr class="tax"><th scope="row">{{.Name}} ({{.Rate}}){{if $.Inclusive}}, included{{end}}</th><td>{{.Amount}}</td></tr>
 {{end}}<tr class="total"><th scope="row">Total</th><td>{{.Total}}</td></tr>
 {{if .CreditApplied}}<tr class="credit"><th scope="row">Credit applied</th><td>-{{.CreditApplied}}</td></tr>{{end}}
@@ -116,6 +116,7 @@ type printData struct {
 	BillTo                                      store.BillingAddress
 	Items                                       []printItem
 	Subtotal, Discount, Total                   string
+	DiscountLabel                               string
 	TaxLines                                    []printTax
 	Inclusive                                   bool
 	CreditApplied, AmountPaid, AmountRefunded   string
@@ -211,7 +212,13 @@ func (s *Server) printInvoice(w http.ResponseWriter, r *http.Request) error {
 	if d.Company.Name != "" {
 		d.Title += " — " + d.Company.Name
 	}
+	// A promotion is an item with a negative amount; it shows once, as the
+	// discount line under the subtotal, named after the promotion.
 	for _, it := range inv.Items {
+		if it.Kind == billing.ItemDiscount {
+			d.DiscountLabel = it.Description
+			continue
+		}
 		d.Items = append(d.Items, printItem{Kind: it.Kind, Description: it.Description, Quantity: it.Quantity,
 			UnitPrice: money(it.UnitPrice), Amount: money(it.Amount)})
 	}

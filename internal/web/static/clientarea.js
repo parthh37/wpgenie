@@ -358,7 +358,8 @@ function burstBuyButton() {
 function burstCard(ctx, b) {
   if (!b || !b.allowed) return null;
   const left = Math.max(0, (b.included || 0) - (b.used || 0));
-  const buy = canBuyBurst(ctx.profile) ? actionButton('Buy minutes', async () => {
+  // Unlimited plans have nothing to buy.
+  const buy = !b.unlimited && canBuyBurst(ctx.profile) ? actionButton('Buy minutes', async () => {
     if (await openBuyBurst(ctx.acct.id, ctx.profile)) ctx.reload();
   }, { ic: 'zap' }) : null;
   return h('div', { class: 'card burst-card' },

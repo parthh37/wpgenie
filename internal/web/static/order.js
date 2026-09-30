@@ -4,6 +4,10 @@
 // you in and sends you to pay; the server checks everything again. A page
 // of its own (no dashboard scripts), so it has its own small helpers.
 
+// diskText shows a plan's disk as the operator entered it: whole GB when
+// it is a multiple of 1024 MB, else MB (5000 MB is not "4.9 GB").
+const diskText = (mb) => (mb % 1024 === 0 ? `${(mb / 1024).toLocaleString()} GB` : `${mb.toLocaleString()} MB`);
+
 const $ = (sel, el = document) => el.querySelector(sel);
 
 function h(tag, attrs = {}, ...children) {
@@ -96,7 +100,7 @@ function limitsOf(p) {
   const l = p.limits || p;
   const out = [];
   out.push(l.max_sites ? `${l.max_sites} WordPress site${l.max_sites === 1 ? '' : 's'}` : 'Unlimited sites');
-  if (l.disk_mb != null) out.push(l.disk_mb ? `${Math.round((l.disk_mb / 1024) * 10) / 10} GB storage` : 'Unlimited storage');
+  if (l.disk_mb != null) out.push(l.disk_mb ? `${diskText(l.disk_mb)} storage` : 'Unlimited storage');
   if (l.bandwidth_gb != null) out.push(l.bandwidth_gb ? `${l.bandwidth_gb} GB bandwidth a month` : 'Unmetered bandwidth');
   return out;
 }
@@ -294,9 +298,12 @@ async function refreshQuote() {
     const q = await api('POST', '/store/quote', { plan_id: S.plan.id, cycle: S.cycle, promo, country: ct.country, state: ct.state, tax_id: ct.tax_id });
     if (n !== S.quoting) return;
     S.quote = q;
-    const rows = (q.items || []).map((it) => [it.description, money(it.amount)]);
-    if (q.discount) rows.push(['Discount', '−' + money(q.discount)]);
-    if ((q.tax_lines || []).length) rows.push(['Subtotal', money(q.subtotal)]);
+    // A promotion is an item and the discount total: shown once, under
+    // the subtotal, named after it.
+    const items = q.items || [], promos = items.filter((it) => it.kind === 'discount');
+    const rows = items.filter((it) => it.kind !== 'discount').map((it) => [it.description, money(it.amount)]);
+    if ((q.tax_lines || []).length || q.discount) rows.push(['Subtotal', money(q.subtotal)]);
+    if (q.discount) rows.push([promos.map((it) => it.description).join(', ') || 'Discount', '−' + money(q.discount)]);
     for (const t of q.tax_lines || []) rows.push([`${t.name} ${fmtRate(t.rate)}`, money(t.amount)]);
     box.replaceChildren(h('dl', { class: 'quote-lines' }, rows.map(([k, v]) => h('div', {}, h('dt', {}, k), h('dd', {}, v))),
       h('div', { class: 'grand' }, h('dt', {}, 'Due today'), h('dd', {}, money(q.total)))),

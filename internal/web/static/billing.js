@@ -297,7 +297,7 @@ function btable(cols, rows, { empty, caption } = {}) {
 // subnav is the row of sections within a tab; links, so they open in a new
 // tab too.
 function subnav(label, items, current, go, cls = '') {
-  return h('nav', { class: 'subnav ' + cls, 'aria-label': label }, items.map((it) => {
+  const nav = h('nav', { class: 'subnav ' + cls, 'aria-label': label }, items.map((it) => {
     const a = h('a', { href: it.href, class: 'subnav-item', 'aria-current': it.key === current ? 'page' : null },
       it.icon ? icon(it.icon) : null, it.label, it.count ? h('span', { class: 'count' }, it.count) : null);
     a.addEventListener('click', (e) => {
@@ -307,6 +307,19 @@ function subnav(label, items, current, go, cls = '') {
     });
     return a;
   }));
+  // On narrow screens the row scrolls sideways: fade the edge that has
+  // more, and bring the current section into view.
+  const edges = () => {
+    nav.classList.toggle('more-left', nav.scrollLeft > 2);
+    nav.classList.toggle('more-right', nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 2);
+  };
+  nav.addEventListener('scroll', edges, { passive: true });
+  new ResizeObserver(edges).observe(nav);
+  requestAnimationFrame(() => {
+    nav.querySelector('[aria-current]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    edges();
+  });
+  return nav;
 }
 
 // chips is a filter: one pressed at a time, with counts when known.
@@ -697,7 +710,7 @@ function invoiceDocument(inv) {
   const addr = inv.billing_address || {};
   const company = (BILLING && BILLING.company) || {};
   const totals = [['Subtotal', money(inv.subtotal)]];
-  if (inv.discount) totals.push(['Discount', '−' + money(inv.discount)]);
+  if (inv.discount) totals.push([discountLabel(inv.items), '−' + money(inv.discount)]);
   for (const t of inv.tax_lines || []) totals.push([`${t.name} ${fmtRate(t.rate)}`, money(t.amount)]);
   totals.push(['Total', money(inv.total), 'total']);
   if (inv.credit_applied) totals.push(['Credit applied', '−' + money(inv.credit_applied)]);
@@ -705,7 +718,12 @@ function invoiceDocument(inv) {
   if (inv.amount_refunded) totals.push(['Refunded', money(inv.amount_refunded)]);
   if (inv.status !== 'cancelled' && inv.status !== 'draft') totals.push(['Balance due', money(inv.balance), 'grand']);
   const meta = [['Issued', fmtDate(inv.issued_at)], ['Due', fmtDate(inv.due_at)]];
-  if (inv.period_start && inv.period_end) meta.push(['Period', `${fmtDate(inv.period_start)} – ${fmtDate(inv.period_end)}`]);
+  // period_end is the next period's start: show the last day covered, as
+  // the lines, e-mails and the printed invoice do.
+  if (inv.period_start && inv.period_end) {
+    const last = Math.max(new Date(inv.period_start).getTime(), new Date(inv.period_end).getTime() - 864e5);
+    meta.push(['Period', `${fmtDate(inv.period_start)} – ${fmtDate(last)}`]);
+  }
   if (inv.paid_at) meta.push(['Paid', fmtDate(inv.paid_at)]);
   return h('article', { class: 'inv-doc', 'aria-label': `Invoice ${invoiceTitle(inv)}` },
     h('header', { class: 'inv-head' },
@@ -722,7 +740,7 @@ function invoiceDocument(inv) {
     h('div', { class: 'table-wrap' }, h('table', { class: 'inv-items' },
       h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Description'), h('th', { scope: 'col', class: 'num' }, 'Qty'),
         h('th', { scope: 'col', class: 'num' }, 'Unit price'), h('th', { scope: 'col', class: 'num' }, 'Amount'))),
-      h('tbody', {}, (inv.items || []).map((it) => h('tr', { class: 'item-' + (it.kind || 'custom') },
+      h('tbody', {}, (inv.items || []).filter(notDiscount).map((it) => h('tr', { class: 'item-' + (it.kind || 'custom') },
         h('td', {}, it.description, it.taxable === false && (inv.tax_lines || []).length ? h('span', { class: 'sub-line' }, 'not taxed') : null),
         h('td', { class: 'num' }, String(it.quantity ?? 1)), h('td', { class: 'num' }, money(it.unit_price)), h('td', { class: 'num' }, money(it.amount))))))),
     // The stamp sits in the space beside the totals.
@@ -1067,7 +1085,7 @@ async function staffOrders(box) {
       `${o.plan_name || o.plan_id} · ${cycleOf(o.cycle).label.toLowerCase()}`, money(o.total),
       h('td', {}, o.invoice_id ? invoiceLink({ id: o.invoice_id, number: o.invoice_number }) : '–', ' ',
         o.invoice_status ? bpill(o.invoice_status, INVOICE_STATES[o.invoice_status]) : null),
-      h('td', { class: 'wrap' }, o.ip || '–'),
+      h('td', { class: 'nowrap small' }, o.ip || '–'),
       h('td', { class: 'row-actions' }, admin && ORDER_STATUS === 'pending' ? [accept(o), cancel(o)] : null)]), {
       caption: 'Orders',
       empty: emptyState('cart', ORDER_STATUS === 'pending' ? 'No orders waiting' : 'Nothing here',
@@ -1230,20 +1248,26 @@ const planCycles = (p) => CYCLES.filter((c) => planPrice(p, c.id));
 // planLimits is a plan's headline limits in plain words.
 function planLimits(p) {
   const n = (v, unit) => (v ? `${fmtNum(v)} ${unit}` : `Unlimited ${unit}`);
-  return [n(p.max_sites, p.max_sites === 1 ? 'site' : 'sites'), p.disk_mb ? `${fmtNum(Math.round(p.disk_mb / 1024 * 10) / 10)} GB disk` : 'Unlimited disk',
+  return [n(p.max_sites, p.max_sites === 1 ? 'site' : 'sites'), p.disk_mb ? `${p.disk_mb % 1024 === 0 ? `${fmtNum(p.disk_mb / 1024)} GB` : `${fmtNum(p.disk_mb)} MB`} disk` : 'Unlimited disk',
     p.bandwidth_gb ? `${fmtNum(p.bandwidth_gb)} GB bandwidth / month` : 'Unlimited bandwidth'];
 }
 
-// quoteLines shows a quote (plan change or order): lines, taxes, total.
+// A promotion is an item with a negative amount and also the "discount"
+// total: show it once, as the line under the subtotal, named after it.
+const notDiscount = (it) => it.kind !== 'discount';
+const discountLabel = (items) => (items || []).filter((it) => !notDiscount(it)).map((it) => it.description).join(', ') || 'Discount';
+
+// quoteLines shows a quote (plan change or order): lines, subtotal,
+// discount, taxes, total.
 function quoteLines(q, { totalLabel = 'Due now' } = {}) {
   const rows = [];
-  for (const it of q.items || []) rows.push([it.description, money(it.amount)]);
+  for (const it of (q.items || []).filter(notDiscount)) rows.push([it.description, money(it.amount)]);
   if (!(q.items || []).length) {
     if (q.credit) rows.push(['Credit for the unused time', '−' + money(q.credit)]);
     if (q.charge != null) rows.push(['New plan', money(q.charge)]);
   }
-  if (q.discount) rows.push(['Discount', '−' + money(q.discount)]);
-  if (q.subtotal != null && (q.tax_lines || []).length) rows.push(['Subtotal', money(q.subtotal)]);
+  if (q.subtotal != null && ((q.tax_lines || []).length || q.discount)) rows.push(['Subtotal', money(q.subtotal)]);
+  if (q.discount) rows.push([discountLabel(q.items), '−' + money(q.discount)]);
   for (const t of q.tax_lines || []) rows.push([`${t.name} ${fmtRate(t.rate)}`, money(t.amount)]);
   return h('dl', { class: 'quote-lines' }, rows.map(([k, v]) => h('div', {}, h('dt', {}, k), h('dd', {}, v))),
     h('div', { class: 'grand' }, h('dt', {}, totalLabel), h('dd', {}, money(Math.max(0, q.total || 0)))));
