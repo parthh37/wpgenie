@@ -45,6 +45,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/support"
 	"github.com/parthh37/wpgenie/internal/updater"
 	"github.com/parthh37/wpgenie/internal/wplogin"
 )
@@ -516,6 +517,13 @@ func serve(cfg *config.Config, node bool) error {
 		}}
 		go mailr.Run(ctx)
 	}
+	// Support tickets: attachments under the data dir; answered tickets
+	// without a reply close by themselves.
+	var helpdesk *support.Service
+	if !node {
+		helpdesk = &support.Service{Store: st, Mailer: mailr, Log: log, Dir: filepath.Join(cfg.DataDir, "support")}
+		go helpdesk.Run(ctx)
+	}
 
 	// IP reputation: blocklists (saved, so a restart without network keeps
 	// them) and the country database, downloaded once a site uses it.
@@ -625,6 +633,7 @@ func serve(cfg *config.Config, node bool) error {
 		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, PHPMyAdmin: pmaSvc, WPLogin: wpLoginSvc,
 		Files: files.New(st, cfg.SiteRoot), Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
 		Billing: bill, PanelURL: panelURL, Mailer: mailr}
+	apiSrv.Support = helpdesk
 	apiHandler := apiSrv.Handler()
 	if node {
 		// Requests the panel forwards arrive over the cluster listener, and

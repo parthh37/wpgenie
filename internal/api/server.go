@@ -31,6 +31,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/support"
 	"github.com/parthh37/wpgenie/internal/updater"
 	"github.com/parthh37/wpgenie/internal/web"
 	"github.com/parthh37/wpgenie/internal/wplogin"
@@ -75,6 +76,9 @@ type Server struct {
 
 	// Mailer sends e-mail to people: clients and staff (optional).
 	Mailer *mailer.Service
+
+	// Support is the help desk: tickets (optional; panel only).
+	Support *support.Service
 
 	guard loginGuard
 	// routes is every route registered through route(), in order.
