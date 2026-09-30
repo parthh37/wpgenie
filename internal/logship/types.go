@@ -36,7 +36,9 @@ const (
 
 // Types is every kind of log, in the order the panel shows them. The
 // containers' own output is off by default: it repeats much of the rest,
-// and is the noisiest.
+// and is the noisiest. The daemon reads it (containers.go) rather than
+// Vector: Docker's containers directory also holds every container's
+// settings, secrets included, which the shipper has no business seeing.
 var Types = []Type{
 	{TypeAccess, collectTailed, true},
 	{TypePHPErrors, collectSpooled, true},
@@ -48,7 +50,7 @@ var Types = []Type{
 	{TypeEmail, collectExported, true},
 	{TypeMail, collectTailed, true},
 	{TypeDaemon, collectSpooled, true},
-	{TypeContainers, collectTailed, false},
+	{TypeContainers, collectSpooled, false},
 }
 
 // TypeByName is the type called name, or nil.

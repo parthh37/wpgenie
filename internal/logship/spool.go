@@ -101,6 +101,10 @@ type spoolFile struct {
 	events      int
 	hour        string
 	opened      time.Time
+	// synced and syncedEvents: what WriteSync made durable (fsync), whose
+	// cursors may have moved on: never dropped.
+	synced       int64
+	syncedEvents int
 }
 
 // NewSpool makes a spool in dir (created when it runs).
@@ -203,8 +207,9 @@ func (s *Spool) WriteJSON(typ string, v any) {
 	s.Write(typ, b)
 }
 
-// WriteSync writes lines to typ's current file and flushes them: once it
-// returns, they are on disk (they ship with the file).
+// WriteSync writes lines to typ's current file and syncs them: once it
+// returns, they are on disk (and ship with the file) even if the machine
+// crashes, so a caller may record that they're done.
 func (s *Spool) WriteSync(typ string, lines [][]byte) error {
 	if TypeByName(typ) == nil {
 		return fmt.Errorf("unknown log type %q", typ)
@@ -217,10 +222,11 @@ func (s *Spool) WriteSync(typ string, lines [][]byte) error {
 		}
 	}
 	if f := s.files[typ]; f != nil {
-		if err := f.w.Flush(); err != nil {
+		if err := errors.Join(f.w.Flush(), f.f.Sync()); err != nil {
 			s.discardLocked(typ, err)
 			return err
 		}
+		f.synced, f.syncedEvents = f.size, f.events
 	}
 	return nil
 }
@@ -390,10 +396,13 @@ func (s *Spool) closeLocked(typ string) {
 	if f == nil {
 		return
 	}
-	if err := errors.Join(f.w.Flush(), f.f.Close()); err != nil {
+	// Synced before the rename: lines written synchronously before a
+	// rotation are as durable as the ones after it.
+	if err := errors.Join(f.w.Flush(), f.f.Sync()); err != nil {
 		s.discardLocked(typ, err)
 		return
 	}
+	f.f.Close()
 	delete(s.files, typ)
 	if f.events == 0 {
 		os.Remove(f.part)
@@ -405,8 +414,9 @@ func (s *Spool) closeLocked(typ string) {
 }
 
 // discardLocked gives up on typ's current file after a write error (a
-// full or read-only disk): it's removed and its events counted as
-// dropped, so a file that can't be completed is never left behind.
+// full or read-only disk): what was synced is handed over (cut there),
+// the rest is dropped and counted, so a file that can't be completed is
+// never left behind and nothing an exporter's cursor passed is lost.
 func (s *Spool) discardLocked(typ string, err error) {
 	f := s.files[typ]
 	if f == nil {
@@ -414,9 +424,16 @@ func (s *Spool) discardLocked(typ string, err error) {
 	}
 	delete(s.files, typ)
 	f.f.Close()
-	os.Remove(f.part)
-	s.counts[typ].dropped.Add(int64(f.events))
-	s.warn("write", "logship: writing the spool failed; logs dropped", "type", typ, "events", f.events, "err", err)
+	lost := f.events - f.syncedEvents
+	if f.syncedEvents > 0 {
+		if terr := errors.Join(os.Truncate(f.part, f.synced), os.Rename(f.part, f.final)); terr != nil {
+			s.warn("close", "logship: keeping a spool file's synced lines", "file", f.part, "err", terr)
+		}
+	} else {
+		os.Remove(f.part)
+	}
+	s.counts[typ].dropped.Add(int64(lost))
+	s.warn("write", "logship: writing the spool failed; logs dropped", "type", typ, "events", lost, "err", err)
 }
 
 var spoolNameRe = regexp.MustCompile(`^(\d{10})-(\d+)\.jsonl(\.part)?$`)

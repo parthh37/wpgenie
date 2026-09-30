@@ -22,10 +22,12 @@ type Status struct {
 		Prefix   string `json:"prefix"`
 	} `json:"destination"`
 	Shipper struct {
-		State   string `json:"state"` // running | restarting | exited | … | "" (none)
-		Image   string `json:"image"`
-		Version string `json:"version,omitempty"`
-		Error   string `json:"error,omitempty"`
+		State    string `json:"state"` // running | restarting | exited | … | "" (none)
+		ExitCode int    `json:"exit_code,omitempty"`
+		Restarts int    `json:"restarts,omitempty"`
+		Image    string `json:"image"`
+		Version  string `json:"version,omitempty"`
+		Error    string `json:"error,omitempty"`
 	} `json:"shipper"`
 
 	LastUpload   time.Time `json:"last_upload,omitzero"`
@@ -82,11 +84,15 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	out.Destination.Provider, out.Destination.Endpoint = set.Destination.Provider, set.Destination.Endpoint
 	out.Destination.Bucket, out.Destination.Prefix = set.Destination.Bucket, set.Destination.Prefix
 	out.Shipper.Image = s.Cfg.Image
-	state, _, err := s.inspect(ctx)
+	c, err := s.inspect(ctx)
 	if err != nil {
 		out.Shipper.Error = err.Error()
 	}
-	out.Shipper.State = state
+	state := c.State
+	out.Shipper.State, out.Shipper.ExitCode, out.Shipper.Restarts = c.State, c.ExitCode, c.Restarts
+	if c.Error != "" {
+		out.Shipper.Error = c.Error
+	}
 	if set.Enabled && state == "running" {
 		s.pollMetrics(ctx, time.Minute)
 	}
@@ -158,8 +164,12 @@ func (s *Service) health(set Settings, st *Status, rs runState) (string, string)
 		return "error", "The log shipper couldn't start: " + rs.applyErr
 	case st.Shipper.State == "":
 		return "warning", "The log shipper is starting (its image is downloaded the first time)."
+	case st.Shipper.State == "restarting" || (st.Shipper.State == "exited" && st.Shipper.Restarts > 0):
+		return "error", fmt.Sprintf("The log shipper keeps stopping (exit code %d, restarted %d times); Docker restarts it "+
+			"with a growing delay. Its own log says why: docker logs %s", st.Shipper.ExitCode, st.Shipper.Restarts, Container)
 	case st.Shipper.State != "running":
-		return "error", fmt.Sprintf("The log shipper isn't running (it's %s).", st.Shipper.State)
+		return "error", fmt.Sprintf("The log shipper isn't running (it's %s; docker start %s starts it again).",
+			st.Shipper.State, Container)
 	case !rs.lastErrorAt.IsZero() && rs.lastErrorAt.After(rs.lastUpload):
 		return "error", "Uploads are failing: the storage refuses them or can't be reached. Use \"Test connection\" to see why."
 	case st.DroppedToday > 0:

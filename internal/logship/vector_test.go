@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -25,7 +24,7 @@ func goldenInputs() map[string]vectorInput {
 	small.Compression, small.BatchMaxMB, small.BatchMaxSeconds = "zstd", 50, 900
 
 	return map[string]vectorInput{
-		"full":  {Settings: full, Server: "panel", Tailed: []string{TypeAccess, TypeMail, TypeContainers}, AccessLog: "access.log"},
+		"full":  {Settings: full, Server: "panel", Tailed: []string{TypeAccess, TypeMail}, AccessLog: "access.log"},
 		"spool": {Settings: small, Server: "web-2"},
 	}
 }
@@ -52,8 +51,9 @@ func TestVectorConfigGolden(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s: the configuration changed (go test -run TestVectorConfigGolden -update, then review the diff):\n%s", name, got)
 		}
-		// Never the secret: it goes in through the environment.
-		if bytes.Contains(got, []byte(in.Settings.Destination.SecretKey)) || bytes.Contains(got, []byte("secret")) {
+		// Never the keys: they're in the credentials file.
+		if bytes.Contains(got, []byte(in.Settings.Destination.SecretKey)) ||
+			bytes.Contains(got, []byte(in.Settings.Destination.AccessKeyID)) || bytes.Contains(got, []byte("secret_access_key")) {
 			t.Errorf("%s: the configuration holds the secret", name)
 		}
 	}
@@ -104,7 +104,7 @@ func TestVectorValidate(t *testing.T) {
 	if err := exec.Command("docker", "info").Run(); err != nil {
 		t.Skip("docker isn't running")
 	}
-	image := "timberio/vector:0.58.0-alpine"
+	image := "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773"
 	for name, in := range goldenInputs() {
 		cfg, err := vectorConfig(in)
 		if err != nil {
@@ -114,10 +114,13 @@ func TestVectorValidate(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "tables"), 0o755)
 		os.WriteFile(filepath.Join(dir, "vector.yaml"), cfg, 0o644)
 		os.WriteFile(filepath.Join(dir, "tables", "sites.csv"), []byte("host,site\nexample.com,s1\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "tables", "containers.csv"), []byte("id,name\n"+strings.Repeat("a", 64)+",wpg-s1-19000\n"), 0o644)
+		os.MkdirAll(filepath.Join(dir, "secrets"), 0o755)
+		creds, _ := credentialsFile(in.Settings.Destination)
+		os.WriteFile(filepath.Join(dir, "secrets", "credentials"), creds, 0o644)
 		out, err := exec.Command("docker", "run", "--rm",
 			"-v", filepath.Join(dir, "vector.yaml")+":"+ctrConfigFile+":ro",
 			"-v", filepath.Join(dir, "tables")+":"+ctrTables+":ro",
+			"-v", filepath.Join(dir, "secrets")+":"+ctrSecrets+":ro",
 			image, "validate", "--no-environment", ctrConfigFile).CombinedOutput()
 		if err != nil {
 			t.Errorf("%s: vector validate: %v\n%s", name, err, out)

@@ -29,7 +29,7 @@ transforms:
       ts = .timestamp
       m = parse_regex(string(.file) ?? "", r'^/spool/(?P<kind>[a-z_]+)/') ?? {}
       kind = string(m.kind) ?? ""
-      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon"], kind) {
+      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon", "containers"], kind) {
         abort
       }
       . = object(parse_json(string!(.message)) ?? null) ?? {}
@@ -44,6 +44,9 @@ sinks:
     type: "aws_s3"
     inputs: ["t_spool"]
     endpoint: "https://0123456789abcdef.r2.cloudflarestorage.com"
+    auth:
+      credentials_file: "/etc/vector/secrets/credentials"
+      profile: "wpgenie"
     region: "auto"
     bucket: "archive"
     force_path_style: false

@@ -4,39 +4,33 @@
 //
 // The shipper is Vector (vector.dev, MPL-2.0) in a container the daemon
 // manages, wpgenie-vector: it tails the logs other programs write (Caddy's
-// access log, the mail server's, containers' own output), and ships the
-// spool, where the daemon writes the logs it produces or rescues: the PHP
-// error logs and the WAF audit log it truncates after reading them, the
-// shield's security events (kept only in memory otherwise), its own log,
-// and rows of its tables (audit log, jobs, accounts' activity, e-mail).
+// access log, the mail server's), and ships the spool, where the daemon
+// writes the logs it produces or rescues: the PHP error logs and the WAF
+// audit log it truncates after reading them, the shield's security events
+// (kept only in memory otherwise), its own log, rows of its tables (audit
+// log, jobs, accounts' activity, e-mail), and its containers' output.
 // Objects land at <prefix><server>/<type>/YYYY/MM/DD/HH-<uuid>.log.gz,
 // JSON lines. Every server of a cluster ships its own logs, with the
 // panel's settings.
 //
-// The container is hardened: no capabilities but DAC_READ_SEARCH (to read
-// logs other users own), a read-only root filesystem, everything mounted
-// read-only but its data directory (checkpoints, disk buffer) and the
-// spool (it deletes what it shipped), a memory limit, metrics on its own
-// loopback only. Its configuration (DataDir/logship/vector.yaml, 0600) is
-// generated; the credentials go in through an env file (0600), never in
-// argv. It's recreated only when either changes.
+// The container is hardened (see container.go): root without any
+// capability, a read-only root filesystem, everything mounted read-only
+// but its data directory (checkpoints, disk buffer) and the spool (it
+// deletes what it shipped), a memory limit, metrics on its own loopback
+// only. Its configuration (DataDir/logship/vector.yaml, 0600) is
+// generated; the keys are in a credentials file (0600, mounted read-only),
+// never in argv or its environment. It's recreated only when either
+// changes.
 package logship
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,7 +94,30 @@ type Service struct {
 	// pollMu: one metrics poll at a time (the loop's and a status
 	// request's), or an older reading would look like a counter reset.
 	pollMu sync.Mutex
+	// ctail: containers' logs being read (the Run loop's only).
+	ctail containerTail
+	// nodeSync sends the settings to the cluster's servers that lack them
+	// (the panel; see SetNodeSync); nodeVersions: node ID -> the version
+	// of the settings it was last sent.
+	nodeSync     atomic.Pointer[func(context.Context) error]
+	nodeVersions sync.Map
 }
+
+// SetNodeSync makes the loop call sync every minute: it sends the
+// settings to the servers of a cluster that don't have them yet (so a
+// failed push is retried).
+func (s *Service) SetNodeSync(sync func(context.Context) error) { s.nodeSync.Store(&sync) }
+
+// NodeVersion is the version of the settings a server was last sent ("":
+// none since the panel started).
+func (s *Service) NodeVersion(node string) string {
+	v, _ := s.nodeVersions.Load(node)
+	str, _ := v.(string)
+	return str
+}
+
+// SetNodeVersion records that a server got a version of the settings.
+func (s *Service) SetNodeVersion(node, version string) { s.nodeVersions.Store(node, version) }
 
 // runState is what the loop learnt, for the status.
 type runState struct {
@@ -129,6 +146,11 @@ type persisted struct {
 	RetentionAt time.Time `json:"retention_at,omitzero"`
 	Deleted     int       `json:"retention_deleted"`
 	RetErr      string    `json:"retention_error,omitempty"`
+	// The archive's trimming: every day before TrimmedBefore was trimmed
+	// at TrimDest (endpoint|bucket|prefix), for these servers.
+	TrimmedBefore string   `json:"trimmed_before,omitempty"`
+	TrimDest      string   `json:"trim_dest,omitempty"`
+	TrimServers   []string `json:"trim_servers,omitempty"`
 }
 
 const stateKey = "logship_state"
@@ -155,7 +177,8 @@ func (s *Service) server() string {
 // Load reads the settings and prepares the spool. Call it before wiring
 // the taps (they write to the spool) and Run.
 func (s *Service) Load(ctx context.Context) error {
-	for _, d := range []string{s.Cfg.Dir, filepath.Join(s.Cfg.Dir, "data"), filepath.Join(s.Cfg.Dir, "tables")} {
+	for _, d := range []string{s.Cfg.Dir, filepath.Join(s.Cfg.Dir, "data"), filepath.Join(s.Cfg.Dir, "tables"),
+		filepath.Join(s.Cfg.Dir, "secrets")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
@@ -166,6 +189,11 @@ func (s *Service) Load(ctx context.Context) error {
 		if err := s.spool.Open(); err != nil {
 			return err
 		}
+	}
+	// Archives being read when the daemon stopped.
+	tmp := filepath.Join(s.Cfg.Dir, "tmp")
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
 	}
 	s.kick = make(chan struct{}, 1)
 	set, err := s.Settings(ctx)
@@ -255,7 +283,7 @@ func (s *Service) Run(ctx context.Context) {
 			lastMinute = s.now()
 		case <-t.C:
 		}
-		if err := s.export(ctx); err != nil && ctx.Err() == nil {
+		if err := errors.Join(s.export(ctx), s.tailContainers(ctx)); err != nil && ctx.Err() == nil {
 			s.setExportErr(err)
 			s.Log.Warn("logship: exporting", "err", err)
 		} else {
@@ -267,6 +295,11 @@ func (s *Service) Run(ctx context.Context) {
 			s.apply(ctx)
 			s.pollMetrics(ctx, 0)
 			s.recordVolumes(ctx)
+			if f := s.nodeSync.Load(); f != nil {
+				if err := (*f)(ctx); err != nil && ctx.Err() == nil {
+					s.Log.Warn("logship: sending the settings to other servers", "err", err)
+				}
+			}
 		}
 		if now.Sub(lastDay) >= time.Hour {
 			lastDay = now
@@ -411,7 +444,11 @@ func (s *Service) apply(ctx context.Context) {
 		}
 	}
 
-	err := s.ensure(ctx, set)
+	// A registry that stalls a pull (or a Docker that hangs) mustn't
+	// freeze the loop: the next pass tries again.
+	c, cancel := context.WithTimeout(ctx, ensureTimeout)
+	err := s.ensure(c, set)
+	cancel()
 	s.mu.Lock()
 	s.st.appliedAt, s.st.applyErr = s.now(), ""
 	if err != nil {
@@ -421,230 +458,6 @@ func (s *Service) apply(ctx context.Context) {
 	if err != nil && ctx.Err() == nil {
 		s.Log.Warn("logship: starting the shipper", "err", err)
 	}
-}
-
-func (s *Service) ensure(ctx context.Context, set Settings) error {
-	if !set.Enabled || set.Destination.check() != nil {
-		return s.stopShipper(ctx)
-	}
-	changed, err := s.writeTables(ctx, set)
-	if err != nil {
-		return err
-	}
-	cfg, err := vectorConfig(vectorInput{Settings: set, Server: s.server(), Tailed: s.tailed(set),
-		AccessLog: filepath.Base(s.Cfg.AccessLog)})
-	if err != nil {
-		return err
-	}
-	env, err := envFile(set.Destination)
-	if err != nil {
-		return err
-	}
-	args, err := s.runArgs(set)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(bytes.Join([][]byte{cfg, env, []byte(strings.Join(args, "\x00"))}, []byte{0}))
-	spec := hex.EncodeToString(sum[:8])
-
-	state, have, err := s.inspect(ctx)
-	if err != nil {
-		return err
-	}
-	if have == spec && state == "running" {
-		if changed {
-			// The tables are reloaded on SIGHUP (the files' times changed).
-			if _, err := s.Docker.Run(ctx, nil, "kill", "--signal", "HUP", Container); err != nil {
-				return fmt.Errorf("reloading the shipper's tables: %w", err)
-			}
-		}
-		s.setSpec(spec)
-		return nil
-	}
-	if err := writeFile(filepath.Join(s.Cfg.Dir, "vector.yaml"), cfg); err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(s.Cfg.Dir, "vector.env"), env); err != nil {
-		return err
-	}
-	if state != "" {
-		if err := s.removeShipper(ctx); err != nil {
-			return err
-		}
-	}
-	run := append([]string{"run", "-d", "--name", Container, "--label", "wpgenie.spec=" + spec}, args...)
-	if out, err := s.Docker.Run(ctx, nil, run...); err != nil {
-		s.Docker.Run(ctx, nil, "rm", "-f", Container) // a failed run can leave a created container
-		return fmt.Errorf("starting the shipper: %w", errors.Join(err, errors.New(offload.CleanError(string(out)))))
-	}
-	s.Log.Info("logship: shipper started", "image", s.Cfg.Image, "server", s.server())
-	s.setSpec(spec)
-	return nil
-}
-
-func (s *Service) setSpec(spec string) {
-	s.mu.Lock()
-	s.st.spec = spec
-	s.mu.Unlock()
-}
-
-// inspect is the container's state ("" when there's none) and spec label.
-func (s *Service) inspect(ctx context.Context) (state, spec string, err error) {
-	out, err := s.Docker.Run(ctx, nil, "inspect", "--type", "container", "--format",
-		`{{.State.Status}}|{{index .Config.Labels "wpgenie.spec"}}`, Container)
-	if err != nil {
-		if strings.Contains(strings.ToLower(string(out)+err.Error()), "no such") {
-			return "", "", nil
-		}
-		return "", "", err
-	}
-	state, spec, _ = strings.Cut(strings.TrimSpace(string(out)), "|")
-	return state, spec, nil
-}
-
-// stopShipper stops the container if there is one (shipping turned off).
-func (s *Service) stopShipper(ctx context.Context) error {
-	state, _, err := s.inspect(ctx)
-	if err != nil || state == "" {
-		return err
-	}
-	s.setSpec("")
-	s.Log.Info("logship: shipper stopped")
-	return s.removeShipper(ctx)
-}
-
-// removeShipper stops Vector gracefully (it flushes its disk buffer and
-// checkpoints) and removes its container.
-func (s *Service) removeShipper(ctx context.Context) error {
-	s.Docker.Run(ctx, nil, "stop", "--time", "30", Container)
-	out, err := s.Docker.Run(ctx, nil, "rm", "-f", Container)
-	if err != nil && !strings.Contains(string(out)+err.Error(), "No such container") {
-		return err
-	}
-	return nil
-}
-
-// runArgs are the container's settings (see the package comment).
-func (s *Service) runArgs(set Settings) ([]string, error) {
-	d := s.Cfg.Dir
-	args := []string{"--label", "wpgenie.logship=1", "--restart", "unless-stopped",
-		// The internet (the bucket), not the sites' network with the databases.
-		"--network", "bridge",
-		"--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges",
-		"--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
-		"--memory", "384m", "--pids-limit", "256", "--stop-timeout", "30",
-		"--env-file", filepath.Join(d, "vector.env"),
-	}
-	mounts := [][3]string{
-		{filepath.Join(d, "vector.yaml"), ctrConfigFile, "ro"},
-		{filepath.Join(d, "tables"), ctrTables, "ro"},
-		{filepath.Join(d, "data"), ctrData, ""},
-		{filepath.Join(d, "spool"), ctrSpool, ""},
-	}
-	for _, typ := range s.tailed(set) {
-		switch typ {
-		case TypeAccess:
-			mounts = append(mounts, [3]string{filepath.Dir(s.Cfg.AccessLog), ctrCaddy, "ro"})
-		case TypeMail:
-			mounts = append(mounts, [3]string{s.Cfg.MailLogDir, ctrMail, "ro"})
-		case TypeContainers:
-			s.mu.Lock()
-			root := s.st.dockerRoot
-			s.mu.Unlock()
-			mounts = append(mounts, [3]string{filepath.Join(root, "containers"), ctrContainers, "ro"})
-		}
-	}
-	for _, m := range mounts {
-		if !filepath.IsAbs(m[0]) || strings.ContainsAny(m[0], ":,\n") {
-			return nil, fmt.Errorf("unsafe mount path %q", m[0])
-		}
-		v := m[0] + ":" + m[1]
-		if m[2] != "" {
-			v += ":" + m[2]
-		}
-		args = append(args, "-v", v)
-	}
-	return append(args, s.Cfg.Image, "--config", ctrConfigFile), nil
-}
-
-// envFile holds the credentials: Vector's S3 sink takes them from the
-// environment (AWS's default chain), so they're never in its
-// configuration or anyone's argv.
-func envFile(d Destination) ([]byte, error) {
-	lines := []string{"AWS_ACCESS_KEY_ID=" + d.AccessKeyID, "AWS_SECRET_ACCESS_KEY=" + d.SecretKey,
-		// Never ask a cloud's instance metadata for other credentials.
-		"AWS_EC2_METADATA_DISABLED=true"}
-	for _, l := range lines {
-		if strings.ContainsAny(l, "\n\r\x00") {
-			return nil, errors.New("credentials contain a line break")
-		}
-	}
-	return []byte(strings.Join(lines, "\n") + "\n"), nil
-}
-
-// writeFile replaces a file (0600) unless it already holds b.
-func writeFile(path string, b []byte) error {
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, b) {
-		return nil
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-// ---- Enrichment tables ----
-
-var containerNameRe = regexp.MustCompile(`^(wpg-|wpgenie-)[A-Za-z0-9_.-]{1,120}$`)
-
-// writeTables writes the host -> site table (and the container ID -> name
-// table when containers ship), reporting whether either changed.
-func (s *Service) writeTables(ctx context.Context, set Settings) (bool, error) {
-	idx, err := s.Store.DomainIndex(ctx)
-	if err != nil {
-		return false, err
-	}
-	s.sites.Store(&idx)
-	hosts := make([][]string, 0, len(idx))
-	for h, id := range idx {
-		hosts = append(hosts, []string{h, id})
-	}
-	changed, err := s.writeTable("sites.csv", []string{"host", "site"}, hosts)
-	if err != nil || !slices.Contains(s.tailed(set), TypeContainers) {
-		return changed, err
-	}
-	out, err := s.Docker.Run(ctx, nil, "ps", "-a", "--no-trunc", "--format", "{{.ID}} {{.Names}}")
-	if err != nil {
-		return changed, fmt.Errorf("listing containers: %w", err)
-	}
-	var rows [][]string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		id, name, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if ok && len(id) == 64 && containerNameRe.MatchString(name) {
-			rows = append(rows, []string{id, name})
-		}
-	}
-	c2, err := s.writeTable("containers.csv", []string{"id", "name"}, rows)
-	return changed || c2, err
-}
-
-// writeTable writes a CSV table with a header, rows sorted (so an equal
-// table is an equal file). Vector needs the file to exist even empty.
-func (s *Service) writeTable(name string, header []string, rows [][]string) (bool, error) {
-	slices.SortFunc(rows, func(a, b []string) int { return strings.Compare(a[0], b[0]) })
-	var b bytes.Buffer
-	w := csv.NewWriter(&b)
-	w.Write(header)
-	w.WriteAll(rows)
-	if err := w.Error(); err != nil {
-		return false, err
-	}
-	path := filepath.Join(s.Cfg.Dir, "tables", name)
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, b.Bytes()) {
-		return false, nil
-	}
-	return true, writeFile(path, b.Bytes())
 }
 
 // ---- Metrics and volumes ----

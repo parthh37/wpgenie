@@ -96,11 +96,12 @@ function logsHero(st, set) {
       st.last_upload ? fmtTime(st.last_upload) : 'objects are written every few minutes'),
     logFact('Uploaded', `${fmtNum(st.sent_events)} lines`, st.sent_bytes ? `${fmtBytes(st.sent_bytes)} since the shipper started` : 'since the shipper started'),
     h('div', { class: 'logs-fact' }, h('span', { class: 'tile-k' }, 'Waiting on this server'),
-      h('span', { class: 'logs-fact-v' }, fmtBytes(st.spool.bytes + st.buffer_bytes)),
+      h('span', { class: 'logs-fact-v' }, fmtBytes(st.spool.bytes)),
       h('meter', { min: 0, max: 100, value: spoolPct, low: 50, high: 80, optimum: 0, 'aria-label': 'Space for waiting logs used' }),
-      h('span', { class: 'tile-s' }, `of ${fmtBytes(st.spool.cap)} allowed` + (st.dropped_today ? ` · ${fmtNum(st.dropped_today)} dropped today` : ''))),
+      h('span', { class: 'tile-s' }, `of ${fmtBytes(st.spool.cap)} allowed` + (st.dropped_today ? ` · ${fmtNum(st.dropped_today)} dropped today` : '') +
+        (st.buffer_bytes ? ` · ${fmtBytes(st.buffer_bytes)} more in the shipper's buffer (up to 256 MB)` : ''))),
     logFact('Shipper', st.shipper.state ? st.shipper.state[0].toUpperCase() + st.shipper.state.slice(1) : 'Starting',
-      `Vector ${st.shipper.version || (st.shipper.image.split(':')[1] || '').replace('-alpine', '')}`)) : null;
+      `Vector ${st.shipper.version || (st.shipper.image.split('@')[0].split(':')[1] || '').replace('-alpine', '')}`)) : null;
   const servers = (st.servers || []).length ? h('div', { class: 'logs-servers' },
     h('span', { class: 'muted small' }, 'Every server ships its own logs:'),
     h('span', { class: `chip logs-chip ${st.health}` }, `${st.server} (this panel)`),
@@ -359,9 +360,9 @@ function logRetentionCard(set) {
           h('option', { value: 'gzip', selected: set.compression === 'gzip' }, 'gzip (readable everywhere, and here)'),
           h('option', { value: 'zstd', selected: set.compression === 'zstd' }, 'zstd (smaller, download to read)'))),
         h('label', {}, 'Write a file every (seconds)', num('batch_max_seconds', 30, 3600)),
-        h('label', {}, '…or at this size (MB, before compression)', num('batch_max_mb', 1, 100)),
+        h('label', {}, '…or at this size (MB, before compression)', num('batch_max_mb', 1, 16)),
         h('label', {}, 'Space for logs waiting on this server (MB)', num('spool_cap_mb', 64, 102400))),
-      h('p', { class: 'muted small' }, 'When the storage can\'t be reached, logs wait on this server; past this space the oldest are dropped (and counted).')),
+      h('p', { class: 'muted small' }, 'When the storage can\'t be reached, logs wait on this server; past this space the oldest are dropped (and counted). The shipper\'s own buffer (up to 256 MB) comes on top.')),
     h('div', { class: 'actions' }, h('button', { type: 'submit' }, 'Save')));
   const keepHelp = () => {
     const n = Number(f.local_access_logs.value) || 0;

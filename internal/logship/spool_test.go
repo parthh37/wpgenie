@@ -312,3 +312,26 @@ func TestFitLine(t *testing.T) {
 		}
 	}
 }
+
+// What WriteSync made durable (an exporter's cursor moved past it) is
+// never dropped: after a write error the file is cut there and handed
+// over; only the lines after it are lost.
+func TestSpoolDiscardKeepsSynced(t *testing.T) {
+	s, _ := newSpool(t)
+	mustf(t, s.WriteSync(TypeAudit, [][]byte{[]byte(`{"id":1}`), []byte(`{"id":2}`)}), "write")
+	s.mu.Lock()
+	s.writeLocked(TypeAudit, []byte(`{"id":3}`))
+	s.files[TypeAudit].f.Close() // the disk goes away
+	s.mu.Unlock()
+	s.tick()
+	files := listFiles(t, s.Dir, TypeAudit)
+	if len(files) != 1 || strings.HasSuffix(files[0], ".part") {
+		t.Fatalf("files: %v", files)
+	}
+	if got := readSpool(t, s.Dir, TypeAudit); len(got) != 2 || got[1] != `{"id":2}` {
+		t.Errorf("kept %q", got)
+	}
+	if d := s.Take()[TypeAudit].Dropped; d != 1 {
+		t.Errorf("dropped %d, want 1", d)
+	}
+}

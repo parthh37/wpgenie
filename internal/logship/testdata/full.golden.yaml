@@ -9,15 +9,6 @@ enrichment_tables:
     schema:
       host: "string"
       site: "string"
-  containers:
-    type: "file"
-    file:
-      path: "/etc/vector/tables/containers.csv"
-      encoding:
-        type: "csv"
-    schema:
-      id: "string"
-      name: "string"
 sources:
   in_access:
     type: "file"
@@ -28,11 +19,6 @@ sources:
     type: "file"
     include: ["/logs/mail/*.log"]
     read_from: "end"
-  in_containers:
-    type: "file"
-    include: ["/logs/containers/*/*-json.log"]
-    read_from: "end"
-    ignore_older_secs: 86400
   in_spool:
     type: "file"
     include: ["/spool/*/*.jsonl"]
@@ -72,24 +58,6 @@ transforms:
       ts = .timestamp
       file = replace(string(.file) ?? "", "/logs/mail/", "")
       . = {"message": .message, "file": file, "timestamp": ts, "log_type": "mail", "server": "panel"}
-  t_containers:
-    type: "remap"
-    inputs: ["in_containers"]
-    drop_on_abort: true
-    drop_on_error: true
-    source: |
-      ts = .timestamp
-      m = parse_regex(string(.file) ?? "", r'/(?P<id>[0-9a-f]{64})-json\.log$') ?? {}
-      id = string(m.id) ?? ""
-      if id == "" {
-        abort
-      }
-      row, err = get_enrichment_table_record("containers", {"id": id})
-      if err != null {
-        abort
-      }
-      entry = object(parse_json(string!(.message)) ?? null) ?? {}
-      . = {"container": row.name, "stream": entry.stream, "time": entry.time, "message": replace(string(entry.log) ?? "", r'\n$', ""), "timestamp": ts, "log_type": "containers", "server": "panel"}
   t_spool:
     type: "remap"
     inputs: ["in_spool"]
@@ -99,7 +67,7 @@ transforms:
       ts = .timestamp
       m = parse_regex(string(.file) ?? "", r'^/spool/(?P<kind>[a-z_]+)/') ?? {}
       kind = string(m.kind) ?? ""
-      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon"], kind) {
+      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon", "containers"], kind) {
         abort
       }
       . = object(parse_json(string!(.message)) ?? null) ?? {}
@@ -112,8 +80,11 @@ transforms:
 sinks:
   archive:
     type: "aws_s3"
-    inputs: ["t_access", "t_mail", "t_containers", "t_spool"]
+    inputs: ["t_access", "t_mail", "t_spool"]
     endpoint: "https://minio.example.com:9000"
+    auth:
+      credentials_file: "/etc/vector/secrets/credentials"
+      profile: "wpgenie"
     region: "us-east-1"
     bucket: "logs-bucket"
     force_path_style: true

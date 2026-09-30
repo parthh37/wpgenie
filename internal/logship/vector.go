@@ -9,8 +9,9 @@ import (
 
 // Vector's configuration, generated from the settings. Verified against
 // Vector 0.58's reference (website/cue/reference/components/... at the
-// v0.58.0 tag): the file source's remove_after_secs / read_from /
-// ignore_older_secs / max_line_bytes, the aws_s3 sink's endpoint, region, force_path_style,
+// v0.58.0 tag, and src/aws/auth.rs for auth): the file source's
+// remove_after_secs / read_from / max_line_bytes, the aws_s3 sink's
+// endpoint, auth.credentials_file + auth.profile, region, force_path_style,
 // compression, key_prefix (a template: confined to its literal prefix),
 // filename_time_format, filename_append_uuid, filename_extension, batch,
 // buffer (disk, at least 256 MiB), acknowledgements and healthcheck, file
@@ -24,7 +25,11 @@ const (
 	ctrSpool      = "/spool"
 	ctrCaddy      = "/logs/caddy"
 	ctrMail       = "/logs/mail"
-	ctrContainers = "/logs/containers"
+	// ctrSecrets holds the credentials file (a directory mount: a file
+	// would pin the inode it had when the container started).
+	ctrSecrets = "/etc/vector/secrets"
+	// credentialsProfile is the credentials file's profile.
+	credentialsProfile = "wpgenie"
 	// metricsAddr is Vector's Prometheus endpoint, on the container's own
 	// loopback: the daemon reads it with docker exec, nothing else can.
 	metricsAddr = "127.0.0.1:9598"
@@ -110,28 +115,6 @@ if host != "" {
 			vrl = `ts = .timestamp
 file = replace(string(.file) ?? "", "` + ctrMail + `/", "")
 . = {"message": .message, "file": file, "timestamp": ts, "log_type": "mail", "server": ` + server + `}`
-		case TypeContainers:
-			// Every container's log is read; only WPGenie's (in the table
-			// the daemon keeps) ship.
-			tables = append(tables, ykv{"containers", ymap{
-				{"type", "file"},
-				{"file", ymap{{"path", ctrTables + "/containers.csv"}, {"encoding", ymap{{"type", "csv"}}}}},
-				{"schema", ymap{{"id", "string"}, {"name", "string"}}},
-			}})
-			src = ymap{{"type", "file"}, {"include", []string{ctrContainers + "/*/*-json.log"}}, {"read_from", "end"},
-				{"ignore_older_secs", 86400}}
-			vrl = `ts = .timestamp
-m = parse_regex(string(.file) ?? "", r'/(?P<id>[0-9a-f]{64})-json\.log$') ?? {}
-id = string(m.id) ?? ""
-if id == "" {
-  abort
-}
-row, err = get_enrichment_table_record("containers", {"id": id})
-if err != null {
-  abort
-}
-entry = object(parse_json(string!(.message)) ?? null) ?? {}
-. = {"container": row.name, "stream": entry.stream, "time": entry.time, "message": replace(string(entry.log) ?? "", r'\n$', ""), "timestamp": ts, "log_type": "containers", "server": ` + server + `}`
 		default:
 			return nil, fmt.Errorf("%s isn't a tailed log", typ)
 		}
@@ -177,6 +160,9 @@ if length(.) == 0 || exists(.wpgenie_spool) {
 		{"type", "aws_s3"},
 		{"inputs", inputs},
 		{"endpoint", d.Endpoint},
+		// The keys are in a file (0600, mounted read-only): not in the
+		// environment, which docker inspect shows.
+		{"auth", ymap{{"credentials_file", ctrSecrets + "/credentials"}, {"profile", credentialsProfile}}},
 		{"region", d.region()},
 		{"bucket", d.Bucket},
 		{"force_path_style", d.PathStyle},

@@ -78,6 +78,12 @@ func PeerOf(cs *tls.ConnectionState) (Peer, bool) {
 }
 
 // ValidNodeID: node IDs end up in DNS names, container labels and paths.
+// ReservedNodeID: IDs a new server can't take. Log shipping names the
+// panel's objects "panel" and an unpaired server's "unpaired" (see
+// internal/logship); a node called either would mix its logs with them.
+// Checked when adding a server only: an existing one keeps its ID.
+func ReservedNodeID(id string) bool { return id == "panel" || id == "unpaired" }
+
 func ValidNodeID(id string) bool {
 	if len(id) < 1 || len(id) > 32 || id == LocalNode {
 		return false

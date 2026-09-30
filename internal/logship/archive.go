@@ -107,12 +107,14 @@ func (s *Service) Archives(ctx context.Context, server, typ string, day time.Tim
 // ArchiveReader is an object of the archive being read.
 type ArchiveReader struct {
 	io.Reader
-	// Compressed: zstd, which the panel can't decompress (the bytes are
-	// the object's as they are).
+	// Compressed: the bytes are the object's, still compressed (asked
+	// for raw, or zstd, which the panel can't decompress).
 	Compressed bool
-	Name       string
-	f          *os.File
-	dir        string
+	// Name is a file name for it; ContentType its type.
+	Name        string
+	ContentType string
+	f           *os.File
+	dir         string
 }
 
 func (r *ArchiveReader) Close() error {
@@ -124,8 +126,8 @@ var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 // OpenArchive fetches an object of the archive (key validated against the
 // prefix) and returns its lines: gzip is decompressed; zstd can only be
-// downloaded as it is.
-func (s *Service) OpenArchive(ctx context.Context, key string) (*ArchiveReader, error) {
+// downloaded as it is. raw returns the object as it is in the bucket.
+func (s *Service) OpenArchive(ctx context.Context, key string, raw bool) (*ArchiveReader, error) {
 	d, err := s.destination()
 	if err != nil {
 		return nil, err
@@ -156,11 +158,16 @@ func (s *Service) OpenArchive(ctx context.Context, key string) (*ArchiveReader, 
 		}
 		return nil, err
 	}
-	r := &ArchiveReader{f: f, dir: dir, Name: k.Name}
+	r := &ArchiveReader{f: f, dir: dir, Name: k.Name, ContentType: "text/plain; charset=utf-8"}
 	br := bufio.NewReader(f)
 	head, _ := br.Peek(4)
+	gzipped := len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b
 	switch {
-	case len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b:
+	case raw && gzipped:
+		r.Reader, r.Compressed, r.ContentType = br, true, "application/gzip"
+	case raw && slices.Equal(head, zstdMagic):
+		r.Reader, r.Compressed, r.ContentType = br, true, "application/zstd"
+	case gzipped:
 		gz, err := gzip.NewReader(br)
 		if err != nil {
 			r.Close()
@@ -170,7 +177,7 @@ func (s *Service) OpenArchive(ctx context.Context, key string) (*ArchiveReader, 
 		r.Reader = gz
 		r.Name = strings.TrimSuffix(k.Name, ".gz")
 	case slices.Equal(head, zstdMagic):
-		r.Reader, r.Compressed = br, true
+		r.Reader, r.Compressed, r.ContentType = br, true, "application/zstd"
 	default:
 		// The service decompressed it (it was stored with a
 		// Content-Encoding): plain lines.
@@ -237,28 +244,117 @@ var ErrStorage = errors.New("the storage answered with an error")
 // retentionBatch bounds one delete command's list.
 const retentionBatch = 1000
 
+// fullTrimAfter: when the days to trim span more than this, the whole
+// prefix is listed once rather than every server's every kind of log day
+// by day (one rclone run each).
+const fullTrimAfter = 31
+
 // trimArchive deletes the archive's objects (every server's) from days
-// before the retention period. Only keys of the archive's own shape are
-// touched: anything else under the prefix stays.
+// before the retention period. The first time (or after the destination
+// changed, or a long pause) it lists the whole prefix; then, night after
+// night, only the days that just fell out of the period, under
+// <server>/<type>/YYYY/MM/DD/ for every server it has seen. Only keys of
+// the archive's own shape are touched: anything else under the prefix
+// stays.
 func (s *Service) trimArchive(ctx context.Context, set Settings) (int, error) {
 	if set.ArchiveRetentionDays <= 0 || set.Destination.check() != nil {
 		return 0, nil
 	}
-	t := set.Destination.target()
+	d := set.Destination
+	cutoff := s.now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -set.ArchiveRetentionDays)
+	p := s.loadPersisted(ctx)
+	dest := d.Endpoint + "|" + d.Bucket + "|" + d.Prefix
+	servers := append(slices.Clone(p.TrimServers), s.server())
+	if nodes, err := s.Store.ListNodes(ctx); err == nil {
+		for _, n := range nodes {
+			servers = append(servers, n.ID)
+		}
+	}
+	done, _ := time.Parse(time.DateOnly, p.TrimmedBefore)
+	var deleted int
+	var err error
+	switch {
+	case p.TrimDest == dest && !done.IsZero() && !done.Before(cutoff):
+		return 0, nil // nothing new fell out of the period
+	case p.TrimDest != dest || done.IsZero() || cutoff.Sub(done) > fullTrimAfter*24*time.Hour:
+		var seen []string
+		deleted, seen, err = s.trimAll(ctx, d, cutoff)
+		servers = append(servers, seen...)
+	default:
+		deleted, err = s.trimDays(ctx, d, servers, done, cutoff)
+	}
+	if err != nil {
+		return deleted, err
+	}
+	slices.Sort(servers)
+	p = s.loadPersisted(ctx)
+	p.TrimDest, p.TrimmedBefore, p.TrimServers = dest, cutoff.Format(time.DateOnly), slices.Compact(servers)
+	s.savePersisted(ctx, p)
+	return deleted, nil
+}
+
+// trimAll lists the whole prefix and deletes what's older than cutoff; it
+// also returns the servers it saw.
+func (s *Service) trimAll(ctx context.Context, d Destination, cutoff time.Time) (int, []string, error) {
+	t := d.target()
 	objs, err := s.Rclone.List(ctx, t)
 	if err != nil {
-		return 0, storageErr("listing the archive", err)
+		return 0, nil, storageErr("listing the archive", err)
 	}
-	cutoff := s.now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -set.ArchiveRetentionDays)
-	var old []string
+	var old, servers []string
 	for rel := range objs {
-		if k, err := parseArchiveKey("", rel); err == nil && k.Day.Before(cutoff) {
+		k, err := parseArchiveKey("", rel)
+		if err != nil {
+			continue
+		}
+		if !slices.Contains(servers, k.Server) {
+			servers = append(servers, k.Server)
+		}
+		if k.Day.Before(cutoff) {
 			old = append(old, rel)
 		}
 	}
-	slices.Sort(old)
+	n, err := s.deleteKeys(ctx, t, old)
+	return n, servers, err
+}
+
+// trimDays deletes the objects of the days from from (included) to to
+// (excluded), day prefix by day prefix.
+func (s *Service) trimDays(ctx context.Context, d Destination, servers []string, from, to time.Time) (int, error) {
 	deleted := 0
-	for chunk := range slices.Chunk(old, retentionBatch) {
+	for day := from; day.Before(to); day = day.AddDate(0, 0, 1) {
+		for _, server := range slices.Compact(slices.Sorted(slices.Values(servers))) {
+			if !serverRe.MatchString(server) {
+				continue
+			}
+			for _, typ := range Types {
+				t := d.target()
+				t.Prefix += archiveKey{Server: server, Type: typ.Name, Day: day}.dir()
+				objs, err := s.Rclone.List(ctx, t)
+				if err != nil {
+					return deleted, storageErr("listing the archive", err)
+				}
+				var names []string
+				for name := range objs {
+					if fileNameRe.MatchString(name) && !strings.Contains(name, "..") {
+						names = append(names, name)
+					}
+				}
+				n, err := s.deleteKeys(ctx, t, names)
+				deleted += n
+				if err != nil {
+					return deleted, err
+				}
+			}
+		}
+	}
+	return deleted, nil
+}
+
+func (s *Service) deleteKeys(ctx context.Context, t offload.Target, keys []string) (int, error) {
+	slices.Sort(keys)
+	deleted := 0
+	for chunk := range slices.Chunk(keys, retentionBatch) {
 		if _, err := s.Rclone.Delete(ctx, t, chunk); err != nil {
 			return deleted, storageErr("deleting old archives", err)
 		}
