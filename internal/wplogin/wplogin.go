@@ -32,7 +32,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/site"
 )
 
@@ -133,7 +133,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Robots-Tag", "noindex, nofollow")
 	h.Set("Cache-Control", "no-store")
-	siteID := r.Header.Get(adminer.SiteHeader)
+	siteID := r.Header.Get(phpmyadmin.SiteHeader)
 	tok := r.URL.Query().Get(tokenParam)
 	if siteID == "" || r.URL.Path != Path {
 		http.NotFound(w, r)

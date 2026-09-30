@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
@@ -35,7 +35,7 @@ func newTestServer(t *testing.T) http.Handler {
 	svc.Jobs = &jobs.Queue{Store: st, Log: slog.Default()}
 	return (&Server{Token: "tok", Version: "v0.1.0", Sites: svc, Store: st, Shield: sh, Updater: upd, Mail: ml,
 		Jobs: svc.Jobs, SFTP: &sftp.Service{Store: st, Log: slog.Default()},
-		Adminer: &adminer.Service{Store: st, Log: slog.Default()}, WPLogin: &wplogin.Service{Sites: svc, Log: slog.Default()},
+		PHPMyAdmin: &phpmyadmin.Service{Store: st, Log: slog.Default()}, WPLogin: &wplogin.Service{Sites: svc, Log: slog.Default()},
 		Log: slog.Default()}).Handler()
 }
 
@@ -56,7 +56,7 @@ func TestRoutesAndAuth(t *testing.T) {
 		{"PUT", "/api/v1/sites/x/primary-domain", "tok", `{"domain":"a.com"}`, 404},
 		{"POST", "/api/v1/backups/repos", "", `{}`, 401},
 		// Tools on sites' domains need Caddy's site header (and a token).
-		{"GET", "/_wpgenie/adminer/", "", "", 404},
+		{"GET", "/_wpgenie/phpmyadmin/", "", "", 404},
 		{"GET", "/", "", "", 200},
 		{"GET", "/api/v1/sites", "", "", 401},
 		{"GET", "/api/v1/sites", "wrong", "", 401},

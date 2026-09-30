@@ -287,9 +287,9 @@
 			header_up {{.Cfg.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}
 		}
-		# WPGenie tools served on the site's own origin (Adminer): the daemon
+		# WPGenie tools served on the site's own origin (phpMyAdmin): the daemon
 		# checks their short-lived tokens. Before the WAF, which would take
-		# Adminer's SQL for an attack.
+		# phpMyAdmin's SQL for an attack.
 		reverse_proxy /_wpgenie/* {{.Cfg.ShieldUpstream}} {
 			header_up {{.Cfg.SiteHeader}} {{.ID}}
 			header_up X-Forwarded-For {client_ip}

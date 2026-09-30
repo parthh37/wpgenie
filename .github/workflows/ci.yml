@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make php-image
-      - name: backups, staging, domains, PHP, SFTP, Adminer, page cache, images, insights and CDN links against real WordPress, MariaDB, Valkey and restic
+      - name: backups, staging, domains, PHP, SFTP, phpMyAdmin, page cache, images, insights and CDN links against real WordPress, MariaDB, Valkey and restic
         run: make test-e2e
 
   installer:

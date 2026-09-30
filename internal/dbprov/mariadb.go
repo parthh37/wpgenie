@@ -138,7 +138,7 @@ func (m *MariaDB) DropTables(ctx context.Context, db string, tables []string) er
 	return nil
 }
 
-// Temporary accounts for database sessions (Adminer): scoped to one site
+// Temporary accounts for database sessions (phpMyAdmin): scoped to one site
 // database, few connections, dropped when the session ends. Their names
 // start with TempUserPrefix, so leftovers of a crash are found and dropped.
 const TempUserPrefix = "wpga_"

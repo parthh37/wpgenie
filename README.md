@@ -43,7 +43,7 @@ with one command.
 | 🧪 | **Staging**: clone a site, push code / files / database (or chosen tables) back with links rewritten | ✅ |
 | 🌐 | Domain aliases, www ↔ bare-domain redirects, primary domain changes, your own TLS certificates | ✅ |
 | 🐘 | PHP 8.2 / 8.3 / 8.4 per site (health-checked, switched back if the site breaks), per-site PHP limits | ✅ |
-| 📂 | Per-site **SFTP** (chrooted, keys or password) and **Adminer** on demand (one-time link, temporary DB account) | ✅ |
+| 📂 | Per-site **SFTP** (chrooted, keys or password) and **phpMyAdmin** on demand (one-time link, temporary DB account) | ✅ |
 | ⏳ | Job queue: long operations run in the background with progress in the dashboard and CLI | ✅ |
 | ⚡ | Full-page cache served by Caddy (Brotli/gzip precompressed, mobile copies when a theme needs them, admin-bar purge), Redis object cache, system cron | ✅ |
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
@@ -166,7 +166,7 @@ wpgenie site push <staging-id> --files code --db        # live is backed up firs
 wpgenie site domain <site-id> add www.example.com --redirect
 wpgenie site php <site-id> --version 8.4 --memory-limit 512
 wpgenie site sftp <site-id> add --password              # sftp -P 2222 <site-id>@example.com
-wpgenie site adminer <site-id>                          # one-time link to the database
+wpgenie site phpmyadmin <site-id>                       # one-time link to the database
 ```
 
 Several servers (on a new VPS, `install.sh --agent` prints the address and a one-time pairing code; port
@@ -215,7 +215,7 @@ Requirements: Go 1.26+, Docker (for the integration tests and PHP image).
 make test               # unit tests
 make test-integration   # + validates generated Caddy config with real Caddy, store tests on PostgreSQL too
 make test-postgres      # every store-backed test with the panel database on PostgreSQL
-make test-e2e           # backups, staging, SFTP, Adminer against real WordPress/MariaDB/restic
+make test-e2e           # backups, staging, SFTP, phpMyAdmin against real WordPress/MariaDB/restic
 make php-image          # build the hardened PHP runtime image
 make caddy-image        # build Caddy with the Coraza WAF
 make build              # ./bin/wpgenie
@@ -235,7 +235,7 @@ internal/jobs/      background jobs with progress (create, backup, restore, clon
 internal/backup/    restic in throwaway containers (local, S3, B2, SFTP repositories)
 internal/offload/   rclone in throwaway containers: uploads offload to S3-compatible storage
 internal/sftp/      the chrooted SFTP server's accounts (SHA-512 crypt, authorized_keys)
-internal/adminer/   Adminer sessions: one-time tokens, temporary DB accounts, proxy
+internal/phpmyadmin/ phpMyAdmin sessions: one-time tokens, temporary DB accounts, proxy
 internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
 internal/updater/   WPGenie self-update (signed releases, applier with rollback)
 internal/monitor/   Prometheus metrics, alerts (uptime, certificates, disk, backups), e-mail and webhooks
@@ -248,7 +248,7 @@ internal/web/       embedded dashboard
 images/php/         hardened PHP-FPM + WP-CLI image (page cache, SMTP, plugin profiler)
 images/caddy/       Caddy with the Coraza WAF module
 images/sftp/        OpenSSH, SFTP only, every login chrooted (built by the daemon on first use)
-images/adminer/     Adminer behind WPGenie's session front (built by the daemon on first use)
+images/phpmyadmin/  phpMyAdmin behind WPGenie's session front (built by the daemon on first use)
 deploy/             installer, compose stack, systemd unit
 ```
 

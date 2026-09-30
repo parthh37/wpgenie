@@ -18,7 +18,7 @@ check.
 | restic (container per command) | Backups | Deduplicated, compressed, encrypted; local, S3, B2, SFTP; verifiable |
 | rclone (container per command) | Uploads offload to S3-compatible storage | Every S3 dialect; statistics as JSON; no daemon to keep running |
 | OpenSSH (optional container) | SFTP for site files | Chroot and SFTP-only logins built in; nothing custom exposed to the internet |
-| Adminer (on demand) | Database access | One PHP file; runs only while someone uses it, behind WPGenie's tokens |
+| phpMyAdmin (on demand) | Database access | Official image, PHP's built-in server; runs only while someone uses it, behind WPGenie's tokens |
 | `wpgenie agent` (other servers) | A node of a cluster: the same data plane for the sites placed on it | The same binary and code paths as a single server; the panel drives it over mutual TLS (see *Several servers*) |
 
 ## Request flow
@@ -188,7 +188,7 @@ and creates the first one atomically). After that people sign in with their own 
 
 - **Roles**: staff are *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
   plugin analysis, CDN, mailboxes, bans, backups and restores, staging and pushes, domains and
-  certificates, PHP, SFTP logins, Adminer, wp-admin sign-in and WordPress administrators' passwords, WordPress
+  certificates, PHP, SFTP logins, phpMyAdmin, wp-admin sign-in and WordPress administrators' passwords, WordPress
   tweaks and the analyser's fixes), *admin* (also creates and deletes sites, users, backup
   destinations and backups, server-wide security lists and mail settings, accounts, plans and billing,
   self-update). Every route declares the staff role it needs. Tenants are *customer* and *reseller*
@@ -251,7 +251,7 @@ centrally, before any handler runs:
   ownership stops the server at startup;
 - routes marked reseller-only, and "customers only" ones (suspend, terminate, change the plan of a
   customer, never the reseller's own account);
-- the site's plan features (staging, backups, SFTP, Adminer, own certificates, CDN, SMTP);
+- the site's plan features (staging, backups, SFTP, phpMyAdmin, own certificates, CDN, SMTP);
 - a suspended account (or one whose reseller is suspended) can sign in and read, and look after its own
   user, but change nothing; a suspended customer's sites are frozen for their reseller too.
 
@@ -263,7 +263,7 @@ are reserved.
 Lists (sites, jobs, security events, accounts, usage, plans) are filtered to the tenant's scope. Tenants
 get their sites' day-to-day operations: shield settings, caches, updates, scans and plugin analysis,
 backups and restores of their own sites to the plan's destinations, staging, domains, certificates, PHP
-version and settings, SFTP logins, Adminer, CDN, images, insights, SMTP, signing in to wp-admin and resetting
+version and settings, SFTP logins, phpMyAdmin, CDN, images, insights, SMTP, signing in to wp-admin and resetting
 WordPress administrators' passwords, WordPress tweaks, the site analyser and its fixes. Resource changes (replicas,
 memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
 infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
@@ -296,7 +296,7 @@ says so, and the next month (or a bigger plan) lifts that suspension by itself.
 customer) suspends every site it owns, and a reseller's suspension takes its customers' sites down too.
 A suspended site answers every domain with a static 503 page from Caddy (no PHP, no shield, no log),
 its PHP replicas are stopped once no job holds the site, cron, backups, updates, scans and the autoscaler
-skip it, its SFTP logins and Adminer sessions end; files, databases, backups and settings stay. Only the
+skip it, its SFTP logins and phpMyAdmin sessions end; files, databases, backups and settings stay. Only the
 party that suspended (or an administrator) lifts a suspension; a stronger reason replaces a weaker one
 (admin > billing > overage > reseller). Unsuspending starts the replicas first and switches Caddy only
 once they answer. Suspension goes through `billing.SiteOps` (`site.Service` here), so sites on other nodes
@@ -823,17 +823,21 @@ container installs them atomically; deleting a login or changing its password en
 Host keys persist. OpenSSH's own `PerSourcePenalties` slows down addresses that keep failing. Docker
 publishes the port past `ufw` (as it does for every published port).
 
-**Adminer** (`internal/adminer`, `images/adminer`) opens on the **site's own domain**
-(`https://<site>/_wpgenie/adminer/`), not the panel's: Adminer renders whatever the database holds, a
-compromised plugin controls that, and on the panel's origin an XSS in Adminer could act with the
+**phpMyAdmin** (`internal/phpmyadmin`, `images/phpmyadmin`) opens on the **site's own domain**
+(`https://<site>/_wpgenie/phpmyadmin/`), not the panel's: phpMyAdmin renders whatever the database holds, a
+compromised plugin controls that, and on the panel's origin an XSS in phpMyAdmin could act with the
 operator's panel session; on the site's origin it reaches nothing the site's code couldn't already.
 Caddy routes `/_wpgenie/*` to the daemon before the shield and the WAF (it's SQL, the WAF would block it),
 naming the site in a header it sets itself. Opening it creates a temporary MariaDB account with rights on
 that one database (5 connections) and a one-time token valid 2 minutes; the token is exchanged for an
 `HttpOnly`, `Secure` cookie scoped to the path, and the URL loses the token. The daemon proxies to the
-Adminer container on loopback with the account in headers and a per-start secret the container checks,
-so neither sites (same Docker network) nor anyone else can use Adminer directly; any login Adminer's form
-would make, to another server included, is replaced by the session's account. Sessions end after 15
+phpMyAdmin container on loopback with the account in headers and a per-start secret the container's router
+checks on every request, so neither sites (same Docker network) nor anyone else can use phpMyAdmin
+directly. The router serves only phpMyAdmin's entry points and static files, never its libraries.
+phpMyAdmin signs in with the session's account (`auth_type config`, `only_db`): there's no login form,
+so no other server or account can be reached. It lands on the site's tables, and features that would
+write to the WordPress database by themselves (configuration storage, `ZeroConf`) or call out (version
+checks, error reports) are off. Imports take up to 64 MB (compressed dumps are bigger). Sessions end after 15
 minutes idle or an hour: the account is dropped and its connections killed; the container stops when no
 session is left, and leftover accounts are dropped at startup.
 
@@ -1096,7 +1100,7 @@ optional `public-read` ACL for services that need one per object, and `local_day
 
 A panel can run sites on other servers. Every server is a complete data plane for the sites placed on it
 (its own Caddy, PHP containers, MariaDB and Valkey) run by the same daemon: `wpgenie agent` is `serve` as a
-*node*, with its own SQLite store, shield, analytics, cron, autoscaler, backups, SFTP and Adminer for its sites.
+*node*, with its own SQLite store, shield, analytics, cron, autoscaler, backups, SFTP and phpMyAdmin for its sites.
 The panel (the control plane, itself node `local`) keeps the registry of which site lives where, signs people
 in and checks what they may do, and forwards everything about a site to the server it lives on. A node
 holds nothing of other nodes' sites, except the install (not the database) of sites spread onto it (below):

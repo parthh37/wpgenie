@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/parthh37/wpgenie/internal/adminer"
 	"github.com/parthh37/wpgenie/internal/auth"
 	"github.com/parthh37/wpgenie/internal/backup"
 	"github.com/parthh37/wpgenie/internal/billing"
@@ -25,6 +24,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/monitor"
+	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
@@ -35,16 +35,16 @@ import (
 )
 
 type Server struct {
-	Token   string
-	Version string
-	Sites   *site.Service
-	Store   *store.Store
-	Shield  *shield.Shield
-	Updater *updater.Updater
-	Mail    *mail.Service
-	Jobs    *jobs.Queue
-	SFTP    *sftp.Service
-	Adminer *adminer.Service
+	Token      string
+	Version    string
+	Sites      *site.Service
+	Store      *store.Store
+	Shield     *shield.Shield
+	Updater    *updater.Updater
+	Mail       *mail.Service
+	Jobs       *jobs.Queue
+	SFTP       *sftp.Service
+	PHPMyAdmin *phpmyadmin.Service
 	// WPLogin signs panel users in to sites' wp-admin (optional).
 	WPLogin *wplogin.Service
 	// IP reputation data, for the status view (optional).
@@ -98,11 +98,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /_shield/verify", s.Shield.VerifyHandler())
 
 	// WPGenie tools on sites' own domains (reached only through Caddy's
-	// /_wpgenie/* route, which names the site): Adminer, signing in to
+	// /_wpgenie/* route, which names the site): phpMyAdmin, signing in to
 	// wp-admin, and the brand's logo WordPress's admin shows.
-	if s.Adminer != nil {
-		mux.Handle("GET "+adminer.Path, s.Adminer)
-		mux.Handle("POST "+adminer.Path, s.Adminer)
+	if s.PHPMyAdmin != nil {
+		mux.Handle("GET "+phpmyadmin.Path, s.PHPMyAdmin)
+		mux.Handle("POST "+phpmyadmin.Path, s.PHPMyAdmin)
 	}
 	if s.WPLogin != nil {
 		mux.Handle("GET "+wplogin.Path, s.WPLogin)
@@ -242,7 +242,7 @@ func (s *Server) Handler() http.Handler {
 	r("PUT /api/v1/sites/{id}/sftp/{user}/keys", operator, s.setSFTPKeys)
 	r("PUT /api/v1/sites/{id}/sftp/{user}/password", operator, s.setSFTPPassword)
 	r("DELETE /api/v1/sites/{id}/sftp/{user}", operator, s.deleteSFTP)
-	r("POST /api/v1/sites/{id}/adminer", operator, s.openAdminer)
+	r("POST /api/v1/sites/{id}/phpmyadmin", operator, s.openPHPMyAdmin)
 
 	r("PUT /api/v1/sites/{id}/smtp", operator, s.setSiteSMTP)
 	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
@@ -345,7 +345,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, store.ErrInUse):
 		status = http.StatusConflict
 	case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
-		errors.Is(err, mail.ErrInvalid), errors.Is(err, sftp.ErrInvalid), errors.Is(err, adminer.ErrInvalid),
+		errors.Is(err, mail.ErrInvalid), errors.Is(err, sftp.ErrInvalid), errors.Is(err, phpmyadmin.ErrInvalid),
 		errors.Is(err, backup.ErrWrongPassword), errors.Is(err, billing.ErrInvalid), errors.Is(err, billing.ErrBadSignature),
 		errors.Is(err, cluster.ErrInvalid):
 		status = http.StatusBadRequest
@@ -720,7 +720,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The shield's pages and the tools on sites' domains (Adminer, with
+		// The shield's pages and the tools on sites' domains (phpMyAdmin, with
 		// its own nonce-based CSP) aren't the panel.
 		if !strings.HasPrefix(r.URL.Path, "/_shield/") && !strings.HasPrefix(r.URL.Path, "/_wpgenie/") {
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")

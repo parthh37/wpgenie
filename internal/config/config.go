@@ -86,9 +86,9 @@ type Config struct {
 	// site's directory), published on SFTPPort on all interfaces.
 	SFTPImage string `json:"sftp_image"`
 	SFTPPort  int    `json:"sftp_port"`
-	// Adminer (database admin, on demand) listens on 127.0.0.1:AdminerPort.
-	AdminerImage string `json:"adminer_image"`
-	AdminerPort  int    `json:"adminer_port"`
+	// phpMyAdmin (database admin, on demand) listens on 127.0.0.1:PHPMyAdminPort.
+	PHPMyAdminImage string `json:"phpmyadmin_image"`
+	PHPMyAdminPort  int    `json:"phpmyadmin_port"`
 
 	// MariaDBDSN is a root DSN used only to create per-site databases/users.
 	MariaDBDSN  string `json:"mariadb_dsn"`
@@ -156,8 +156,8 @@ func Default() *Config {
 		JobConcurrency:   2,
 		SFTPImage:        "wpgenie/sftp:1",
 		SFTPPort:         2222,
-		AdminerImage:     "wpgenie/adminer:1",
-		AdminerPort:      8090,
+		PHPMyAdminImage:  "wpgenie/phpmyadmin:1",
+		PHPMyAdminPort:   8090,
 		RedisHost:        "wpgenie-redis",
 		ClusterListen:    ":7443",
 		ClusterDir:       "/etc/wpgenie/cluster",
@@ -209,8 +209,8 @@ func (c *Config) Validate() error {
 	if c.MaintenanceHour < 0 || c.MaintenanceHour > 23 {
 		errs = append(errs, errors.New("maintenance_hour must be between 0 and 23"))
 	}
-	if c.JobConcurrency < 1 || c.SFTPPort < 1 || c.SFTPPort > 65535 || c.AdminerPort < 1 || c.AdminerPort > 65535 {
-		errs = append(errs, errors.New("job_concurrency must be >= 1; sftp_port and adminer_port must be valid ports"))
+	if c.JobConcurrency < 1 || c.SFTPPort < 1 || c.SFTPPort > 65535 || c.PHPMyAdminPort < 1 || c.PHPMyAdminPort > 65535 {
+		errs = append(errs, errors.New("job_concurrency must be >= 1; sftp_port and phpmyadmin_port must be valid ports"))
 	}
 	if !slices.Contains(c.PHPVersions, c.DefaultPHPVersion()) {
 		errs = append(errs, fmt.Errorf("php_versions must include the version of php_image (%s)", c.DefaultPHPVersion()))
