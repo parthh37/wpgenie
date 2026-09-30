@@ -188,7 +188,8 @@ and creates the first one atomically). After that people sign in with their own 
 
 - **Roles**: staff are *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
   plugin analysis, CDN, mailboxes, bans, backups and restores, staging and pushes, domains and
-  certificates, PHP, SFTP logins, Adminer), *admin* (also creates and deletes sites, users, backup
+  certificates, PHP, SFTP logins, Adminer, wp-admin sign-in and WordPress administrators' passwords, WordPress
+  tweaks and the analyser's fixes), *admin* (also creates and deletes sites, users, backup
   destinations and backups, server-wide security lists and mail settings, accounts, plans and billing,
   self-update). Every route declares the staff role it needs. Tenants are *customer* and *reseller*
   users: they belong to an account and reach only their own sites and account (see *Accounts, plans
@@ -262,11 +263,12 @@ are reserved.
 Lists (sites, jobs, security events, accounts, usage, plans) are filtered to the tenant's scope. Tenants
 get their sites' day-to-day operations: shield settings, caches, updates, scans and plugin analysis,
 backups and restores of their own sites to the plan's destinations, staging, domains, certificates, PHP
-version and settings, SFTP logins, Adminer, CDN, images, insights, SMTP. Resource changes (replicas,
+version and settings, SFTP logins, Adminer, CDN, images, insights, SMTP, signing in to wp-admin and resetting
+WordPress administrators' passwords, WordPress tweaks, the site analyser and its fixes. Resource changes (replicas,
 memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
 infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
 destinations and deleting backups, restoring a backup as a new site, users outside their accounts,
-plans' definitions, billing settings, audit log, self-update. `TestEveryRouteIsClosedToOtherTenants`
+plans' definitions, billing settings, audit log, self-update, branding. `TestEveryRouteIsClosedToOtherTenants`
 walks the whole route table as a customer and a reseller (tokens and sessions): every staff-only route
 answers 403 and every route on another account's site, account or job 404.
 
@@ -657,6 +659,69 @@ wp-admin.
   is discarded (`DONOTCACHEPAGE` keeps it out of the page cache). The report comes from code that ran
   plugins, so it is parsed as untrusted input and only ever displayed.
 - Vulnerability counts come from the latest scan. Findings are logged to the site's activity log.
+
+## WordPress from the panel
+
+**Signing in to wp-admin without a password** (`internal/wplogin`, `site/wpadmin.go`). *WP Admin* in the panel
+(or `POST /sites/{id}/wp-admin/login`, operators and tenants) signs the browser in as one of the site's
+administrators (the oldest unless another is chosen):
+
+1. WP-CLI (plugins and themes skipped, so a compromised plugin can't observe or steer it) makes a real WordPress
+   session: a `WP_Session_Tokens` token, recorded with the requester's address and browser, and the
+   `secure_auth` and `logged_in` cookies for it, on the paths `wp_set_auth_cookie()` uses. It is an ordinary
+   session: listed in the user's sessions, two days like any sign-in without *remember me*, ended by logging out
+   everywhere or a password change. Only administrators can be signed in as.
+2. The daemon keeps the cookies in memory behind a random one-time token and returns
+   `https://<site>/_wpgenie/login?wpgenie_token=…`, valid two minutes. The host is WordPress's own (its
+   `siteurl`, when that is one of the site's domains): the cookies are only valid there.
+3. Caddy's `/_wpgenie/*` route (before the shield and the WAF, naming the site in a header it sets) brings the
+   browser to the daemon, which checks the token was made for this site and this host, forgets it, sets the
+   cookies (`Secure`, `HttpOnly`, session cookies; the site's `COOKIE_DOMAIN` only if it covers the host) and
+   redirects to wp-admin. `no-store` and `no-referrer`: the URL isn't cached or leaked.
+
+Why a link rather than a password or a WordPress plugin: cookies for the site's domain can only be set by a
+response from that domain, and a plugin checking tokens would put the secret where site code can read it. Here
+nothing about the sign-in is stored anywhere; cookie names and values WordPress printed are checked before
+they go into `Set-Cookie` headers (the cookie constants are overridable in `wp-config.php`'s editable part).
+Deleting or suspending a site forgets its unused links; the admin allowlist still applies to wp-admin.
+
+**Administrators' passwords.** `POST /sites/{id}/wp-admin/password` sets a new password for an administrator
+(or a random 24-character one, shown once) with `wp user update --prompt=user_pass` (the password on stdin,
+never argv) and ends all their sessions. WordPress sends no e-mail about it.
+
+**Branding** (`site/branding.go`, `images/php/branding.php`). One server-wide brand (`PUT /settings/branding`,
+admins): a name, a link and a logo (PNG, JPEG, GIF, WebP or SVG, 256 KB at most, its bytes checked against its
+type). Every site gets a root-owned `wpgenie-brand.php` mu-plugin wrapper (name and link base64-encoded, so no
+value can end the PHP string) loading `branding.php` from the image: the brand's logo and link on the login
+page, the brand in place of WordPress's logo menu in the admin bar, *Hosted by* in the admin footer, the brand in
+page titles, and no WordPress news widget or welcome panel. The logo is never written into sites' directories
+(site code could replace it): the daemon serves it at `/_wpgenie/brand/logo?v=<hash>` on each site's domain,
+cached for good per version, SVG under a `sandbox` CSP. The panel sends the whole brand to every node (and to a
+node when it's added), and each rewrites its sites' wrappers; sites still being provisioned get theirs when
+they go live (the WordPress image only copies core into an empty docroot).
+
+**WordPress tweaks** (`site/optimize.go`, `images/php/optimize.php`). What performance plugins do on top of
+caching, as a list per site (`PUT /sites/{id}/optimize`): no emoji scripts, no oEmbed discovery, no generator,
+RSD, WLW or shortlink tags, Heartbeat every 60 s in wp-admin and not on visitors' pages, no self-pingbacks, no
+Dashicons for visitors, optionally no jQuery Migrate on visitors' pages (old themes may need it), and a nightly
+database cleanup (expired transients; auto-drafts older than a week; spam older than a month; revisions older
+than a month beyond the newest five per post; bounded batches, through WordPress's own delete functions so
+metadata and counts stay consistent). A root-owned `wpgenie-optimize.php` wrapper names the ones on; nothing
+to install, update or switch off from wp-admin. New sites get all but jQuery Migrate; sites that existed
+before keep none until they're turned on (by hand, or by the analyser's fix). Changing them purges the page
+cache.
+
+**Site analyser** (`site/analysis.go`, `GET /sites/{id}/analysis`). A live look inside WordPress through one
+WP-CLI call (version, debug display, search-engine visibility, open registration and its role, administrators,
+autoloaded options, expired transients, revisions, spam, inactive plugins and themes, database size) combined
+with the last scan (installed versions against known vulnerabilities, file integrity), the plugin analysis
+(closed, abandoned, nulled) and the site's settings (shield, WAF, caches, images, tweaks, automatic updates).
+Each finding is critical, a warning or informational, in security, performance or upkeep; the score starts at
+100 and loses 20, 8 or 2 per finding (grades A to F). Findings WPGenie can fix carry a fix
+(`POST /sites/{id}/analysis/fix`): each one is an existing operation (caches, WebP, tweaks, database cleanup,
+a scan, a security or full update with its snapshot and rollback, automatic security updates, the shield, the
+WAF) or a single WP-CLI option change (new registrations as subscribers, search engines allowed), so tenants
+reach nothing through it they couldn't already. A staging copy isn't faulted for hiding from search engines.
 
 ## Jobs
 

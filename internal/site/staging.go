@@ -69,6 +69,7 @@ func (s *Service) StartStaging(ctx context.Context, liveID string, in StagingInp
 	st.PHPVersion, st.PHP = live.PHPVersion, live.PHP
 	st.MemoryMB, st.CPUs = live.MemoryMB, live.CPUs
 	st.PageCache, st.ObjectCache = live.PageCache, live.ObjectCache
+	st.Optimize = slices.Clone(live.Optimize)
 	st.ShieldMode, st.BlockAIBots, st.WAF, st.BodyWAF, st.XMLRPC = live.ShieldMode, live.BlockAIBots, live.WAF, live.BodyWAF, live.XMLRPC
 	st.AdminAllow, st.TrustedIPs, st.DenyIPs = live.AdminAllow, live.TrustedIPs, live.DenyIPs
 	st.AutoUpdate = AutoUpdateOff

@@ -112,6 +112,14 @@ var tenantRoutes = map[string]tenantRule{
 	"GET /api/v1/sites/{id}/scan":                             anyTenant,
 	"POST /api/v1/sites/{id}/plugins":                         anyTenant,
 	"GET /api/v1/sites/{id}/plugins":                          anyTenant,
+	"GET /api/v1/sites/{id}/analysis":                         anyTenant,
+	"POST /api/v1/sites/{id}/analysis/fix":                    anyTenant, // each fix is a route tenants have
+	"GET /api/v1/sites/{id}/wp-admin/users":                   anyTenant,
+	"POST /api/v1/sites/{id}/wp-admin/login":                  anyTenant,
+	"POST /api/v1/sites/{id}/wp-admin/password":               anyTenant,
+	"GET /api/v1/optimizations":                               anyTenant,
+	"PUT /api/v1/sites/{id}/optimize":                         anyTenant,
+	"POST /api/v1/sites/{id}/optimize/cleanup":                anyTenant,
 	"GET /api/v1/sites/{id}/tables":                           anyTenant,
 	"POST /api/v1/sites/{id}/domains":                         anyTenant, // within the plan
 	"PUT /api/v1/sites/{id}/domains/{domain}":                 anyTenant,

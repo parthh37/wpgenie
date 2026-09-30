@@ -59,6 +59,9 @@ type Site struct {
 	// ImageFormats are the formats uploads are converted to and served in
 	// ("avif", "webp"); empty: off.
 	ImageFormats []string `json:"image_formats"`
+	// Optimize lists the WordPress performance tweaks the site's optimize
+	// mu-plugin applies (site.Optimizations keys); empty: off.
+	Optimize []string `json:"optimize"`
 	// Shield: request inspection, and IP networks (normalised prefixes).
 	WAF        bool     `json:"waf"`
 	AdminAllow []string `json:"admin_allow"`
@@ -114,7 +117,7 @@ const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, stat
 	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp,
 	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
 	country_mode, countries, country_action, body_waf, parent_id, php_settings,
-	cache_mobile, image_formats, target_workers, target_response_ms, created_at, updated_at`
+	cache_mobile, image_formats, target_workers, target_response_ms, optimize, created_at, updated_at`
 
 // PHPSettings are per-site PHP limits. Zero means the image default
 // (images/php/php.ini).
@@ -128,13 +131,13 @@ type PHPSettings struct {
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated int64
-	var adminAllow, trusted, deny, countries, php, images string
+	var adminAllow, trusted, deny, countries, php, images, optimize string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
 		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
 		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php,
-		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &created, &updated)
+		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &optimize, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -144,6 +147,7 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	s.AdminAllow, s.TrustedIPs, s.DenyIPs = splitList(adminAllow), splitList(trusted), splitList(deny)
 	s.Countries = splitList(countries)
 	s.ImageFormats = splitList(images)
+	s.Optimize = splitList(optimize)
 	if err := json.Unmarshal([]byte(php), &s.PHP); err != nil {
 		return nil, err
 	}
@@ -193,7 +197,7 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 41)+`?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 42)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
@@ -202,7 +206,8 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 		site.XMLRPC, site.RateRPS, site.RateBurst, site.LoginPerMin, site.ChallengeBits,
 		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
 		site.CountryAction, site.BodyWAF, site.ParentID, string(php),
-		site.CacheMobile, strings.Join(site.ImageFormats, ","), site.TargetWorkers, site.TargetResponseMS, now, now)
+		site.CacheMobile, strings.Join(site.ImageFormats, ","), site.TargetWorkers, site.TargetResponseMS,
+		strings.Join(site.Optimize, ","), now, now)
 	if err != nil {
 		return err
 	}
@@ -464,6 +469,12 @@ func (s *Store) SetCache(ctx context.Context, id string, page, object, mobile bo
 func (s *Store) SetImageFormats(ctx context.Context, id string, formats []string) error {
 	return s.exec1(ctx, `UPDATE sites SET image_formats = ?, updated_at = ? WHERE id = ?`,
 		strings.Join(formats, ","), time.Now().Unix(), id)
+}
+
+// SetOptimize records a site's WordPress performance tweaks.
+func (s *Store) SetOptimize(ctx context.Context, id string, keys []string) error {
+	return s.exec1(ctx, `UPDATE sites SET optimize = ?, updated_at = ? WHERE id = ?`,
+		strings.Join(keys, ","), time.Now().Unix(), id)
 }
 
 func (s *Store) SetSiteStatus(ctx context.Context, id string, st SiteStatus) error {

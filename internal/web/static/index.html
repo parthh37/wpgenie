@@ -16,6 +16,7 @@
 <script src="/cluster.js" defer></script>
 <script src="/offload.js" defer></script>
 <script src="/accounts.js" defer></script>
+<script src="/wordpress.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -534,6 +535,7 @@
   <section class="panel" data-panel="system" hidden>
     <div class="bar"><h1>System</h1></div>
     <div id="system" class="card"></div>
+    <div id="branding" class="card admin-only"></div>
   </section>
 </main>
 
@@ -586,6 +588,21 @@
         <p class="muted small"><em>Under attack</em> challenges every visitor with a proof-of-work page a browser solves in about a second; scripts can't.</p>
       </div>
     </div>
+    <details class="perf analysis">
+      <summary>Health <span class="muted small health-summary"></span></summary>
+      <p class="muted small">One report on the site's security, performance and upkeep: installed versions against known vulnerabilities
+        (from the nightly scan), WordPress's own settings, database clutter and what WPGenie does for the site. Findings with a
+        <em>Fix</em> button are fixed in one click.</p>
+      <div class="actions"><button class="analyse-site">Analyse now</button></div>
+      <div class="health-body"></div>
+    </details>
+    <details class="perf wpa">
+      <summary>WordPress admin <span class="muted small wpa-summary"></span></summary>
+      <p class="muted small">Sign in to wp-admin as any administrator without their password: a one-time link on the site's own
+        domain opens a normal WordPress session (listed in that user's sessions, ended by logging out). Resetting a password
+        ends all of that administrator's sessions; WordPress sends no e-mail about it.</p>
+      <div class="wpa-body"></div>
+    </details>
     <details class="perf">
       <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
       <div class="controls">
@@ -629,6 +646,17 @@
       </div>
       <p class="muted small">JPEG and PNG uploads get smaller AVIF/WebP copies, served to browsers that accept them at the same URL.
         New uploads are converted within a minute, everything else nightly. AVIF is the smallest but slow to make.</p>
+      <div class="opt">
+        <h2>WordPress tweaks</h2>
+        <div class="grid opt-list"></div>
+        <div class="actions">
+          <button class="ghost opt-cleanup">Clean database now</button>
+          <button class="ghost opt-recommended">Apply recommended</button>
+          <button class="opt-save">Save tweaks</button>
+        </div>
+        <p class="muted small">What performance plugins do on top of caching, applied by a WPGenie must-use plugin that site code can't
+          change or switch off. No plugin to install or keep updated; the page cache is purged when they change.</p>
+      </div>
     </details>
     <details class="perf insights">
       <summary>Insights <span class="muted small insights-summary"></span></summary>

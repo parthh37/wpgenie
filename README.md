@@ -33,6 +33,10 @@ with one command.
 | 🔎 | Nightly security scans: known vulnerabilities ([WPVulnerability](https://www.wpvulnerability.net/)), modified core/plugin files, PHP in uploads | ✅ |
 | 🧩 | **Plugin analyser**: closed and abandoned plugins (wordpress.org), modified or nulled copies, load and hook time per plugin | ✅ |
 | 🔄 | **WordPress updates**: snapshot → update → health check → automatic rollback; nightly security auto-updates | ✅ |
+| 🩺 | **Site analyser**: one scored report (A–F) on security, performance and upkeep — plugin/theme versions against known vulnerabilities, risky WordPress settings, database bloat — with one-click fixes | ✅ |
+| 🗝️ | **wp-admin without a password**: one click in the panel signs you in as any administrator (a one-time link that opens a normal WordPress session); reset administrators' passwords from the panel | ✅ |
+| 🏷️ | **Branding**: your logo and name instead of WordPress's on the login page, admin bar, footer and titles of every site | ✅ |
+| 🪶 | **WordPress tweaks**: emoji/embed scripts, `<head>` clutter, Heartbeat polling, Dashicons for visitors, nightly database cleanup — applied by a must-use plugin, on by default for new sites | ✅ |
 | ⬆️ | **One-click WPGenie updates**: signed releases, automatic rollback if the new version doesn't start | ✅ |
 | 🖥️ | Dashboard + REST API + CLI | ✅ |
 | 💾 | **Backups** (restic: deduplicated, encrypted) of files + database to this server, S3, B2 or SFTP; retention rules, one-click restore, downloads, restore as a new site | ✅ |
