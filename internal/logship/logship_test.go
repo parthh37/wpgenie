@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -214,9 +215,9 @@ func TestStatus(t *testing.T) {
 	enable(t, s, nil)
 	s.apply(ctx)
 	d.metrics = sampleMetrics
-	s.pollMetrics(ctx) // learns the counters
+	s.pollMetrics(ctx, 0) // learns the counters
 	d.metrics = strings.ReplaceAll(strings.ReplaceAll(sampleMetrics, "} 1100", "} 1500"), "} 1200", "} 1250")
-	s.pollMetrics(ctx)
+	s.pollMetrics(ctx, 0)
 	s.spool.Write(TypeSecurity, []byte(`{"verdict":"ban"}`))
 	drainSpool(s.spool)
 	s.recordVolumes(ctx)
@@ -247,8 +248,29 @@ func TestStatus(t *testing.T) {
 
 	// Errors since the last upload: failing.
 	d.metrics = strings.ReplaceAll(d.metrics, `stage="sending"} 2`, `stage="sending"} 9`)
-	s.pollMetrics(ctx)
+	s.pollMetrics(ctx, 0)
 	if st, _ := s.Status(ctx); st.Health != "error" || !strings.Contains(st.HealthMessage, "Test connection") {
 		t.Errorf("failing uploads: %s %q", st.Health, st.HealthMessage)
+	}
+}
+
+// Status requests at once read Vector's metrics once (an older reading
+// landing after a newer one would look like a counter reset).
+func TestPollMetricsOnce(t *testing.T) {
+	ctx := context.Background()
+	t.Cleanup(func() { runtime.SetContainerLogLimit(0, 0) })
+	s, d, _ := newService(t)
+	enable(t, s, nil)
+	s.apply(ctx)
+	d.metrics = sampleMetrics
+	d.reset()
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.pollMetrics(ctx, time.Minute) }()
+	}
+	wg.Wait()
+	if n := len(d.find("exec")); n != 1 {
+		t.Errorf("%d metric reads, want 1", n)
 	}
 }

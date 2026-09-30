@@ -23,6 +23,7 @@ sources:
     type: "file"
     include: ["/logs/caddy/access.log"]
     read_from: "end"
+    max_line_bytes: 1048576
   in_mail:
     type: "file"
     include: ["/logs/mail/*.log"]
@@ -37,6 +38,7 @@ sources:
     include: ["/spool/*/*.jsonl"]
     read_from: "beginning"
     remove_after_secs: 10
+    max_line_bytes: 1048576
   in_internal:
     type: "internal_metrics"
     scrape_interval_secs: 15

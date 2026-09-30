@@ -42,8 +42,15 @@ const (
 	// spoolFileMax and spoolFileAge bound a file before it's handed over.
 	spoolFileMax = 8 << 20
 	spoolFileAge = time.Minute
-	// maxLine bounds one record (a runaway log line is cut).
-	maxLine = 256 << 10
+	// maxLine bounds one record (a runaway log line is cut); the shipper
+	// reads lines up to maxShippedLine (see vector.go), which a cut
+	// record, escaped as JSON, stays under.
+	maxLine        = 256 << 10
+	maxShippedLine = 1 << 20
+	// warnEvery rate-limits the spool's own warnings: they go to the
+	// daemon's log, which may itself be spooled (a full disk must not
+	// turn into a loop).
+	warnEvery = time.Minute
 	// capEvery is how often the cap is enforced (and usage measured).
 	capEvery = 10 * time.Second
 )
@@ -66,6 +73,9 @@ type Spool struct {
 	seq   int64
 
 	usageBytes, usageFiles atomic.Int64
+
+	warnMu sync.Mutex
+	warned map[string]time.Time
 }
 
 type record struct {
@@ -140,22 +150,45 @@ func (s *Spool) Write(typ string, line []byte) {
 		return
 	}
 	c := s.counts[typ]
-	line = bytes.TrimRight(line, "\n")
+	line = fitLine(line)
 	if len(line) == 0 {
 		return
-	}
-	if len(line) > maxLine || bytes.IndexByte(line, '\n') >= 0 {
-		// Not one JSON line (or a huge one): keep what it said, as text.
-		msg := string(line[:min(len(line), maxLine)])
-		line, _ = json.Marshal(map[string]string{"message": msg, "note": "cut or reformatted by WPGenie"})
-	} else {
-		line = bytes.Clone(line)
 	}
 	select {
 	case s.ch <- record{typ, line}:
 	default:
 		c.dropped.Add(1)
 	}
+}
+
+// fitLine returns a record as one line of its own (a copy): trailing line
+// breaks trimmed; a record that isn't one line, or is too long, becomes a
+// JSON object with (the start of) its text.
+func fitLine(line []byte) []byte {
+	line = bytes.TrimRight(line, "\n")
+	if len(line) <= maxLine && bytes.IndexByte(line, '\n') < 0 {
+		return bytes.Clone(line)
+	}
+	// JSON escaping at most sextuples the text: well under maxShippedLine.
+	msg := strings.ToValidUTF8(string(line[:min(len(line), maxLine/4)]), "?")
+	b, _ := json.Marshal(map[string]string{"message": msg, "note": "cut or reformatted by WPGenie"})
+	return b
+}
+
+// warn logs a spool problem at most once a minute per kind.
+func (s *Spool) warn(kind, msg string, args ...any) {
+	s.warnMu.Lock()
+	if s.warned == nil {
+		s.warned = map[string]time.Time{}
+	}
+	now := s.now()
+	if last, ok := s.warned[kind]; ok && now.Sub(last) < warnEvery {
+		s.warnMu.Unlock()
+		return
+	}
+	s.warned[kind] = now
+	s.warnMu.Unlock()
+	s.Log.Warn(msg, args...)
 }
 
 // WriteJSON queues v as one record (see Write).
@@ -179,12 +212,15 @@ func (s *Spool) WriteSync(typ string, lines [][]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, l := range lines {
-		if err := s.writeLocked(typ, bytes.TrimRight(l, "\n")); err != nil {
+		if err := s.writeLocked(typ, fitLine(l)); err != nil {
 			return err
 		}
 	}
 	if f := s.files[typ]; f != nil {
-		return f.w.Flush()
+		if err := f.w.Flush(); err != nil {
+			s.discardLocked(typ, err)
+			return err
+		}
 	}
 	return nil
 }
@@ -235,7 +271,7 @@ func (s *Spool) Run(ctx context.Context) {
 			s.mu.Lock()
 			if err := s.writeLocked(r.typ, r.line); err != nil {
 				s.counts[r.typ].dropped.Add(1)
-				s.Log.Warn("logship: writing the spool", "type", r.typ, "err", err)
+				s.warn("write", "logship: writing the spool", "type", r.typ, "err", err)
 			}
 			s.mu.Unlock()
 		case <-tick.C:
@@ -273,7 +309,7 @@ func (s *Spool) tick() {
 			continue
 		}
 		if err := f.w.Flush(); err != nil {
-			s.Log.Warn("logship: writing the spool", "type", typ, "err", err)
+			s.discardLocked(typ, err)
 		}
 	}
 }
@@ -303,6 +339,9 @@ func (s *Spool) writeLocked(typ string, line []byte) error {
 	}
 	f.size += int64(n)
 	if err != nil {
+		// A buffered writer keeps its first error: the file is lost; the
+		// next record starts a new one.
+		s.discardLocked(typ, err)
 		return err
 	}
 	f.events++
@@ -351,18 +390,33 @@ func (s *Spool) closeLocked(typ string) {
 	if f == nil {
 		return
 	}
+	if err := errors.Join(f.w.Flush(), f.f.Close()); err != nil {
+		s.discardLocked(typ, err)
+		return
+	}
 	delete(s.files, typ)
-	err := errors.Join(f.w.Flush(), f.f.Close())
 	if f.events == 0 {
 		os.Remove(f.part)
 		return
 	}
-	if err == nil {
-		err = os.Rename(f.part, f.final)
+	if err := os.Rename(f.part, f.final); err != nil {
+		s.warn("close", "logship: closing a spool file", "file", f.part, "err", err)
 	}
-	if err != nil {
-		s.Log.Warn("logship: closing a spool file", "file", f.part, "err", err)
+}
+
+// discardLocked gives up on typ's current file after a write error (a
+// full or read-only disk): it's removed and its events counted as
+// dropped, so a file that can't be completed is never left behind.
+func (s *Spool) discardLocked(typ string, err error) {
+	f := s.files[typ]
+	if f == nil {
+		return
 	}
+	delete(s.files, typ)
+	f.f.Close()
+	os.Remove(f.part)
+	s.counts[typ].dropped.Add(int64(f.events))
+	s.warn("write", "logship: writing the spool failed; logs dropped", "type", typ, "events", f.events, "err", err)
 }
 
 var spoolNameRe = regexp.MustCompile(`^(\d{10})-(\d+)\.jsonl(\.part)?$`)
@@ -390,7 +444,7 @@ func (s *Spool) recover() {
 			}
 			part := filepath.Join(s.Dir, t.Name, e.Name())
 			if err := recoverPart(part); err != nil {
-				s.Log.Warn("logship: recovering a spool file", "file", part, "err", err)
+				s.warn("recover", "logship: recovering a spool file", "file", part, "err", err)
 			}
 		}
 	}
@@ -455,7 +509,7 @@ func (s *Spool) enforceCap() {
 			lines := countLines(e.path)
 			if err := os.Remove(e.path); err != nil {
 				if !errors.Is(err, fs.ErrNotExist) {
-					s.Log.Warn("logship: dropping a spool file", "file", e.path, "err", err)
+					s.warn("cap", "logship: dropping a spool file", "file", e.path, "err", err)
 				}
 				continue
 			}
@@ -464,7 +518,7 @@ func (s *Spool) enforceCap() {
 			if lines > 1 {
 				s.counts[e.typ].dropped.Add(int64(lines - 1))
 			}
-			s.Log.Warn("logship: the spool is full (is the destination reachable?): dropped the oldest logs",
+			s.warn("full", "logship: the spool is full (is the destination reachable?): dropped the oldest logs",
 				"type", e.typ, "events", max(lines-1, 0))
 		}
 	}

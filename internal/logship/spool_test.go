@@ -1,13 +1,16 @@
 package logship
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -247,5 +250,65 @@ func TestSpoolRun(t *testing.T) {
 	}
 	if err := s.WriteSync("kernel", nil); err == nil {
 		t.Error("WriteSync took an unknown type")
+	}
+}
+
+// A file that can't be written (a full disk) is given up: removed, its
+// events counted as dropped, the next record starting a new file; and the
+// warnings about it are rate-limited (they may themselves be spooled).
+func TestSpoolWriteFailure(t *testing.T) {
+	s, c := newSpool(t)
+	var warnings atomic.Int32
+	s.Log = slog.New(countHandler{&warnings})
+	s.mu.Lock()
+	s.writeLocked(TypeSecurity, []byte(`{"n":1}`))
+	s.writeLocked(TypeSecurity, []byte(`{"n":2}`))
+	s.files[TypeSecurity].f.Close() // the next flush fails
+	s.mu.Unlock()
+	s.tick()
+	if f := listFiles(t, s.Dir, TypeSecurity); len(f) != 0 {
+		t.Errorf("a broken file was left: %v", f)
+	}
+	if d := s.Take()[TypeSecurity].Dropped; d != 2 {
+		t.Errorf("dropped %d, want 2", d)
+	}
+	s.mu.Lock()
+	err := s.writeLocked(TypeSecurity, []byte(`{"n":3}`))
+	s.files[TypeSecurity].f.Close()
+	s.mu.Unlock()
+	s.tick()
+	if err != nil || warnings.Load() != 1 {
+		t.Errorf("write after a failure: %v; %d warnings, want 1 (rate-limited)", err, warnings.Load())
+	}
+	c.add(warnEvery)
+	s.mu.Lock()
+	s.writeLocked(TypeSecurity, []byte(`{"n":4}`))
+	s.files[TypeSecurity].f.Close()
+	s.mu.Unlock()
+	s.tick()
+	if warnings.Load() != 2 {
+		t.Errorf("%d warnings after a minute, want 2", warnings.Load())
+	}
+}
+
+type countHandler struct{ n *atomic.Int32 }
+
+func (h countHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (h countHandler) Handle(context.Context, slog.Record) error { h.n.Add(1); return nil }
+func (h countHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h countHandler) WithGroup(string) slog.Handler             { return h }
+
+// Records are one line each, never longer than the shipper reads.
+func TestFitLine(t *testing.T) {
+	if got := string(fitLine([]byte(`{"a":1}` + "\n\n"))); got != `{"a":1}` {
+		t.Errorf("trimmed: %q", got)
+	}
+	huge := append([]byte(`{"x":"`), bytes.Repeat([]byte{0x01}, maxLine)...)
+	for _, in := range [][]byte{huge, []byte("two\nlines")} {
+		out := fitLine(in)
+		var m map[string]string
+		if len(out) > maxShippedLine || bytes.IndexByte(out, '\n') >= 0 || json.Unmarshal(out, &m) != nil || m["note"] == "" {
+			t.Errorf("fitLine(%.20q…) = %d bytes: %.80s", in, len(out), out)
+		}
 	}
 }

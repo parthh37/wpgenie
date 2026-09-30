@@ -88,12 +88,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	}
 	out.Shipper.State = state
 	if set.Enabled && state == "running" {
-		s.mu.Lock()
-		stale := s.now().Sub(s.st.metricsAt) > time.Minute
-		s.mu.Unlock()
-		if stale {
-			s.pollMetrics(ctx)
-		}
+		s.pollMetrics(ctx, time.Minute)
 	}
 
 	now := s.now().UTC()
@@ -156,7 +151,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 func (s *Service) health(set Settings, st *Status, rs runState) (string, string) {
 	switch {
 	case !set.Enabled:
-		return "off", "Log shipping is off: logs stay on this server only."
+		return "off", "Logs stay on this server only, and old ones are rotated away."
 	case set.Destination.check() != nil:
 		return "error", "Log shipping is on, but where logs go isn't complete: finish the destination."
 	case rs.applyErr != "":

@@ -10,7 +10,7 @@ import (
 // Vector's configuration, generated from the settings. Verified against
 // Vector 0.58's reference (website/cue/reference/components/... at the
 // v0.58.0 tag): the file source's remove_after_secs / read_from /
-// ignore_older_secs, the aws_s3 sink's endpoint, region, force_path_style,
+// ignore_older_secs / max_line_bytes, the aws_s3 sink's endpoint, region, force_path_style,
 // compression, key_prefix (a template: confined to its literal prefix),
 // filename_time_format, filename_append_uuid, filename_extension, batch,
 // buffer (disk, at least 256 MiB), acknowledgements and healthcheck, file
@@ -89,7 +89,8 @@ func vectorConfig(in vectorInput) ([]byte, error) {
 		case TypeAccess:
 			// A new file (Caddy rotated) is read from its start; at the
 			// shipper's first start the existing one from its end.
-			src = ymap{{"type", "file"}, {"include", []string{ctrCaddy + "/" + in.AccessLog}}, {"read_from", "end"}}
+			src = ymap{{"type", "file"}, {"include", []string{ctrCaddy + "/" + in.AccessLog}}, {"read_from", "end"},
+				{"max_line_bytes", maxShippedLine}}
 			vrl = `ts = .timestamp
 line = string!(.message)
 . = object(parse_json(line) ?? null) ?? {"message": line}
@@ -151,7 +152,7 @@ entry = object(parse_json(string!(.message)) ?? null) ?? {}
 	}
 	sources = append(sources,
 		ykv{spoolSource, ymap{{"type", "file"}, {"include", []string{ctrSpool + "/*/*.jsonl"}}, {"read_from", "beginning"},
-			{"remove_after_secs", spoolRemoveAfter}}},
+			{"remove_after_secs", spoolRemoveAfter}, {"max_line_bytes", maxShippedLine}}},
 		ykv{"in_internal", ymap{{"type", "internal_metrics"}, {"scrape_interval_secs", 15}}})
 	transforms = append(transforms, ykv{"t_spool", remap(spoolSource, `ts = .timestamp
 m = parse_regex(string(.file) ?? "", r'^`+ctrSpool+`/(?P<kind>[a-z_]+)/') ?? {}

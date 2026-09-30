@@ -97,6 +97,9 @@ type Service struct {
 
 	mu sync.Mutex // st
 	st runState
+	// pollMu: one metrics poll at a time (the loop's and a status
+	// request's), or an older reading would look like a counter reset.
+	pollMu sync.Mutex
 }
 
 // runState is what the loop learnt, for the status.
@@ -118,8 +121,6 @@ type runState struct {
 	lastUpload  time.Time
 	lastErrorAt time.Time
 	exportErr   string
-
-	tables map[string][]byte // table file -> what was last written
 }
 
 // persisted is what outlives a restart (settings key logship_state).
@@ -264,7 +265,7 @@ func (s *Service) Run(ctx context.Context) {
 		if now.Sub(lastMinute) >= time.Minute {
 			lastMinute = now
 			s.apply(ctx)
-			s.pollMetrics(ctx)
+			s.pollMetrics(ctx, 0)
 			s.recordVolumes(ctx)
 		}
 		if now.Sub(lastDay) >= time.Hour {
@@ -639,31 +640,28 @@ func (s *Service) writeTable(name string, header []string, rows [][]string) (boo
 	if err := w.Error(); err != nil {
 		return false, err
 	}
-	s.mu.Lock()
-	if s.st.tables == nil {
-		s.st.tables = map[string][]byte{}
-	}
-	same := bytes.Equal(s.st.tables[name], b.Bytes())
-	s.mu.Unlock()
 	path := filepath.Join(s.Cfg.Dir, "tables", name)
-	if _, err := os.Stat(path); same && err == nil {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, b.Bytes()) {
 		return false, nil
 	}
-	if err := writeFile(path, b.Bytes()); err != nil {
-		return false, err
-	}
-	s.mu.Lock()
-	s.st.tables[name] = b.Bytes()
-	s.mu.Unlock()
-	return true, nil
+	return true, writeFile(path, b.Bytes())
 }
 
 // ---- Metrics and volumes ----
 
 // pollMetrics reads Vector's metrics (from inside its container: they're
-// only on its loopback) and notes uploads and errors.
-func (s *Service) pollMetrics(ctx context.Context) {
+// only on its loopback) and notes uploads and errors, unless they were
+// read less than fresh ago.
+func (s *Service) pollMetrics(ctx context.Context, fresh time.Duration) {
 	if !s.current().Enabled {
+		return
+	}
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+	s.mu.Lock()
+	recent := !s.st.metricsAt.IsZero() && s.now().Sub(s.st.metricsAt) < fresh
+	s.mu.Unlock()
+	if recent {
 		return
 	}
 	c, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -682,7 +680,7 @@ func (s *Service) pollMetrics(ctx context.Context) {
 	// Counters that grew (or restarted with Vector, and grew since) mean
 	// uploads (errors) since the last poll; the first poll only learns them.
 	grew := func(cur, prev float64) bool { return s.st.metrics != nil && (cur > prev || (cur > 0 && cur < prev)) }
-	if grew(m.Sent, s.st.prevSent) {
+	if grew(m.Sent, s.st.prevSent) || (m.Sent > 0 && s.st.lastUpload.IsZero()) {
 		s.st.lastUpload = now
 	}
 	if grew(m.Errors, s.st.prevErrors) {
