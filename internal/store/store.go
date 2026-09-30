@@ -625,6 +625,15 @@ var migrations = []string{
 	WHERE ',' || features || ',' LIKE '%,sftp,%' AND ',' || features || ',' NOT LIKE '%,files,%';`,
 	// Database access moved from Adminer to phpMyAdmin: plans keep it.
 	`UPDATE plans SET features = REPLACE(features, 'adminer', 'phpmyadmin');`,
+	// Outgoing e-mail: see mailer.go.
+	mailerSchema,
+	// Built-in billing (products' prices, invoices, payments, credit,
+	// promotions, taxes): see invoicing.go.
+	invoicingSchema,
+	// Support tickets: see support.go.
+	supportSchema,
+	// Log shipping to object storage: see logship.go.
+	logshipSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the
