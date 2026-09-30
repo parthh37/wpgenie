@@ -203,6 +203,9 @@ func (s *Service) readPHPLog(ctx context.Context, id string) error {
 	if err := s.Store.RecordPHPErrors(ctx, id, errs, state); err != nil {
 		return err
 	}
+	if s.PHPLogTee != nil {
+		s.PHPLogTee(id, buf[:end])
+	}
 	if state.Offset >= phpLogMax && state.Offset >= fi.Size() {
 		// Everything read: start the file over. PHP appends (O_APPEND), so
 		// its next write lands at the new end. What it wrote since Stat is

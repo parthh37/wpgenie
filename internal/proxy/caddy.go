@@ -174,6 +174,10 @@ type Config struct {
 	IngressListen string
 }
 
+// defaultLogKeep is how many rotated access logs Caddy keeps unless log
+// shipping says otherwise (see SetAccessLogKeep).
+const defaultLogKeep = 10
+
 type Caddy struct {
 	cfg    Config
 	client *http.Client
@@ -184,6 +188,29 @@ type Caddy struct {
 	// changes down with it. wafChecked is when a "no" was last seen.
 	wafOK      atomic.Bool
 	wafChecked atomic.Int64
+	// logKeep, if set, is how many rotated access log files to keep (0:
+	// defaultLogKeep): fewer once they're shipped elsewhere.
+	logKeep atomic.Pointer[func() int]
+}
+
+// SetAccessLogKeep makes the number of rotated access log files Caddy keeps
+// come from keep (log shipping; 0 or nil: the default). It applies from the
+// next render (Sync).
+func (c *Caddy) SetAccessLogKeep(keep func() int) {
+	if keep == nil {
+		c.logKeep.Store(nil)
+		return
+	}
+	c.logKeep.Store(&keep)
+}
+
+func (c *Caddy) accessLogKeep() int {
+	if f := c.logKeep.Load(); f != nil {
+		if n := (*f)(); n > 0 && n <= 1000 {
+			return n
+		}
+	}
+	return defaultLogKeep
 }
 
 func NewCaddy(cfg Config) *Caddy {
@@ -356,6 +383,7 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 		"SiteHeader":     shield.SiteHeader,
 		"VerdictHeader":  shield.VerdictHeader,
 		"AccessLog":      c.cfg.AccessLog,
+		"AccessLogKeep":  c.accessLogKeep(),
 		"BypassCookies":  strings.Join(CacheBypassCookies, "|"),
 		"MobileExpr":     mobileExpr,
 		"EdgeTTL":        EdgeTTL,

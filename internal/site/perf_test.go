@@ -361,6 +361,8 @@ func TestIngestPHPErrors(t *testing.T) {
 	dir := h.svc.Cfg.SiteDir("s1")
 	logf := filepath.Join(dir, phpLogPath)
 	line := "[29-Sep-2026 10:00:00 UTC] PHP Notice:  Something in " + h.svc.Cfg.SiteRoot("s1") + "/wp-content/plugins/p/p.php on line 1\n"
+	var teed []string
+	h.svc.PHPLogTee = func(id string, lines []byte) { teed = append(teed, id+"|"+string(lines)) }
 	h.svc.ingestPHPErrors(ctx, "s1") // creates logs/
 	if err := os.WriteFile(logf, []byte(line+line+"[29-Sep-2026 10:00:0"), 0o644); err != nil {
 		t.Fatal(err)
@@ -370,6 +372,10 @@ func TestIngestPHPErrors(t *testing.T) {
 	errs, _ := h.svc.Store.PHPErrors(ctx, "s1", time.Time{}, 10)
 	if len(errs) != 1 || errs[0].Count != 2 || errs[0].Source != "plugin:p" {
 		t.Fatalf("%+v", errs)
+	}
+	// Log shipping gets the whole lines, once (not the partial last one).
+	if len(teed) != 1 || teed[0] != "s1|"+line+line {
+		t.Fatalf("teed %q", teed)
 	}
 	// A symlink in place of the log is never followed.
 	os.Remove(logf)

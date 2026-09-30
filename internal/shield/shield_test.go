@@ -243,3 +243,23 @@ func TestDecisionsCounted(t *testing.T) {
 		t.Errorf("decisions %v", d)
 	}
 }
+
+// Every event of the security log also goes to the tee (log shipping),
+// and none once it's removed.
+func TestTeeEvents(t *testing.T) {
+	s := New(Options{Secret: []byte("k"), Sites: func(string) (SiteSettings, bool) { return SiteSettings{}, false }})
+	var got []Event
+	s.TeeEvents(func(e Event) { got = append(got, e) })
+	s.Record(Event{Site: "s1", IP: "203.0.113.9", Verdict: "block", Reason: "waf 942100: SQLi", Path: "/" + strings.Repeat("x", 300)})
+	if len(got) != 1 || got[0].Site != "s1" || got[0].Time.IsZero() || len(got[0].Path) > 204 {
+		t.Fatalf("tee got %+v", got)
+	}
+	if ev := s.Events("s1", 10); len(ev) != 1 {
+		t.Errorf("the ring lost the event: %+v", ev)
+	}
+	s.TeeEvents(nil)
+	s.Record(Event{Site: "s1", Verdict: "block"})
+	if len(got) != 1 {
+		t.Errorf("tee still called after removal: %d events", len(got))
+	}
+}

@@ -2,6 +2,15 @@
 # wpgenie daemon, not by compose. Managed by `install.sh`; paths are fixed.
 name: wpgenie
 
+# Docker keeps a container's output in a JSON file that grows without limit
+# by default: these are capped and rotated (the containers the daemon starts
+# get the same while logs are shipped, see internal/logship).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   caddy:
     # Caddy with the Coraza WAF (request-body inspection), built from
@@ -12,6 +21,7 @@ services:
     build: ../images/caddy
     pull_policy: build
     container_name: wpgenie-caddy
+    logging: *logging
     # Host networking: real client IPs for the shield and analytics, no
     # docker-proxy hop, and Caddy reaches wpgenie + PHP-FPM on 127.0.0.1.
     network_mode: host
@@ -35,6 +45,7 @@ services:
   mariadb:
     image: mariadb:11.4
     container_name: wpgenie-mariadb
+    logging: *logging
     restart: unless-stopped
     networks: [wpgenie]
     ports: ["127.0.0.1:3306:3306"] # loopback only: for the wpgenie daemon
@@ -57,6 +68,7 @@ services:
   redis:
     image: valkey/valkey:8-alpine
     container_name: wpgenie-redis
+    logging: *logging
     restart: unless-stopped
     networks: [wpgenie]
     # Pure cache: no persistence, evict least-recently-used keys when full.
