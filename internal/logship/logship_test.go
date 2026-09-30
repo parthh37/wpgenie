@@ -2,12 +2,16 @@ package logship
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -42,6 +46,12 @@ func TestShipperContainer(t *testing.T) {
 		t.Fatalf("started while off: %v", runs)
 	}
 
+	// Caddy's access log is its own (0600); the WAF log next to it too.
+	os.WriteFile(s.Cfg.AccessLog, []byte("{}\n"), 0o600)
+	wafLog := filepath.Join(filepath.Dir(s.Cfg.AccessLog), "waf.log")
+	os.WriteFile(wafLog, []byte("{}\n"), 0o600)
+	os.Chmod(filepath.Dir(s.Cfg.AccessLog), 0o700)
+
 	enable(t, s, nil)
 	s.apply(ctx)
 	runs := d.find("run")
@@ -50,14 +60,35 @@ func TestShipperContainer(t *testing.T) {
 	}
 	run := runs[0]
 	joined := strings.Join(run, " ")
-	for _, want := range []string{"--cap-drop ALL", "--cap-add DAC_READ_SEARCH", "--read-only", "--security-opt no-new-privileges",
+	for _, want := range []string{"--cap-drop ALL", "--user 0:0", "--read-only", "--security-opt no-new-privileges",
 		"--memory 384m", "--name " + Container, "--network bridge", "timberio/vector:0.58.0-alpine --config /etc/vector/vector.yaml"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("run lacks %q: %s", want, joined)
 		}
 	}
+	// No capability at all (DAC_READ_SEARCH would allow open_by_handle_at:
+	// any file of the host), no environment (docker inspect shows it).
+	for _, bad := range []string{"--cap-add", "--env-file", "-e", "--privileged"} {
+		if slices.Contains(run, bad) {
+			t.Errorf("run has %s: %s", bad, joined)
+		}
+	}
 	if strings.Contains(joined, testDestination().SecretKey) || strings.Contains(joined, "AKIAEXAMPLE") {
 		t.Errorf("credentials in argv: %s", joined)
+	}
+	// The access log (not the WAF log) is made readable to the log's
+	// group, which the container gets (the test runs as a user: as root,
+	// a root-owned log needs nothing).
+	if os.Getuid() != 0 {
+		fi, _ := os.Stat(s.Cfg.AccessLog)
+		di, _ := os.Stat(filepath.Dir(s.Cfg.AccessLog))
+		wi, _ := os.Stat(wafLog)
+		gid := strconv.Itoa(int(fi.Sys().(*syscall.Stat_t).Gid))
+		if fi.Mode().Perm() != 0o640 || di.Mode().Perm() != 0o750 || wi.Mode().Perm() != 0o600 ||
+			!slices.Equal(argValue(run, "--group-add"), []string{gid}) {
+			t.Errorf("access log %v, dir %v, waf log %v, groups %v (want %s)", fi.Mode(), di.Mode(), wi.Mode(),
+				argValue(run, "--group-add"), gid)
+		}
 	}
 	mounts := argValue(run, "-v")
 	for _, m := range mounts {
@@ -68,14 +99,17 @@ func TestShipperContainer(t *testing.T) {
 		}
 	}
 	if !slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, ":"+ctrCaddy+":ro") }) ||
-		slices.ContainsFunc(mounts, func(m string) bool { return strings.Contains(m, ctrContainers) || strings.Contains(m, ctrMail) }) {
+		slices.ContainsFunc(mounts, func(m string) bool { return strings.Contains(m, "containers") || strings.Contains(m, ctrMail) }) {
 		t.Errorf("mounts: %v", mounts)
 	}
-	env, err := os.ReadFile(argValue(run, "--env-file")[0])
-	if err != nil || !strings.Contains(string(env), "AWS_SECRET_ACCESS_KEY="+testDestination().SecretKey+"\n") {
-		t.Errorf("env file: %q %v", env, err)
+	creds, err := os.ReadFile(filepath.Join(s.Cfg.Dir, "secrets", "credentials"))
+	if err != nil || string(creds) != "[wpgenie]\naws_access_key_id=AKIAEXAMPLE123\naws_secret_access_key="+testDestination().SecretKey+"\n" {
+		t.Errorf("credentials file: %q %v", creds, err)
 	}
-	for _, f := range []string{"vector.yaml", "vector.env", "tables/sites.csv"} {
+	if !slices.Contains(mounts, filepath.Join(s.Cfg.Dir, "secrets")+":"+ctrSecrets+":ro") {
+		t.Errorf("credentials not mounted: %v", mounts)
+	}
+	for _, f := range []string{"vector.yaml", "secrets/credentials", "tables/sites.csv"} {
 		if fi, err := os.Stat(filepath.Join(s.Cfg.Dir, f)); err != nil || fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s: %v %v", f, fi, err)
 		}
@@ -126,34 +160,127 @@ func TestShipperContainer(t *testing.T) {
 	}
 }
 
-// Containers' own output ships only with Docker's json-file logs, and only
-// WPGenie's containers are in the table.
-func TestShipperContainersType(t *testing.T) {
+// A shipper that keeps crashing is left to Docker's restart backoff (not
+// recreated every minute) and reported.
+func TestShipperCrashLoop(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() { runtime.SetContainerLogLimit(0, 0) })
 	s, d, _ := newService(t)
-	id := strings.Repeat("a", 64)
-	d.ps = id + " wpg-s1-19001\n" + strings.Repeat("b", 64) + " someone-elses-db\n"
+	enable(t, s, nil)
+	s.apply(ctx)
+	d.state, d.exit, d.restart = "restarting", 78, 5
+	d.reset()
+	s.apply(ctx)
+	if c := d.commands(); slices.Contains(c, "run") || slices.Contains(c, "rm") {
+		t.Errorf("recreated a crashing shipper: %v", c)
+	}
+	st, _ := s.Status(ctx)
+	if st.Health != "error" || !strings.Contains(st.HealthMessage, "keeps stopping (exit code 78, restarted 5 times)") ||
+		st.Shipper.Restarts != 5 {
+		t.Errorf("status: %s %q", st.Health, st.HealthMessage)
+	}
+	// Its settings change: a new container.
+	set, _ := s.Settings(ctx)
+	set.BatchMaxSeconds = 90
+	s.SetSettings(ctx, set.Redacted())
+	d.reset()
+	s.apply(ctx)
+	if len(d.find("run")) != 1 {
+		t.Errorf("not recreated for new settings: %v", d.commands())
+	}
+}
+
+// Starting the shipper is bounded: a pull that hangs gives up (and the
+// loop goes on).
+func TestShipperStartTimeout(t *testing.T) {
+	s, _, _ := newService(t)
+	enable(t, s, nil)
+	s.Docker = hangingDocker{s.Docker}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { s.apply(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply hung on docker run")
+	}
+}
+
+// hangingDocker's run waits for its context (a registry that stalls).
+type hangingDocker struct{ Docker }
+
+func (h hangingDocker) Run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
+	if args[0] == "run" {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return h.Docker.Run(ctx, stdin, args...)
+}
+
+// Containers' own output is read by the daemon (Vector never gets
+// Docker's containers directory, with every container's settings), only
+// WPGenie's containers', through Docker's log rotation.
+func TestContainerLogs(t *testing.T) {
+	ctx := context.Background()
+	t.Cleanup(func() { runtime.SetContainerLogLimit(0, 0) })
+	s, d, _ := newService(t)
+	d.root = t.TempDir()
+	ours, theirs, later := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	logOf := func(id string) string { return filepath.Join(d.root, "containers", id, id+"-json.log") }
+	line := func(msg string) string {
+		return `{"log":"` + msg + `\n","stream":"stdout","time":"2026-09-30T10:00:00Z"}` + "\n"
+	}
+	appendTo := func(path, s string) {
+		os.MkdirAll(filepath.Dir(path), 0o700)
+		f, _ := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f.WriteString(s)
+		f.Close()
+	}
+	appendTo(logOf(ours), line("before shipping"))
+	appendTo(logOf(theirs), line("not ours"))
+	d.ps = ours + " wpg-s1-19001\n" + theirs + " someone-elses-db\n"
 	enable(t, s, func(set *Settings) { set.Types[TypeContainers] = true })
 	s.apply(ctx)
 	if !s.Available(TypeContainers) {
 		t.Fatal("containers unavailable with json-file")
 	}
-	mounts := argValue(d.find("run")[0], "-v")
-	if !slices.Contains(mounts, "/var/lib/docker/containers:"+ctrContainers+":ro") {
-		t.Errorf("mounts: %v", mounts)
+	if slices.ContainsFunc(argValue(d.find("run")[0], "-v"), func(m string) bool { return strings.Contains(m, d.root) }) {
+		t.Error("the shipper got Docker's directory")
 	}
-	if tbl, _ := os.ReadFile(filepath.Join(s.Cfg.Dir, "tables", "containers.csv")); string(tbl) != "id,name\n"+id+",wpg-s1-19001\n" {
-		t.Errorf("containers table: %q", tbl)
+	mustf(t, s.tailContainers(ctx), "first pass") // starts at the end
+	appendTo(logOf(ours), line("one"))
+	appendTo(logOf(theirs), line("still not ours"))
+	mustf(t, s.tailContainers(ctx), "second pass")
+	// Docker rotates: the rest of the old file, then the new one.
+	appendTo(logOf(ours), line("two"))
+	os.Rename(logOf(ours), logOf(ours)+".1")
+	appendTo(logOf(ours), line("three")+`{"log":"partial`)
+	// A container that appears later is read from its start.
+	appendTo(logOf(later), line("new container"))
+	d.ps += later + " wpgenie-phpmyadmin\n"
+	s.ctail.listedAt = time.Time{}
+	mustf(t, s.tailContainers(ctx), "third pass")
+
+	var got []string
+	for _, l := range readSpool(t, s.spool.Dir, TypeContainers) {
+		var e containerEntry
+		json.Unmarshal([]byte(l), &e)
+		got = append(got, e.Container+":"+e.Message)
+	}
+	want := []string{"wpg-s1-19001:one", "wpg-s1-19001:two", "wpg-s1-19001:three", "wpgenie-phpmyadmin:new container"}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("shipped %q, want %q", got, want)
 	}
 
 	s2, d2, _ := newService(t)
 	d2.driver = "journald"
 	enable(t, s2, func(set *Settings) { set.Types[TypeContainers] = true })
 	s2.apply(ctx)
-	if s2.Available(TypeContainers) || slices.ContainsFunc(argValue(d2.find("run")[0], "-v"),
-		func(m string) bool { return strings.Contains(m, ctrContainers) }) {
-		t.Error("containers shipped without json-file logs")
+	if s2.Available(TypeContainers) {
+		t.Error("containers available without json-file logs")
 	}
 	if mb, _ := runtime.ContainerLogLimit(); mb != 0 {
 		t.Error("json-file options set for another logging driver")
@@ -272,5 +399,17 @@ func TestPollMetricsOnce(t *testing.T) {
 	wg.Wait()
 	if n := len(d.find("exec")); n != 1 {
 		t.Errorf("%d metric reads, want 1", n)
+	}
+}
+
+// Archives being read when the daemon stopped don't pile up.
+func TestLoadClearsTmp(t *testing.T) {
+	s, _, _ := newService(t)
+	left := filepath.Join(s.Cfg.Dir, "tmp", "read-123", "14-a.log.gz")
+	os.MkdirAll(filepath.Dir(left), 0o700)
+	os.WriteFile(left, []byte("x"), 0o600)
+	mustf(t, s.Load(context.Background()), "load")
+	if _, err := os.Stat(filepath.Join(s.Cfg.Dir, "tmp")); !os.IsNotExist(err) {
+		t.Errorf("tmp left: %v", err)
 	}
 }

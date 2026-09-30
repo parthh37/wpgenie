@@ -708,6 +708,7 @@ func serve(cfg *config.Config, node bool) error {
 		ctrl.Configure = func(ctx context.Context, n *store.Node) error {
 			return errors.Join(apiSrv.ConfigureNode(ctx, n), apiSrv.ConfigureNodeLogs(ctx, n))
 		}
+		ship.SetNodeSync(apiSrv.SyncNodeLogs)
 		go ctrl.Run(ctx)
 	}
 	srv := &http.Server{

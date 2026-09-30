@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -84,7 +87,7 @@ func TestArchives(t *testing.T) {
 
 	read := func(key string) (string, bool) {
 		t.Helper()
-		r, err := s.OpenArchive(ctx, key)
+		r, err := s.OpenArchive(ctx, key, false)
 		if err != nil {
 			t.Fatalf("OpenArchive(%s): %v", key, err)
 		}
@@ -101,10 +104,20 @@ func TestArchives(t *testing.T) {
 	if _, compressed := read(base + "z.log.zst"); !compressed {
 		t.Error("zstd not reported as compressed")
 	}
-	if _, err := s.OpenArchive(ctx, base+"missing.log.gz"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.OpenArchive(ctx, base+"missing.log.gz", false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing: %v", err)
 	}
-	if _, err := s.OpenArchive(ctx, "elsewhere/secret.txt"); !errors.Is(err, ErrInvalid) {
+	// Raw: the object as it is (a download).
+	raw, err := s.OpenArchive(ctx, base+"14-b.log.gz", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(raw)
+	raw.Close()
+	if !bytes.Equal(b, fs.objects[base+"14-b.log.gz"]) || raw.Name != "14-b.log.gz" || raw.ContentType != "application/gzip" {
+		t.Errorf("raw: %d bytes, %q, %q", len(b), raw.Name, raw.ContentType)
+	}
+	if _, err := s.OpenArchive(ctx, "elsewhere/secret.txt", true); !errors.Is(err, ErrInvalid) {
 		t.Errorf("outside the archive: %v", err)
 	}
 	// Nothing is left behind in the temporary directory.
@@ -114,12 +127,14 @@ func TestArchives(t *testing.T) {
 }
 
 // Retention deletes whole days older than the setting, of every server,
-// and nothing that isn't an archive.
+// and nothing that isn't an archive. The first night lists the whole
+// prefix; later ones only the days that fell out of the period.
 func TestTrimArchive(t *testing.T) {
 	ctx := context.Background()
 	s, _, fs := newService(t)
 	set := enable(t, s, func(set *Settings) { set.ArchiveRetentionDays = 30 })
-	s.Now = func() time.Time { return time.Date(2026, 9, 30, 3, 0, 0, 0, time.UTC) }
+	now := time.Date(2026, 9, 30, 3, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
 	keep := []string{
 		"wpgenie/panel/access/2026/08/31/00-a.log.gz", // exactly 30 days: kept
 		"wpgenie/web-2/jobs/2026/09/30/01-b.log.gz",
@@ -148,10 +163,76 @@ func TestTrimArchive(t *testing.T) {
 			t.Errorf("%s kept", k)
 		}
 	}
+
+	// The next night: only 2026/08/31 falls out, listed day by day for the
+	// servers seen (web-2 was only in the bucket), never the whole prefix.
+	now = now.AddDate(0, 0, 1)
+	fs.objects["wpgenie/web-2/waf/2026/08/31/05-e.log.gz"] = []byte("x")
+	fs.targets = nil
+	if n, err := s.trimArchive(ctx, set); err != nil || n != 2 {
+		t.Fatalf("second night = %d, %v", n, err)
+	}
+	for _, tg := range fs.targets {
+		if !strings.HasSuffix(tg.Prefix, "/2026/08/31/") {
+			t.Errorf("listed %q", tg.Prefix)
+		}
+	}
+	if _, ok := fs.objects[keep[0]]; ok {
+		t.Error("2026/08/31 kept")
+	}
+	fs.targets = nil
+	if n, _ := s.trimArchive(ctx, set); n != 0 || len(fs.targets) != 0 {
+		t.Errorf("same night again: %d deleted, %d listings", n, len(fs.targets))
+	}
+	// Another bucket: listed whole again.
+	set.Destination.Bucket = "other-bucket"
+	fs.targets = nil
+	s.trimArchive(ctx, set)
+	if len(fs.targets) != 1 || fs.targets[0].Prefix != "wpgenie/" {
+		t.Errorf("new destination: %+v", fs.targets)
+	}
+
 	set.ArchiveRetentionDays = 0
 	fs.objects[drop[0]] = []byte("x")
 	if n, _ := s.trimArchive(ctx, set); n != 0 {
 		t.Error("0 days deleted something")
+	}
+}
+
+// rclone (connection test, archive, retention) addresses the bucket the
+// way Vector does: path-style or not, the same setting for both, whatever
+// the provider.
+func TestPathStyleAgrees(t *testing.T) {
+	for _, provider := range Providers {
+		for _, pathStyle := range []bool{true, false} {
+			d := testDestination()
+			d.Provider, d.PathStyle = provider, pathStyle
+			in := goldenInputs()["spool"]
+			in.Settings.Destination = d
+			cfg, err := vectorConfig(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vector := strings.Contains(string(cfg), "force_path_style: "+strconv.FormatBool(pathStyle)+"\n")
+			rclone := slices.Contains(d.target().Flags(), "--s3-force-path-style="+strconv.FormatBool(pathStyle))
+			if !vector || !rclone {
+				t.Errorf("%s, path style %v: vector %v, rclone %v", provider, pathStyle, vector, rclone)
+			}
+		}
+	}
+	// Every rclone call of the archive gets it.
+	ctx := context.Background()
+	s, _, fs := newService(t)
+	enable(t, s, func(set *Settings) { set.Destination.PathStyle = false })
+	s.Archives(ctx, "panel", TypeAccess, time.Now())
+	s.Test(ctx, testDestination())
+	for _, tg := range fs.targets {
+		if tg.ForcePathStyle == nil {
+			t.Errorf("%+v: no addressing style", tg)
+		}
+	}
+	if *fs.targets[0].ForcePathStyle || !*fs.targets[len(fs.targets)-1].ForcePathStyle {
+		t.Error("the addressing style isn't the destination's")
 	}
 }
 

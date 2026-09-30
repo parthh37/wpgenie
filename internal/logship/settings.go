@@ -2,10 +2,14 @@ package logship
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -71,7 +75,9 @@ var Compressions = []string{"gzip", "zstd"}
 
 // Limits of the numeric settings.
 const (
-	minBatchMB, maxBatchMB           = 1, 100
+	// A batch is held in memory per kind of log (up to a dozen at once) in
+	// a container limited to 384 MB: 16 MB each at most.
+	minBatchMB, maxBatchMB           = 1, 16
 	minBatchSeconds, maxBatchSeconds = 30, 3600
 	minSpoolMB, maxSpoolMB           = 64, 100 << 10
 	maxRetentionDays                 = 3650
@@ -232,14 +238,52 @@ func (d Destination) check() error {
 	if err := d.target().Validate(); err != nil {
 		return invalid("%v", err)
 	}
+	return checkEndpointHost(d.Endpoint)
+}
+
+// metadataHosts are cloud instance metadata services: the endpoint must
+// never be one (the shipper, and rclone, would send it the keys and
+// report what it answers).
+var metadataHosts = map[string]bool{
+	"metadata": true, "metadata.google.internal": true, "metadata.goog": true, "metadata.azure.com": true,
+	"instance-data": true, "instance-data.ec2.internal": true, "metadata.tencentyun.com": true,
+	"100.100.100.200": true, // Alibaba Cloud
+	"fd00:ec2::254":   true, // AWS, IPv6
+}
+
+func checkEndpointHost(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return invalid("endpoint")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	bad := metadataHosts[host]
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		bad = bad || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || metadataHosts[ip.String()]
+	}
+	if bad {
+		return invalid("the endpoint can't be a link-local address or a cloud metadata service")
+	}
 	return nil
+}
+
+// Version identifies the settings, secret included (a server that has
+// this version has these settings).
+func (set Settings) Version() string {
+	b, _ := json.Marshal(set)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }
 
 // target is the destination for rclone (uploads offload's runner), at the
 // root of the logs' prefix.
 func (d Destination) target() offload.Target {
+	// The same addressing as the shipper (its force_path_style), for the
+	// connection test, the archive and its retention alike.
+	pathStyle := d.PathStyle
 	return offload.Target{Endpoint: d.Endpoint, Region: d.Region, Bucket: d.Bucket, Prefix: d.Prefix,
-		AccessKeyID: d.AccessKeyID, SecretKey: d.SecretKey}
+		AccessKeyID: d.AccessKeyID, SecretKey: d.SecretKey, ForcePathStyle: &pathStyle}
 }
 
 // region is the region to sign requests for: S3-compatible services that

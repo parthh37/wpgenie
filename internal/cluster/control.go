@@ -183,6 +183,9 @@ func (c *Controller) AddNode(ctx context.Context, in AddNodeInput) (*store.Node,
 	if !ValidNodeID(in.ID) {
 		return nil, fmt.Errorf("%w: node ID must be lowercase letters, digits and dashes (not %q)", ErrInvalid, LocalNode)
 	}
+	if ReservedNodeID(in.ID) {
+		return nil, fmt.Errorf("%w: node ID %q is reserved (choose another name or ID)", ErrInvalid, in.ID)
+	}
 	addr, err := normalizeAddress(in.Address)
 	if err != nil {
 		return nil, err

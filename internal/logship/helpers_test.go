@@ -42,6 +42,9 @@ type fakeDocker struct {
 	ps      string // docker ps output
 	metrics string // what wget prints
 	runErr  error
+	root    string // docker info's root directory ("": /var/lib/docker)
+	exit    int    // the container's exit code and restarts
+	restart int
 }
 
 func (d *fakeDocker) Run(_ context.Context, _ io.Reader, args ...string) ([]byte, error) {
@@ -53,12 +56,16 @@ func (d *fakeDocker) Run(_ context.Context, _ io.Reader, args ...string) ([]byte
 		if d.driver == "" {
 			return nil, errors.New("docker info: Cannot connect to the Docker daemon")
 		}
-		return []byte(d.driver + "|/var/lib/docker\n"), nil
+		root := d.root
+		if root == "" {
+			root = "/var/lib/docker"
+		}
+		return []byte(d.driver + "|" + root + "\n"), nil
 	case "inspect":
 		if d.state == "" {
 			return []byte("Error: No such container: wpgenie-vector"), errors.New("docker inspect: exit status 1")
 		}
-		return []byte(d.state + "|" + d.spec + "\n"), nil
+		return fmt.Appendf(nil, "%s|%s|%d|%d|\n", d.state, d.spec, d.exit, d.restart), nil
 	case "run":
 		if d.runErr != nil {
 			return []byte("pull access denied"), d.runErr

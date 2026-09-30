@@ -62,6 +62,10 @@ type Target struct {
 	// none: the bucket's policy makes objects readable (and buckets that
 	// enforce object ownership refuse ACLs).
 	ACL string
+	// ForcePathStyle, if set, chooses path-style (true) or virtual-hosted
+	// (false) addressing instead of rclone's per-provider default: log
+	// shipping makes rclone address the bucket the way Vector does.
+	ForcePathStyle *bool
 }
 
 // ACLs rclone may set on uploaded objects ("" sets none).
@@ -185,8 +189,15 @@ func (t Target) flags() []string {
 	if t.ACL != "" {
 		f = append(f, "--s3-acl", t.ACL)
 	}
+	if t.ForcePathStyle != nil {
+		f = append(f, "--s3-force-path-style="+strconv.FormatBool(*t.ForcePathStyle))
+	}
 	return f
 }
+
+// Flags are the rclone flags the target turns into (for tests of callers
+// that must agree with another S3 client about them).
+func (t Target) Flags() []string { return t.flags() }
 
 // Mount is a host directory made visible to rclone: always one the daemon
 // created (never a path a site controls).

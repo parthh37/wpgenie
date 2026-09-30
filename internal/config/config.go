@@ -168,7 +168,7 @@ func Default() *Config {
 		LinkImage:        "alpine:3.22",
 		ValkeyACLDir:     "/etc/wpgenie/valkey",
 		ValkeyKey:        "/etc/wpgenie/valkey.key",
-		VectorImage:      "timberio/vector:0.58.0-alpine",
+		VectorImage:      "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773",
 	}
 }
 

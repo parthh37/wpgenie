@@ -73,7 +73,8 @@ func (s *Server) logSettings(w http.ResponseWriter, r *http.Request) error {
 
 // setLogSettings saves the settings and, on the panel of a cluster, sends
 // them (the secret included, over the cluster's mutual TLS) to every
-// server.
+// server; a server that can't be reached gets them once it can (see
+// SyncNodeLogs).
 func (s *Server) setLogSettings(w http.ResponseWriter, r *http.Request) error {
 	var in logship.Settings
 	if err := decode(w, r, &in); err != nil {
@@ -83,8 +84,8 @@ func (s *Server) setLogSettings(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if s.Cluster != nil && !s.Node {
-		s.broadcast(r, http.MethodPut, "/api/v1/logs/settings", set)
+	if err := s.SyncNodeLogs(context.WithoutCancel(r.Context())); err != nil {
+		s.Log.Warn("cluster: sending log shipping settings (retried every minute)", "err", err)
 	}
 	return writeJSON(w, http.StatusOK, s.logSettingsView(set))
 }
@@ -99,15 +100,49 @@ func (s *Server) ConfigureNodeLogs(ctx context.Context, n *store.Node) error {
 	if err != nil {
 		return err
 	}
-	panel := cluster.Identity{Name: "panel", Role: auth.RoleAdmin, Owner: "api-token"}
-	if err := s.nodeAPI(ctx, n.ID, panel, http.MethodPut, "/api/v1/logs/settings", set, nil); err != nil {
-		var se *cluster.StatusError
-		if errors.As(err, &se) && se.Code == http.StatusNotFound {
-			return nil // a server running a version without log shipping
-		}
+	if err := s.pushNodeLogs(ctx, n.ID, set); err != nil {
 		return fmt.Errorf("log shipping: %w", err)
 	}
 	return nil
+}
+
+// SyncNodeLogs sends the settings to every server that doesn't have
+// their current version yet (the panel's log shipping loop calls it every
+// minute, so a push that failed is retried until it's through).
+func (s *Server) SyncNodeLogs(ctx context.Context) error {
+	if s.Logship == nil || s.Cluster == nil || s.Node || !s.Cluster.Enabled() {
+		return nil
+	}
+	set, err := s.Logship.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	v := set.Version()
+	errs := s.eachNode(ctx, 20*time.Second, func(ctx context.Context, n *store.Node) error {
+		if s.Logship.NodeVersion(n.ID) == v {
+			return nil
+		}
+		return s.pushNodeLogs(ctx, n.ID, set)
+	})
+	var out []error
+	for node, err := range errs {
+		out = append(out, fmt.Errorf("%s: %w", node, err))
+	}
+	return errors.Join(out...)
+}
+
+// pushNodeLogs sends a server the settings and notes the version it has.
+func (s *Server) pushNodeLogs(ctx context.Context, node string, set logship.Settings) error {
+	panel := cluster.Identity{Name: "panel", Role: auth.RoleAdmin, Owner: "api-token"}
+	err := s.nodeAPI(ctx, node, panel, http.MethodPut, "/api/v1/logs/settings", set, nil)
+	var se *cluster.StatusError
+	if errors.As(err, &se) && se.Code == http.StatusNotFound {
+		err = nil // a server running a version without log shipping: nothing to retry
+	}
+	if err == nil {
+		s.Logship.SetNodeVersion(node, set.Version())
+	}
+	return err
 }
 
 // testLogDestination writes and deletes a small object at the destination
@@ -220,10 +255,12 @@ const maxArchiveView = 20 << 20
 var safeFileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$`)
 
 // logArchiveObject returns one object of the archive (?key=, validated
-// against the archive's prefix), decompressed, as text (?download=1: as a
-// file). At most 20 MB are shown. A zstd object downloads as it is.
+// against the archive's prefix), decompressed, as text: at most 20 MB of
+// it. ?download=1 returns the object as it is in the bucket (compressed,
+// whole), as a file.
 func (s *Server) logArchiveObject(w http.ResponseWriter, r *http.Request) error {
-	ar, err := s.Logship.OpenArchive(r.Context(), r.URL.Query().Get("key"))
+	download := r.URL.Query().Get("download") == "1"
+	ar, err := s.Logship.OpenArchive(r.Context(), r.URL.Query().Get("key"), download)
 	if err != nil {
 		return err
 	}
@@ -237,16 +274,14 @@ func (s *Server) logArchiveObject(w http.ResponseWriter, r *http.Request) error 
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	h.Set("Cache-Control", "no-store")
-	if ar.Compressed {
-		h.Set("Content-Type", "application/zstd")
+	h.Set("Content-Type", ar.ContentType)
+	if download || ar.Compressed {
+		// Long downloads outlive the server's write timeout.
+		http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Hour))
 		h.Set("Content-Disposition", `attachment; filename="`+name+`"`)
 		_, err := io.Copy(w, ar)
 		s.logCopyErr(r, err)
 		return nil
-	}
-	h.Set("Content-Type", "text/plain; charset=utf-8")
-	if r.URL.Query().Get("download") == "1" {
-		h.Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	}
 	n, err := io.Copy(w, io.LimitReader(ar, maxArchiveView))
 	if err != nil {
@@ -256,7 +291,7 @@ func (s *Server) logArchiveObject(w http.ResponseWriter, r *http.Request) error 
 	if n == maxArchiveView {
 		var one [1]byte
 		if k, _ := ar.Read(one[:]); k > 0 {
-			fmt.Fprintf(w, "\n… cut at %d MB: the rest is in the bucket (%s).\n", maxArchiveView>>20, r.URL.Query().Get("key"))
+			fmt.Fprintf(w, "\n… cut at %d MB: download the file for the rest.\n", maxArchiveView>>20)
 		}
 	}
 	return nil

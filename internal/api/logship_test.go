@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/logship"
 	"github.com/parthh37/wpgenie/internal/offload"
 )
@@ -171,7 +173,8 @@ func TestLogshipRoutes(t *testing.T) {
 	if len(list.Objects) != 1 || list.Objects[0].Key != key || len(list.Servers) != 1 {
 		t.Errorf("archives: %+v", list)
 	}
-	resp, err = admin.client.Get(e.srv.URL + "/api/v1/logs/archives/object?key=" + url.QueryEscape(key) + "&download=1")
+	// Viewed: decompressed text.
+	resp, err = admin.client.Get(e.srv.URL + "/api/v1/logs/archives/object?key=" + url.QueryEscape(key))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,9 +182,19 @@ func TestLogshipRoutes(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || string(body) != `{"request":{"host":"a.test"},"status":200}`+"\n" ||
 		resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || resp.Header.Get("X-Content-Type-Options") != "nosniff" ||
-		resp.Header.Get("Content-Disposition") != `attachment; filename="14-abc.log"` ||
-		!strings.Contains(resp.Header.Get("Content-Security-Policy"), "sandbox") {
+		resp.Header.Get("Content-Disposition") != "" || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "sandbox") {
 		t.Errorf("object: %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	// Downloaded: the object as it is in the bucket.
+	resp, err = admin.client.Get(e.srv.URL + "/api/v1/logs/archives/object?key=" + url.QueryEscape(key) + "&download=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Equal(body, bucket.objects[key]) || resp.Header.Get("Content-Type") != "application/gzip" ||
+		resp.Header.Get("Content-Disposition") != `attachment; filename="14-abc.log.gz"` {
+		t.Errorf("download: %d %d bytes %v", resp.StatusCode, len(body), resp.Header)
 	}
 
 	// Test connection: the storage's words, plainly.
@@ -234,5 +247,65 @@ func TestLogshipClosedToTenants(t *testing.T) {
 	}
 	if n != 6 {
 		t.Errorf("%d log routes registered", n)
+	}
+}
+
+// On a cluster, saved settings reach every server (the secret included);
+// one that missed them gets them on the next sync.
+func TestLogshipClusterSettings(t *testing.T) {
+	ctx := context.Background()
+	panel := newClusterServer(t, false)
+	node := newClusterServer(t, true)
+	for _, srv := range []*server{panel, node} {
+		ls := &logship.Service{Store: srv.st, Docker: logDocker{}, Rclone: &logBucket{objects: map[string][]byte{}},
+			Log: slog.New(slog.DiscardHandler), Cfg: logship.Config{Dir: t.TempDir(), Image: "vector"}}
+		if err := ls.Load(ctx); err != nil {
+			t.Fatal(err)
+		}
+		srv.api.Logship = ls
+		srv.h = srv.api.Handler()
+		if srv == node {
+			node.agent.API = node.h
+		}
+	}
+	code, err := node.agent.PairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(cluster.AddNodeInput{Name: "Web 2", Address: node.agent.Listen, PairingCode: code})
+	if st := panel.do(t, "POST", "/api/v1/nodes", string(body), nil); st != 201 {
+		t.Fatalf("add node: %d", st)
+	}
+	if st := panel.do(t, "PUT", "/api/v1/logs/settings", logSettingsBody, nil); st != 200 {
+		t.Fatalf("put: %d", st)
+	}
+	got, _ := node.api.Logship.Settings(ctx)
+	if !got.Enabled || got.Destination.SecretKey != "very-secret-key" || got.ArchiveRetentionDays != 30 {
+		t.Fatalf("node settings: %+v", got)
+	}
+	want, _ := panel.api.Logship.Settings(ctx)
+	if panel.api.Logship.NodeVersion("web-2") != want.Version() || got.Version() != want.Version() {
+		t.Error("the node's version isn't recorded")
+	}
+
+	// A change the node missed (as if it had been unreachable): the next
+	// sync sends it, and the one after sends nothing.
+	want.ArchiveRetentionDays = 365
+	if _, err := panel.api.Logship.SetSettings(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := node.api.Logship.Settings(ctx); got.ArchiveRetentionDays != 30 {
+		t.Fatal("changed without a push")
+	}
+	if err := panel.api.SyncNodeLogs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := node.api.Logship.Settings(ctx); got.ArchiveRetentionDays != 365 {
+		t.Errorf("not resent: %d", got.ArchiveRetentionDays)
+	}
+	node.api.Logship.SetSettings(ctx, func() logship.Settings { s, _ := node.api.Logship.Settings(ctx); s.BatchMaxSeconds = 999; return s }())
+	panel.api.SyncNodeLogs(ctx)
+	if got, _ := node.api.Logship.Settings(ctx); got.BatchMaxSeconds != 999 {
+		t.Error("sent again though the node had the version")
 	}
 }
