@@ -1,0 +1,89 @@
+/* The public order page (order.html, order.js). On top of style.css (tokens,
+   controls, both themes) and billing.css (fields, quotes, segmented
+   switches). */
+
+body.order-page main { max-width: 1120px; padding-top: 1.5rem; }
+
+.order-top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: .6rem 1.25rem; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.order-top .brand { color: var(--text); text-decoration: none; }
+.order-top-actions { display: flex; align-items: center; gap: .35rem; }
+.logo.custom { background: none; box-shadow: none; width: auto; }
+.logo.custom img { display: block; max-height: 28px; max-width: 140px; }
+
+.order-title { margin: .5rem 0 1rem; font-size: clamp(1.5rem, 3vw, 2.1rem); }
+.order-steps { justify-content: center; align-items: center; border-bottom: 0; margin-bottom: 1.75rem; }
+.order-steps li { gap: 0; }
+.order-steps li > button.link { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted); }
+.order-steps li > button.link:hover { color: var(--text); text-decoration: none; }
+.order-steps .wiz-n .i { width: 13px; height: 13px; }
+.order-steps li:not(:last-child)::after { content: ""; width: 2rem; height: 1px; margin-left: 1.25rem; background: var(--line-2); }
+
+.step { animation: rise .25s var(--ease) both; }
+.step-head { margin-bottom: 1.25rem; text-align: center; }
+.step-head h2 { font-size: 1.3rem; margin: 0 0 .3rem; }
+.step-head h2:focus { outline: none; }
+.step-head p { max-width: 60ch; margin: 0 auto; }
+
+/* Plans */
+.cycle-switch { display: flex; width: max-content; max-width: 100%; margin: 0 auto 1.5rem; }
+.cycle-switch .save { margin-left: .15rem; padding: .05rem .4rem; border-radius: 999px; background: var(--ok-soft); color: var(--ok); font-size: .72rem; font-weight: 700; }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.plan-card { display: flex; flex-direction: column; padding: 1.4rem 1.35rem; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; transition: border-color .15s, box-shadow .15s, transform .15s var(--ease); }
+.plan-card:hover { border-color: var(--line-2); box-shadow: var(--shadow); transform: translateY(-2px); }
+.plan-card.picked { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.plan-card h3 { margin: 0; font-size: 1.1rem; }
+.plan-card > p { margin: .35rem 0 0; }
+.plan-card .price { margin: .9rem 0 .1rem; }
+.plan-card .amount { font-size: 2rem; font-weight: 750; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.plan-card .per { color: var(--muted); }
+.plan-features { display: grid; gap: .4rem; margin: 1.1rem 0 1.25rem; padding: 0; list-style: none; font-size: .9rem; }
+.plan-features li { display: flex; align-items: flex-start; gap: .5rem; }
+.plan-features .i { width: 16px; height: 16px; margin-top: .15rem; color: var(--ok); }
+.plan-card button { width: 100%; margin-top: auto; min-height: 42px; }
+
+/* Details */
+fieldset.card { margin: 0 0 1rem; }
+fieldset.card legend { padding: 0 .4rem; margin-left: -.4rem; font-weight: 650; }
+.field-error { display: block; margin-top: .3rem; color: var(--bad); font-size: .8rem; }
+.field meter { margin-top: .5rem; height: .5rem; }
+.field > label { margin-bottom: 0; }
+.field > input, .field > select { margin-top: .35rem; }
+/* The honeypot: out of sight and out of the tab order. */
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+
+/* Review */
+.review-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 1rem; align-items: start; }
+.review-grid .sticky { position: sticky; top: 4.5rem; }
+.sum-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.sum-row + .sum-row { margin-top: .85rem; padding-top: .85rem; border-top: 1px solid var(--line); }
+.sum-row > div { display: grid; gap: .1rem; }
+.review-grid h3 { margin-top: 0; }
+.terms { display: flex; align-items: flex-start; gap: .6rem; margin: .25rem 0 1rem; color: var(--text); font-size: .9rem; }
+.terms input { margin-top: .2rem; }
+.quote-box { margin: 1rem 0; }
+.quote-box[aria-busy="true"] { opacity: .6; }
+.quote-box p { margin: .5rem 0 0; }
+button.place { width: 100%; min-height: 46px; margin-top: .75rem; font-size: 1rem; }
+
+/* Done */
+.order-done { max-width: 620px; margin: 2rem auto; padding: 2rem; text-align: center; }
+.order-done h2 { font-size: 1.35rem; }
+.order-done h2:focus { outline: none; }
+.order-done pre.instructions { text-align: left; }
+.order-done .copy-field { justify-content: center; }
+.done-icon { display: inline-grid; place-items: center; width: 56px; height: 56px; margin-bottom: .75rem; border-radius: 50%; background: var(--ok-soft); color: var(--ok); }
+.done-icon.muted { background: var(--well); color: var(--muted); }
+.done-icon .i { width: 26px; height: 26px; }
+
+@media (max-width: 900px) {
+  .review-grid { grid-template-columns: minmax(0, 1fr); }
+  .review-grid .sticky { position: static; }
+}
+@media (max-width: 640px) {
+  .order-top { padding: .5rem .75rem; }
+  .order-steps li:not(:last-child)::after { width: .75rem; margin-left: .5rem; }
+  .order-steps { gap: .4rem .5rem; font-size: .78rem; }
+  .cycle-switch { width: 100%; justify-content: center; }
+}

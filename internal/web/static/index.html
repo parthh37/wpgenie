@@ -6,6 +6,7 @@
 <title>WPGenie</title>
 <meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/billing.css">
 <script src="/theme.js"></script>
 <script src="/app.js" defer></script>
 <script src="/ux.js" defer></script>
@@ -20,6 +21,11 @@
 <script src="/wordpress.js" defer></script>
 <script src="/files.js" defer></script>
 <script src="/simple.js" defer></script>
+<script src="/countries.js" defer></script>
+<script src="/billing.js" defer></script>
+<script src="/billing-admin.js" defer></script>
+<script src="/emails.js" defer></script>
+<script src="/clientarea.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -55,6 +61,27 @@
   <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8M12 17.5v-11"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="i-percent" viewBox="0 0 24 24"><path d="M19 5 5 19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></symbol>
+  <symbol id="i-mail-cog" viewBox="0 0 24 24"><path d="M22 10.5V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h7.5"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/><circle cx="18" cy="18" r="3"/><path d="M18 14v1M18 21v1M21.46 16l-.87.5M15.4 19.5l-.87.5M21.46 20l-.87-.5M15.4 16.5l-.87-.5"/></symbol>
+  <symbol id="i-landmark" viewBox="0 0 24 24"><path d="M3 22h18M6 18v-7M10 18v-7M14 18v-7M18 18v-7M12 2l8 5H4z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></symbol>
+  <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-trend-up" viewBox="0 0 24 24"><path d="M22 7 13.5 15.5 8.5 10.5 2 17M16 7h6v6"/></symbol>
+  <symbol id="i-trend-down" viewBox="0 0 24 24"><path d="M22 17 13.5 8.5 8.5 13.5 2 7M16 17h6v-6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
+  <symbol id="i-banknote" viewBox="0 0 24 24"><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></symbol>
 </svg>
 
 <aside class="side" id="side" aria-label="Navigation">
@@ -73,11 +100,11 @@
       <button class="tab staff-only" data-tab="security"><svg class="i"><use href="#i-shield"/></svg>Security</button>
       <button class="tab staff-only" data-tab="monitoring"><svg class="i"><use href="#i-activity"/></svg>Monitoring <span id="alert-dot" class="dot bad" hidden><span class="sr-only">(alerts firing)</span></span></button>
     </div>
-    <div class="nav-group accounts-tab">
-      <p class="nav-label">Business</p>
+    <div class="nav-group">
+      <p class="nav-label accounts-tab">Business</p>
       <button class="tab accounts-tab" data-tab="accounts"><svg class="i"><use href="#i-building"/></svg>Accounts</button>
       <button class="tab staff-only" data-tab="plans"><svg class="i"><use href="#i-layers"/></svg>Plans</button>
-      <button class="tab admin-only" data-tab="billing"><svg class="i"><use href="#i-card"/></svg>Billing</button>
+      <button class="tab billing-tab" data-tab="billing"><svg class="i"><use href="#i-receipt"/></svg>Billing</button>
     </div>
     <div class="nav-group staff-only">
       <p class="nav-label">Infrastructure</p>
@@ -115,6 +142,7 @@
         <button type="submit">Sign in</button>
       </form>
       <p id="login-error" class="st-failed small" role="alert" hidden></p>
+      <p id="order-link" class="muted small order-link" hidden>New here? <a href="/order.html">Order hosting</a></p>
     </div>
     <ul class="auth-aside" aria-label="What WPGenie does">
       <li><svg class="i"><use href="#i-box"/></svg><div><strong>Every site in its own container</strong><span>Unprivileged, read-only PHP with automatic HTTPS.</span></div></li>
@@ -382,40 +410,24 @@
       </div>
       <div class="controls" id="plan-features"></div>
       <div class="controls"><label class="check"><input type="checkbox" name="resellable"> Resellers may assign it</label></div>
-      <div class="actions"><button type="submit">Save plan</button></div>
+      <fieldset id="plan-pricing" class="plan-pricing" hidden>
+        <legend>Selling it</legend>
+        <p class="muted small">Tick the billing periods you offer and their prices. A plan without prices is free and can't be ordered.</p>
+        <div id="plan-prices"></div>
+        <div class="grid">
+          <label>Description <span class="muted">(on the order page)</span><input name="description" maxlength="200" placeholder="For growing stores"></label>
+          <label>An order creates<select name="account_kind"><option value="customer">A customer account</option><option value="reseller">A reseller account</option></select></label>
+          <label>Position on the order page <span class="muted">(lower first)</span><input name="sort" type="number" value="0"></label>
+          <label>Extra bandwidth <span class="muted">(price per GB past the plan; 0: none)</span><input name="overage_gb_price" inputmode="decimal" value="0"></label>
+        </div>
+        <label class="check small"><input type="checkbox" name="public"> Show it on the order page</label>
+      </fieldset>
+      <div class="actions"><button type="button" class="ghost" id="plan-cancel">Clear</button><button type="submit">Save plan</button></div>
     </form>
   </section>
 
   <section class="panel" data-panel="billing" hidden>
-    <div class="bar"><h1>Billing</h1></div>
-    <div class="card">
-      <h2>Stripe</h2>
-      <p class="muted small">Subscriptions become accounts: Stripe calls <code id="stripe-url"></code> (add it as a webhook endpoint in Stripe
-        with the events checkout.session.completed, customer.subscription.created/updated/deleted, invoice.paid and
-        invoice.payment_failed). Secrets are write-only: leave a field empty to keep it.</p>
-      <form id="stripe-form" class="grid">
-        <label>Webhook signing secret<input name="webhook_secret" type="password" autocomplete="off" placeholder="whsec_…"></label>
-        <label>Secret key <span class="muted">(optional: plans from checkouts, metered bandwidth)</span><input name="secret_key" type="password" autocomplete="off" placeholder="sk_… or rk_…"></label>
-        <label>Meter event name <span class="muted">(optional: bandwidth in MB)</span><input name="meter_event" placeholder="wpgenie_bandwidth"></label>
-        <label>Prices → plans <span class="muted">(one per line: price_… = plan)</span><textarea name="prices" rows="3"></textarea></label>
-        <div class="actions"><button type="submit">Save Stripe settings</button></div>
-      </form>
-    </div>
-    <div class="card">
-      <h2>Webhooks</h2>
-      <p class="muted small">Events (accounts, plans, usage thresholds, sites) are posted as JSON, signed with
-        <code>X-WPGenie-Signature: t=…,v1=HMAC-SHA256(secret, "t.body")</code>, and retried with backoff for about a day and a half.</p>
-      <form id="webhook-form" class="inline">
-        <input name="url" type="url" placeholder="https://billing.example.com/wpgenie" required>
-        <button type="submit">Add endpoint</button>
-      </form>
-      <div class="controls" id="webhook-events"></div>
-      <div id="webhooks"></div>
-    </div>
-    <div class="card">
-      <h2>Deliveries</h2>
-      <div id="deliveries"></div>
-    </div>
+    <div id="billing-root"></div>
   </section>
 
   <section class="panel" data-panel="users" hidden>
