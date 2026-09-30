@@ -17,6 +17,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store/storetest"
 	"github.com/parthh37/wpgenie/internal/updater"
+	"github.com/parthh37/wpgenie/internal/wplogin"
 )
 
 func newTestServer(t *testing.T) http.Handler {
@@ -34,7 +35,8 @@ func newTestServer(t *testing.T) http.Handler {
 	svc.Jobs = &jobs.Queue{Store: st, Log: slog.Default()}
 	return (&Server{Token: "tok", Version: "v0.1.0", Sites: svc, Store: st, Shield: sh, Updater: upd, Mail: ml,
 		Jobs: svc.Jobs, SFTP: &sftp.Service{Store: st, Log: slog.Default()},
-		Adminer: &adminer.Service{Store: st, Log: slog.Default()}, Log: slog.Default()}).Handler()
+		Adminer: &adminer.Service{Store: st, Log: slog.Default()}, WPLogin: &wplogin.Service{Sites: svc, Log: slog.Default()},
+		Log: slog.Default()}).Handler()
 }
 
 func TestRoutesAndAuth(t *testing.T) {
@@ -102,6 +104,22 @@ func TestRoutesAndAuth(t *testing.T) {
 		{"DELETE", "/api/v1/security/bans?addr=203.0.113.9", "tok", "", 404},
 		{"GET", "/api/v1/security/events?limit=5", "tok", "", 200},
 		{"GET", "/_shield/check", "", "", 200}, // unknown site fails open
+		// WordPress itself.
+		{"GET", "/_wpgenie/login", "", "", 404}, // Caddy names the site
+		{"GET", "/_wpgenie/brand/logo", "", "", 404},
+		{"GET", "/api/v1/sites/x/wp-admin/users", "tok", "", 404},
+		{"POST", "/api/v1/sites/x/wp-admin/login", "tok", `{"user_id":1}`, 404},
+		{"POST", "/api/v1/sites/x/wp-admin/login", "", `{}`, 401},
+		{"POST", "/api/v1/sites/x/wp-admin/password", "tok", `{"user_id":1,"evil":1}`, 400},
+		{"GET", "/api/v1/optimizations", "tok", "", 200},
+		{"PUT", "/api/v1/sites/x/optimize", "tok", `{"optimizations":["nope"]}`, 400},
+		{"PUT", "/api/v1/sites/x/optimize", "tok", `{"optimizations":["emoji"]}`, 404},
+		{"GET", "/api/v1/sites/x/analysis", "tok", "", 404},
+		{"POST", "/api/v1/sites/x/analysis/fix", "tok", `{"fix":"page_cache"}`, 404},
+		{"GET", "/api/v1/settings/branding", "tok", "", 200},
+		{"PUT", "/api/v1/settings/branding", "tok", `{"name":"Acme","url":"javascript:alert(1)"}`, 400},
+		{"PUT", "/api/v1/settings/branding", "tok", `{"name":"Acme","url":"https://acme.test"}`, 200},
+		{"GET", "/api/v1/settings/branding/logo", "tok", "", 404},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))

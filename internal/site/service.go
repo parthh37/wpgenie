@@ -149,6 +149,7 @@ type Service struct {
 	inflight  sync.WaitGroup // running WordPress updates
 	cdn       cdnState
 	offload   offloadState
+	brand     brandState
 	// builds: PHP version -> *sync.Mutex, so one image builds at a time.
 	builds sync.Map
 	// repoMu serialises repository maintenance (prune, check) per repo.
@@ -217,7 +218,7 @@ func newSite(domain, name string) *store.Site {
 		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
 		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
-		PageCache: true, ObjectCache: true,
+		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(),
 	}
 }
 

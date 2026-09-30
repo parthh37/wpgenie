@@ -360,6 +360,11 @@ func (s *Service) maintainSite(ctx context.Context, st *store.Site, nightly bool
 	// conversion was cut short get their copies; stale copies go. As a job:
 	// it starts once this site's maintenance (below) releases the lock, and
 	// the loop moves on to the next site meanwhile.
+	if nightly && slices.Contains(st.Optimize, OptDBCleanup) {
+		if _, err := s.cleanupLocked(ctx, st.ID); err != nil {
+			s.Log.Warn("nightly database cleanup failed", "site", st.ID, "err", err)
+		}
+	}
 	if nightly && len(st.ImageFormats) > 0 {
 		if _, err := s.startImageConversion(ctx, st.ID, nightlyConvertTimeout); err != nil {
 			s.Log.Warn("scheduling the nightly image conversion", "site", st.ID, "err", err)

@@ -149,6 +149,9 @@ function renderSite(site) {
   renderInsights(el, site);
   renderSecurity(el, site);
   renderPlugins(el, site);
+  renderHealth(el, site);
+  renderWordPress(el, site);
+  renderOptimize(el, site);
   renderUpdates(el, site);
   renderEnvironments(el, site);
   renderFiles(el, site);

@@ -32,6 +32,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/store"
 	"github.com/parthh37/wpgenie/internal/updater"
 	"github.com/parthh37/wpgenie/internal/web"
+	"github.com/parthh37/wpgenie/internal/wplogin"
 )
 
 type Server struct {
@@ -45,6 +46,8 @@ type Server struct {
 	Jobs    *jobs.Queue
 	SFTP    *sftp.Service
 	Adminer *adminer.Service
+	// WPLogin signs panel users in to sites' wp-admin (optional).
+	WPLogin *wplogin.Service
 	// Files is the dashboard's file manager (optional).
 	Files *files.Service
 	// IP reputation data, for the status view (optional).
@@ -98,11 +101,16 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /_shield/verify", s.Shield.VerifyHandler())
 
 	// WPGenie tools on sites' own domains (reached only through Caddy's
-	// /_wpgenie/* route, which names the site): Adminer.
+	// /_wpgenie/* route, which names the site): Adminer, signing in to
+	// wp-admin, and the brand's logo WordPress's admin shows.
 	if s.Adminer != nil {
 		mux.Handle("GET "+adminer.Path, s.Adminer)
 		mux.Handle("POST "+adminer.Path, s.Adminer)
 	}
+	if s.WPLogin != nil {
+		mux.Handle("GET "+wplogin.Path, s.WPLogin)
+	}
+	mux.HandleFunc("GET "+site.BrandLogoPath, func(w http.ResponseWriter, r *http.Request) { s.Sites.ServeBrandLogo(w, r) })
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
@@ -184,6 +192,20 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/sites/{id}/plugins", operator, s.analysePlugins)
 	r("PUT /api/v1/sites/{id}/spread", admin, s.setSpread)
 	r("GET /api/v1/sites/{id}/plugins", viewer, s.pluginReport)
+	r("GET /api/v1/sites/{id}/analysis", viewer, s.siteAnalysis)
+	r("POST /api/v1/sites/{id}/analysis/fix", operator, s.analysisFix)
+
+	// WordPress itself: wp-admin without a password, administrators'
+	// passwords, performance tweaks (see wordpress.go).
+	r("GET /api/v1/sites/{id}/wp-admin/users", viewer, s.wpAdmins)
+	r("POST /api/v1/sites/{id}/wp-admin/login", operator, s.wpLogin)
+	r("POST /api/v1/sites/{id}/wp-admin/password", operator, s.wpAdminPassword)
+	r("GET /api/v1/optimizations", viewer, s.optimizations)
+	r("PUT /api/v1/sites/{id}/optimize", operator, s.setOptimize)
+	r("POST /api/v1/sites/{id}/optimize/cleanup", operator, s.cleanupDB)
+	r("GET /api/v1/settings/branding", viewer, s.branding)
+	r("PUT /api/v1/settings/branding", admin, s.setBranding)
+	r("GET /api/v1/settings/branding/logo", viewer, s.brandLogo)
 
 	r("GET /api/v1/jobs", viewer, s.listJobs)
 	r("GET /api/v1/jobs/{id}", viewer, s.getJob)
@@ -338,7 +360,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, files.ErrTooLarge):
 		status = http.StatusRequestEntityTooLarge
-	case errors.Is(err, errTooMany):
+	case errors.Is(err, errTooMany), errors.Is(err, wplogin.ErrTooMany):
 		status = http.StatusTooManyRequests
 	}
 	if status == http.StatusInternalServerError {

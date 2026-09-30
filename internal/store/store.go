@@ -616,6 +616,9 @@ var migrations = []string{
 	);
 	CREATE INDEX webhook_deliveries_due ON webhook_deliveries (status, next_attempt_at);
 	ALTER TABLE jobs ADD COLUMN owner TEXT NOT NULL DEFAULT '';`,
+	// WordPress performance tweaks (the optimize mu-plugin): a list of
+	// site.Optimizations keys.
+	`ALTER TABLE sites ADD COLUMN optimize TEXT NOT NULL DEFAULT '';`,
 	// The file manager ("files") reaches what SFTP does: plans that
 	// already include SFTP get it too.
 	`UPDATE plans SET features = features || ',files'
