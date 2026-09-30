@@ -12,10 +12,12 @@ import (
 // reminders, ticket replies) is rendered once, stored here and delivered
 // with retries by a background loop. The table doubles as the e-mail log
 // staff and clients see. A dedupe key (NULL: none) makes sending
-// idempotent: automation that runs again queues nothing twice.
+// idempotent: automation that runs again queues nothing twice. Keys live in
+// their own table, kept for keepDedupe, so trimming the log never lets an
+// old reminder go out again.
 const mailerSchema = `CREATE TABLE mail_outbox (
 		id              INTEGER PRIMARY KEY AUTOINCREMENT,
-		dedupe_key      TEXT UNIQUE,
+		dedupe_key      TEXT,
 		account_id      INTEGER NOT NULL DEFAULT 0,
 		template        TEXT NOT NULL DEFAULT '',
 		recipients      TEXT NOT NULL,
@@ -31,7 +33,12 @@ const mailerSchema = `CREATE TABLE mail_outbox (
 		sent_at         INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX mail_outbox_due ON mail_outbox (status, next_attempt_at);
-	CREATE INDEX mail_outbox_by_account ON mail_outbox (account_id, id);`
+	CREATE INDEX mail_outbox_by_account ON mail_outbox (account_id, id);
+	CREATE TABLE mail_dedupe (
+		dedupe_key TEXT PRIMARY KEY,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX mail_dedupe_by_age ON mail_dedupe (created_at);`
 
 // Outbox message states.
 const (
@@ -60,7 +67,12 @@ type MailMessage struct {
 }
 
 // keepMail bounds the outbox; the oldest finished messages go first.
-const keepMail = 10000
+// keepDedupe is how long a dedupe key is remembered (longer than any
+// automation looks back: a year of reminders).
+const (
+	keepMail   = 10000
+	keepDedupe = 400 * 24 * time.Hour
+)
 
 const mailCols = `id, COALESCE(dedupe_key, ''), account_id, template, recipients, reply_to, subject, body_text, body_html,
 	status, attempts, next_attempt_at, last_error, created_at, sent_at`
@@ -97,19 +109,29 @@ func (s *Store) EnqueueMail(ctx context.Context, m *MailMessage, now time.Time) 
 		return false, err
 	}
 	defer tx.Rollback()
-	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO mail_outbox (dedupe_key, account_id, template, recipients, reply_to,
-		subject, body_text, body_html, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`, key, m.AccountID, m.Template, strings.Join(m.To, ","), m.ReplyTo,
-		m.Subject, m.Text, m.HTML, MailPending, now.Unix(), now.Unix()).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	if key != nil {
+		var got string
+		err := tx.QueryRowContext(ctx, `INSERT INTO mail_dedupe (dedupe_key, created_at) VALUES (?, ?)
+			ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key`, key, now.Unix()).Scan(&got)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
 	}
-	if err != nil {
+	var id int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO mail_outbox (dedupe_key, account_id, template, recipients, reply_to,
+		subject, body_text, body_html, status, next_attempt_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`, key, m.AccountID, m.Template, strings.Join(m.To, ","), m.ReplyTo,
+		m.Subject, m.Text, m.HTML, MailPending, now.Unix(), now.Unix()).Scan(&id); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mail_outbox WHERE status <> ? AND id <=
 		(SELECT id FROM mail_outbox ORDER BY id DESC LIMIT 1 OFFSET ?)`, MailPending, keepMail); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mail_dedupe WHERE created_at < ?`, now.Add(-keepDedupe).Unix()); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -122,8 +144,20 @@ func (s *Store) EnqueueMail(ctx context.Context, m *MailMessage, now time.Time) 
 // MailQueued reports whether a message with this dedupe key was queued.
 func (s *Store) MailQueued(ctx context.Context, key string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_outbox WHERE dedupe_key = ?`, key).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mail_dedupe WHERE dedupe_key = ?`, key).Scan(&n)
 	return n > 0, err
+}
+
+// ExpireMail fails pending messages queued before a time (they were never
+// sent: sending was off, or the server kept refusing), so turning sending
+// on later doesn't deliver stale reminders. It returns how many.
+func (s *Store) ExpireMail(ctx context.Context, before time.Time, reason string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE mail_outbox SET status = ?, last_error = ? WHERE status = ? AND created_at < ?`,
+		MailFailed, reason, MailPending, before.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // DueMail returns pending messages whose next attempt is due.

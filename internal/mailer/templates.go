@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	tparse "text/template/parse"
 )
 
 // Templates are plain text with two conventions, so that one source gives
@@ -227,11 +228,11 @@ func (s *Service) renderWith(ctx context.Context, t Template, subject, body stri
 	brand := s.brand(ctx)
 	d := map[string]any{"Brand": brand, "PanelURL": s.PanelURL}
 	maps.Copy(d, data)
-	var subj, text strings.Builder
-	if err := tpl.ExecuteTemplate(&subj, "subject", d); err != nil {
+	subj, text := &capWriter{max: maxRendered}, &capWriter{max: maxRendered}
+	if err := tpl.ExecuteTemplate(subj, "subject", d); err != nil {
 		return nil, err
 	}
-	if err := tpl.ExecuteTemplate(&text, "body", d); err != nil {
+	if err := tpl.ExecuteTemplate(text, "body", d); err != nil {
 		return nil, err
 	}
 	return layout(brand, oneLine(noValue(subj.String()), 250), noValue(text.String())), nil
@@ -245,7 +246,58 @@ func parse(name, subject, body string) (*template.Template, error) {
 	if _, err := tpl.New("body").Parse(body); err != nil {
 		return nil, fmt.Errorf("body: %w", err)
 	}
+	for _, t := range tpl.Templates() {
+		if t.Tree != nil && rangesOverNumber(t.Tree.Root) {
+			return nil, fmt.Errorf("%s: range over a number isn't allowed", t.Name())
+		}
+	}
 	return tpl, nil
+}
+
+// maxRendered bounds a rendered subject or body: staff edit templates, and
+// a loop in one must not take the panel's memory.
+const maxRendered = 256 << 10
+
+type capWriter struct {
+	strings.Builder
+	max int
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.Len()+len(p) > w.max {
+		return 0, fmt.Errorf("the message is longer than %d KB", w.max>>10)
+	}
+	return w.Builder.Write(p)
+}
+
+// rangesOverNumber finds {{range N}} (Go 1.22+ loops N times): the only way
+// a template can spin without producing output the cap would stop.
+func rangesOverNumber(n tparse.Node) bool {
+	switch n := n.(type) {
+	case *tparse.ListNode:
+		if n == nil {
+			return false
+		}
+		for _, c := range n.Nodes {
+			if rangesOverNumber(c) {
+				return true
+			}
+		}
+	case *tparse.RangeNode:
+		if p := n.Pipe; p != nil && len(p.Cmds) > 0 {
+			for _, a := range p.Cmds[len(p.Cmds)-1].Args {
+				if _, ok := a.(*tparse.NumberNode); ok {
+					return true
+				}
+			}
+		}
+		return rangesOverNumber(n.List) || rangesOverNumber(n.ElseList)
+	case *tparse.IfNode:
+		return rangesOverNumber(n.List) || rangesOverNumber(n.ElseList)
+	case *tparse.WithNode:
+		return rangesOverNumber(n.List) || rangesOverNumber(n.ElseList)
+	}
+	return false
 }
 
 // noValue blanks what text/template prints for a missing map key.

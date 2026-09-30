@@ -40,14 +40,19 @@ const SMTP_PRESETS = [
     hint: 'Username: your Brevo login. Password: an SMTP key (SMTP & API → SMTP).' },
   { id: 'zoho', name: 'Zoho Mail', host: 'smtp.zoho.com', port: 465, tls: 'tls',
     hint: 'EU and India accounts use smtp.zoho.eu / smtp.zoho.in. Use an app-specific password with 2FA.' },
-  { id: 'local', name: 'This server\'s Mail (Mail tab)', host: 'localhost', port: 587, tls: 'starttls',
+  // host: filled in from the server's mail hostname (its certificate's name).
+  { id: 'local', name: 'This server\'s Mail (Mail tab)', host: '', port: 587, tls: 'starttls',
     hint: 'A mailbox created under Mail: its full address and password.' },
 ];
 
 async function emailSending(box) {
   const s = await api('GET', '/settings/email');
-  const preset = h('select', { 'aria-label': 'Provider' }, options(SMTP_PRESETS.map((p) => [p.id, p.name]),
-    (SMTP_PRESETS.find((p) => p.host && p.host === s.host) || SMTP_PRESETS[0]).id));
+  // "This server's Mail" only when the Mail tab's server is on.
+  const local = SMTP_PRESETS.find((p) => p.id === 'local');
+  local.host = s.local_mail_host || '';
+  const presets = SMTP_PRESETS.filter((p) => p.id !== 'local' || p.host);
+  const preset = h('select', { 'aria-label': 'Provider' }, options(presets.map((p) => [p.id, p.name]),
+    (presets.find((p) => p.host && p.host === s.host) || presets[0]).id));
   const hint = h('p', { class: 'provider-hint small', 'aria-live': 'polite' });
   const host = h('input', { name: 'host', value: s.host || '', placeholder: 'smtp.example.com', autocomplete: 'off' });
   const port = h('input', { name: 'port', type: 'number', min: 1, max: 65535, value: s.port || 587 });

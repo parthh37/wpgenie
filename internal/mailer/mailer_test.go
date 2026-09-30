@@ -93,6 +93,8 @@ func (s *smtpServer) serve(c net.Conn, cert *tls.Certificate) {
 			s.auth = parts[1] + ":" + parts[2]
 			s.mu.Unlock()
 			say("235 ok")
+		case strings.HasPrefix(up, "RCPT TO:") && strings.Contains(cmd, "bad@"):
+			say("550 no such user")
 		case strings.HasPrefix(up, "RCPT TO:"):
 			s.mu.Lock()
 			s.rcpt = append(s.rcpt, cmd[len("RCPT TO:"):])
@@ -312,9 +314,13 @@ func TestSettingsValidation(t *testing.T) {
 	if _, err := e.svc.SetSettings(ctx, SettingsInput{Enabled: true, Host: "smtp.example.com", Username: "u", Password: &pw, FromAddress: "a@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := e.svc.SetSettings(ctx, SettingsInput{Enabled: true, Host: "smtp2.example.com", Username: "u", FromAddress: "a@example.com"})
-	if got.Password != "x" || got.Redacted().Password != "" || !got.Redacted().PasswordSet {
-		t.Fatalf("%+v", got)
+	got, err := e.svc.SetSettings(ctx, SettingsInput{Enabled: true, Host: "smtp.example.com", Port: 587, Username: "u", FromAddress: "b@example.com"})
+	if err != nil || got.Password != "x" || got.Redacted().Password != "" || !got.Redacted().PasswordSet {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// …but never follows the settings to another server.
+	if _, err := e.svc.SetSettings(ctx, SettingsInput{Enabled: true, Host: "smtp.evil.example", Port: 587, Username: "u", FromAddress: "a@example.com"}); err == nil {
+		t.Fatal("stored password kept for a new host")
 	}
 	// Recipients with line breaks never reach a header.
 	if _, err := e.svc.Queue(ctx, Message{To: []string{"a@example.com\r\nBcc: b@example.com"}, Subject: "s", Text: "t"}); err == nil {
@@ -325,8 +331,13 @@ func TestSettingsValidation(t *testing.T) {
 func TestTemplateOverrides(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if _, err := e.svc.SetTemplate(ctx, "test.invoice", Override{Subject: "{{.Invoice.Number", Body: "x"}); err == nil {
-		t.Fatal("broken template accepted")
+	for _, o := range []Override{{Subject: "{{.Invoice.Number", Body: "x"},
+		{Subject: "s", Body: "{{range 2000000000}}{{end}}"},
+		{Subject: "s", Body: "{{if .Client}}{{range $i := 99999999999}}x{{end}}{{end}}"},
+		{Subject: "s", Body: "{{range .Client}}{{range .Name}}{{end}}{{end}}" + strings.Repeat("{{.Client.Name}}", 1) + strings.Repeat("y", 300<<10)}} {
+		if _, err := e.svc.SetTemplate(ctx, "test.invoice", o); err == nil {
+			t.Fatalf("template accepted: %.60q", o.Body)
+		}
 	}
 	v, err := e.svc.SetTemplate(ctx, "test.invoice", Override{Subject: "Bill {{.Invoice.Number}}", Body: "Hi {{.Client.Name}}"})
 	if err != nil || !v.Customized || v.DefaultSubject == v.Subject {
@@ -358,5 +369,40 @@ func TestLayout(t *testing.T) {
 		!strings.Contains(r.HTML, "A&amp;B") || !strings.Contains(r.Text, "Go: https://x.example/go") ||
 		strings.Contains(r.Text, "[[") {
 		t.Fatalf("%s\n%s", r.Text, r.HTML)
+	}
+}
+
+func TestRefusedRecipientsAndExpiry(t *testing.T) {
+	e := newEnv(t)
+	srv := newSMTP(t, nil)
+	ctx := context.Background()
+	// Queued while sending is off, for more than a week: dropped, not sent.
+	if _, err := e.svc.Queue(ctx, Message{To: []string{"old@example.net"}, Subject: "Stale", Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(8 * 24 * time.Hour)
+	e.configure(t, srv, TLSNone, "", "", nil)
+	// One refused address doesn't stop the others; all refused fails.
+	e.svc.Queue(ctx, Message{To: []string{"bad@example.net", "good@example.net"}, Subject: "Mixed", Text: "x"})
+	e.svc.Queue(ctx, Message{To: []string{"bad@example.net"}, Subject: "Nobody", Text: "x"})
+	e.svc.DeliverDue(ctx)
+	byS := map[string]*store.MailMessage{}
+	list, _ := e.st.MailLog(ctx, store.MailFilter{})
+	for _, m := range list {
+		byS[m.Subject] = m
+	}
+	if m := byS["Stale"]; m.Status != store.MailFailed || !strings.Contains(m.LastError, "7 days") {
+		t.Errorf("stale: %+v", m)
+	}
+	if m := byS["Mixed"]; m.Status != store.MailSent || !strings.Contains(m.LastError, "bad@example.net") {
+		t.Errorf("mixed: %+v", m)
+	}
+	if m := byS["Nobody"]; m.Status != store.MailPending || !strings.Contains(m.LastError, "no recipient accepted") {
+		t.Errorf("nobody: %+v", m)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.data) != 1 || strings.Contains(srv.data[0], "Stale") {
+		t.Errorf("sent %d messages", len(srv.data))
 	}
 }

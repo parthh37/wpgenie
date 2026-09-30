@@ -167,6 +167,12 @@ func (s *Service) SetSettings(ctx context.Context, in SettingsInput) (*Settings,
 		FromAddress: strings.TrimSpace(in.FromAddress), ReplyTo: strings.TrimSpace(in.ReplyTo), BCC: strings.TrimSpace(in.BCC)}
 	if in.Password != nil {
 		next.Password = *in.Password
+	} else if next.Host == "" {
+		next.Password = "" // no server: nothing to sign in to
+	} else if cur.Password != "" && (next.Host != cur.Host || next.Port != cur.Port || next.Username != cur.Username) {
+		// The stored password is only ever sent where it was entered for:
+		// otherwise changing the host would hand it to another server.
+		return nil, fmt.Errorf("%w: enter the password again for the new server", ErrInvalid)
 	}
 	if err := validate(&next); err != nil {
 		return nil, err
@@ -359,6 +365,13 @@ func (s *Service) DeliverDue(ctx context.Context) {
 		s.Log.Warn("mailer: settings", "err", err)
 		return
 	}
+	// Messages that couldn't go for a week (sending off, or refused all
+	// along) are dropped: a payment reminder weeks late is worse than none.
+	if n, err := s.Store.ExpireMail(ctx, s.now().Add(-maxPending), "not sent within 7 days"); err != nil {
+		s.Log.Warn("mailer: expiring old messages", "err", err)
+	} else if n > 0 {
+		s.Log.Warn("mailer: dropped messages that couldn't be sent for a week", "count", n)
+	}
 	if !cfg.Enabled || cfg.Host == "" {
 		return // queued until sending is configured
 	}
@@ -375,18 +388,29 @@ func (s *Service) DeliverDue(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			s.attempt(ctx, cfg, m)
+			// A message whose outcome can't be recorded would be due
+			// again at once: stop the round rather than resend it in a loop.
+			if err := s.attempt(ctx, cfg, m); err != nil {
+				s.Log.Warn("mailer: recording a delivery; stopping this round", "id", m.ID, "err", err)
+				return
+			}
 		}
 	}
 }
 
-func (s *Service) attempt(ctx context.Context, cfg *Settings, m *store.MailMessage) {
+// maxPending is how long a message may wait to be sent.
+const maxPending = 7 * 24 * time.Hour
+
+func (s *Service) attempt(ctx context.Context, cfg *Settings, m *store.MailMessage) error {
 	sctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	err := s.send(sctx, cfg, m)
+	rejected, err := s.send(sctx, cfg, m)
 	cancel()
 	m.Attempts++
 	if err == nil {
 		m.Status, m.SentAt, m.LastError = store.MailSent, s.now(), ""
+		if len(rejected) > 0 {
+			m.LastError = oneLine("the server refused "+strings.Join(rejected, "; "), 500)
+		}
 	} else {
 		m.LastError = oneLine(err.Error(), 500)
 		if m.Attempts > len(retryDelays) {
@@ -396,9 +420,7 @@ func (s *Service) attempt(ctx context.Context, cfg *Settings, m *store.MailMessa
 			m.NextAttemptAt = s.now().Add(retryDelays[m.Attempts-1])
 		}
 	}
-	if err := s.Store.RecordMail(context.WithoutCancel(ctx), m); err != nil {
-		s.Log.Warn("mailer: recording a delivery", "id", m.ID, "err", err)
-	}
+	return s.Store.RecordMail(context.WithoutCancel(ctx), m)
 }
 
 // Test sends a message to one address now, bypassing the outbox, and
@@ -419,10 +441,14 @@ func (s *Service) Test(ctx context.Context, to string) error {
 		"This is a test message from "+brand.Name+".\n\nIf you can read it, the panel can send e-mail.")
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	return s.send(ctx, cfg, &store.MailMessage{To: []string{to}, Subject: r.Subject, Text: r.Text, HTML: r.HTML})
+	_, err = s.send(ctx, cfg, &store.MailMessage{To: []string{to}, Subject: r.Subject, Text: r.Text, HTML: r.HTML})
+	return err
 }
 
-func (s *Service) send(ctx context.Context, cfg *Settings, m *store.MailMessage) error {
+// send delivers a message. A recipient the server refuses is skipped and
+// reported (one bad address mustn't stop the others); only a message that
+// no recipient accepts fails.
+func (s *Service) send(ctx context.Context, cfg *Settings, m *store.MailMessage) (rejected []string, _ error) {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	tlsCfg := &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12, RootCAs: s.Roots}
 	d := &net.Dialer{Timeout: 15 * time.Second}
@@ -434,7 +460,7 @@ func (s *Service) send(ctx context.Context, cfg *Settings, m *store.MailMessage)
 		conn, err = d.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if dl, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(dl)
@@ -442,47 +468,55 @@ func (s *Service) send(ctx context.Context, cfg *Settings, m *store.MailMessage)
 	c, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
 		conn.Close()
-		return err
+		return nil, err
 	}
 	defer c.Close()
 	if cfg.TLS == TLSStartTLS {
 		// Required, not opportunistic: without it the password (and the
 		// invoices) would cross in clear.
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			return errors.New("the SMTP server doesn't offer STARTTLS")
+			return nil, errors.New("the SMTP server doesn't offer STARTTLS")
 		}
 		if err := c.StartTLS(tlsCfg); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if cfg.Username != "" {
 		if err := c.Auth(smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := c.Mail(cfg.FromAddress); err != nil {
-		return err
+		return nil, err
 	}
 	rcpts := append([]string{}, m.To...)
 	if cfg.BCC != "" {
 		rcpts = append(rcpts, cfg.BCC)
 	}
-	for _, to := range rcpts {
+	accepted := 0 // of the message's own recipients (the BCC copy doesn't count)
+	for i, to := range rcpts {
 		if err := c.Rcpt(to); err != nil {
-			return fmt.Errorf("%s: %w", to, err)
+			rejected = append(rejected, fmt.Sprintf("%s (%v)", to, err))
+			continue
 		}
+		if i < len(m.To) {
+			accepted++
+		}
+	}
+	if accepted == 0 {
+		return nil, fmt.Errorf("no recipient accepted: %s", strings.Join(rejected, "; "))
 	}
 	w, err := c.Data()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := w.Write(compose(cfg, m, s.now())); err != nil {
-		return err
+		return nil, err
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return nil, err
 	}
-	return c.Quit()
+	return rejected, c.Quit()
 }
 
 // compose builds the MIME message: text and HTML alternatives, both

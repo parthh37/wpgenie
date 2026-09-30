@@ -56,7 +56,7 @@ func (s *Server) emailSettings(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, cfg.Redacted())
+	return writeJSON(w, http.StatusOK, s.emailSettingsView(cfg))
 }
 
 func (s *Server) setEmailSettings(w http.ResponseWriter, r *http.Request) error {
@@ -71,7 +71,20 @@ func (s *Server) setEmailSettings(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, cfg.Redacted())
+	return writeJSON(w, http.StatusOK, s.emailSettingsView(cfg))
+}
+
+// emailSettingsView is the settings without secrets, and this server's
+// mail hostname (its certificate's name) for the "this server" preset.
+func (s *Server) emailSettingsView(cfg *mailer.Settings) any {
+	host := ""
+	if s.Mail != nil {
+		host = s.Mail.SMTPHost()
+	}
+	return struct {
+		mailer.Settings
+		LocalMailHost string `json:"local_mail_host"`
+	}{cfg.Redacted(), host}
 }
 
 func (s *Server) testEmail(w http.ResponseWriter, r *http.Request) error {
@@ -321,7 +334,18 @@ func (s *Server) accountEmails(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	for _, m := range list {
+		forTenant(r, m)
+	}
 	return writeJSON(w, http.StatusOK, mailSummary(list))
+}
+
+// forTenant hides the SMTP server's answers (they can name internal relay
+// hosts) from tenants: they see whether a message went, not why not.
+func forTenant(r *http.Request, m *store.MailMessage) {
+	if tenantOf(r) != nil {
+		m.LastError = ""
+	}
 }
 
 func (s *Server) accountEmail(w http.ResponseWriter, r *http.Request) error {
@@ -337,5 +361,6 @@ func (s *Server) accountEmail(w http.ResponseWriter, r *http.Request) error {
 	if err != nil || m.AccountID != a.ID {
 		return store.ErrNotFound
 	}
+	forTenant(r, m)
 	return writeJSON(w, http.StatusOK, m)
 }
