@@ -6,6 +6,7 @@
         <tr><td>Sites</td><td>{$wpgSites|escape}</td></tr>
         <tr><td>Disk</td><td>{$wpgDisk|escape}</td></tr>
         <tr><td>Bandwidth this month</td><td>{$wpgBandwidth|escape}</td></tr>
+        {if $wpgBurst}<tr><td>Burst minutes</td><td>{$wpgBurst|escape}</td></tr>{/if}
     </table>
     <div class="panel-body">
         <a class="btn btn-primary" href="clientarea.php?action=productdetails&amp;id={$serviceid}&amp;dosinglesignon=1">Log in to WPGenie</a>

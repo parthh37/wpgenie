@@ -152,6 +152,7 @@ type scaler struct {
 	since     time.Time   // first sample under the current policy
 	lastScale time.Time
 	memWarned time.Time
+	cpuWarned time.Time
 	busy      atomic.Bool
 }
 
@@ -167,11 +168,13 @@ func (sc *scaler) observe(s cpuSample) {
 	sc.samples = sc.samples[cut:]
 }
 
+const outsideRange = "outside the autoscaling range"
+
 // next returns the replica count the site should run now, and why.
 func (sc *scaler) next(now time.Time, current int) (int, string) {
 	p := sc.policy
 	if current < p.min || current > p.max {
-		return min(max(current, p.min), p.max), "outside the autoscaling range"
+		return min(max(current, p.min), p.max), outsideRange
 	}
 	// Up: the recent average, only counting samples taken since the last
 	// scale (earlier ones measured a different replica count). Response
@@ -303,6 +306,7 @@ func (s *Service) autoscaleTick(ctx context.Context, now time.Time, scalers map[
 	if err != nil {
 		s.Log.Warn("autoscaler: sampling PHP workers", "err", err) // CPU alone still works
 	}
+	hostBusy := s.hostLoad()
 	for _, st := range active {
 		util, n := siteUtilization(st, usage)
 		if n == 0 {
@@ -333,7 +337,8 @@ func (s *Service) autoscaleTick(ctx context.Context, now time.Time, scalers map[
 		if !st.Autoscale {
 			continue
 		}
-		p := autoscalePolicy{st.MinReplicas, st.MaxReplicas, float64(st.TargetCPU) / 100,
+		lo, hi, rangeWhy := burstRange(st)
+		p := autoscalePolicy{lo, hi, float64(st.TargetCPU) / 100,
 			float64(st.TargetWorkers) / 100, float64(st.TargetResponseMS)}
 		if sc == nil || sc.policy != p {
 			sc = &scaler{policy: p} // new settings: judge them on fresh data
@@ -344,6 +349,19 @@ func (s *Service) autoscaleTick(ctx context.Context, now time.Time, scalers map[
 		}
 		sc.observe(cpuSample{at: now, util: util, replicas: n, workers: workers, p95: p95, n: responses})
 		want, why := sc.next(now, st.Replicas)
+		if why == outsideRange && rangeWhy != "" {
+			why = rangeWhy
+		}
+		if floor := max(st.Replicas, st.MinReplicas); want > floor && hostBusy >= hostBusyCPU {
+			// The server is busy as a whole: more instances would only share
+			// out the same CPUs. The normal size is always kept.
+			if now.Sub(sc.cpuWarned) > 30*time.Minute {
+				sc.cpuWarned = now
+				s.event(st.ID, "autoscale", fmt.Sprintf("Wanted %d instances but the server is busy (%.0f%% of its CPU in use); "+
+					"extra instances wait until it has room", want, hostBusy*100))
+			}
+			want = floor
+		}
 		if want > st.Replicas {
 			if capped := s.capByHostMemory(st, want); capped < want {
 				if now.Sub(sc.memWarned) > 30*time.Minute {
@@ -416,6 +434,15 @@ func (s *Service) capByHostMemory(st *store.Site, want int) int {
 	return max(st.Replicas, min(want, st.Replicas+fit))
 }
 
+// hostLoad is the share of the server's CPUs in use since the last tick
+// (-1: unknown).
+func (s *Service) hostLoad() float64 {
+	if s.HostLoad != nil {
+		return s.HostLoad()
+	}
+	return s.hostCPU.sample()
+}
+
 var errAutoscaleOff = errors.New("autoscaling was turned off")
 
 func (s *Service) autoscaleTo(ctx context.Context, id string, from, to int, why string) {
@@ -474,11 +501,21 @@ func (s *Service) SetAutoscale(ctx context.Context, id string, a AutoscaleSettin
 				return Resources{}, fmt.Errorf("at %d replicas: %w", a.MaxReplicas, err)
 			}
 		}
-		if err := s.Store.SetAutoscale(ctx, id, a.Enabled, a.MinReplicas, a.MaxReplicas, a.TargetCPU, a.TargetWorkers, a.TargetResponseMS); err != nil {
-			return Resources{}, err
-		}
 		cp := *st
 		prev = &cp
+		// Autoscaling is burst underneath: on keeps a burst that is on,
+		// else it is automatic.
+		mode, until := BurstOff, time.Time{}
+		if a.Enabled {
+			mode = BurstAuto
+			if st.BurstMode == BurstOn {
+				mode, until = BurstOn, st.BurstUntil
+			}
+		}
+		if err := s.Store.SetScaling(ctx, id, a.Enabled, a.MinReplicas, a.MaxReplicas, a.TargetCPU, a.TargetWorkers,
+			a.TargetResponseMS, mode, until); err != nil {
+			return Resources{}, err
+		}
 		st.Autoscale, st.MinReplicas, st.MaxReplicas = a.Enabled, a.MinReplicas, a.MaxReplicas
 		r := Resources{st.MemoryMB, st.CPUs, st.Replicas}
 		if a.Enabled {
@@ -492,8 +529,8 @@ func (s *Service) SetAutoscale(ctx context.Context, id string, a AutoscaleSettin
 		if prev == nil {
 			return nil
 		}
-		return s.Store.SetAutoscale(c, id, prev.Autoscale, prev.MinReplicas, prev.MaxReplicas, prev.TargetCPU,
-			prev.TargetWorkers, prev.TargetResponseMS)
+		return s.Store.SetScaling(c, id, prev.Autoscale, prev.MinReplicas, prev.MaxReplicas, prev.TargetCPU,
+			prev.TargetWorkers, prev.TargetResponseMS, prev.BurstMode, prev.BurstUntil)
 	})
 	if err != nil {
 		return nil, err

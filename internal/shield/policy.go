@@ -5,12 +5,16 @@ type Mode string
 
 const (
 	ModeOff         Mode = "off"          // shield not in the request path at all
-	ModeStandard    Mode = "standard"     // default: stop bad bots, throttle abuse
+	ModeStandard    Mode = "standard"     // stop bad bots, throttle abuse
 	ModeUnderAttack Mode = "under_attack" // DDoS / scraping incident: challenge everyone
+	// ModeAuto is the default for new sites: Standard, plus the shield
+	// switches the site to Under attack by itself while it detects a
+	// flood, and back when it's over (see attack.go).
+	ModeAuto Mode = "auto"
 )
 
 func (m Mode) Valid() bool {
-	return m == ModeOff || m == ModeStandard || m == ModeUnderAttack
+	return m == ModeOff || m == ModeStandard || m == ModeUnderAttack || m == ModeAuto
 }
 
 type Verdict int
@@ -28,7 +32,13 @@ func (v Verdict) String() string {
 
 // Signals is everything the shield knows about a request when deciding.
 type Signals struct {
-	Mode        Mode
+	// Mode is the site's effective mode: a ModeAuto site arrives as
+	// ModeUnderAttack while a flood is detected, and is otherwise treated
+	// exactly like ModeStandard.
+	Mode Mode
+	// AutoAttack: Mode is ModeUnderAttack because of flood detection, not
+	// the site's setting. Only the security log cares.
+	AutoAttack  bool
 	BlockAIBots bool  // site setting: refuse AI crawlers/fetchers
 	Class       Class // see classify.go
 	HasPass     bool  // holds a valid, unexpired challenge-pass cookie

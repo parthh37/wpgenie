@@ -297,6 +297,7 @@ func planFlags(fs *flag.FlagSet, p *store.Plan) (features, repos *string) {
 	fs.IntVar(&p.MaxMemoryMB, "memory", p.MaxMemoryMB, "memory MB per replica (0: server limit)")
 	fs.Float64Var(&p.MaxCPUs, "cpus", p.MaxCPUs, "CPUs per replica (0: server limit)")
 	fs.IntVar(&p.MaxDomains, "domains", p.MaxDomains, "domains per site (0: unlimited)")
+	fs.Int64Var(&p.BurstMinutes, "burst-minutes", p.BurstMinutes, "burst minutes per account per month (0: unlimited; needs the burst feature)")
 	fs.StringVar(&p.Overage, "overage", p.Overage, "past the bandwidth: notify or suspend")
 	fs.BoolVar(&p.Resellable, "resellable", p.Resellable, "resellers may assign it")
 	f, r := strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ",")
@@ -393,7 +394,7 @@ func planBody(p store.Plan) map[string]any {
 	return map[string]any{"id": p.ID, "name": p.Name, "max_sites": p.MaxSites, "disk_mb": p.DiskMB,
 		"bandwidth_gb": p.BandwidthGB, "max_replicas": p.MaxReplicas, "max_memory_mb": p.MaxMemoryMB,
 		"max_cpus": p.MaxCPUs, "max_domains": p.MaxDomains, "features": p.Features, "backup_repos": p.BackupRepos,
-		"overage": p.Overage, "resellable": p.Resellable}
+		"overage": p.Overage, "resellable": p.Resellable, "burst_minutes": p.BurstMinutes}
 }
 
 func tokenCmd(cfg *config.Config, args []string) error {

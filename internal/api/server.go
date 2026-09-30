@@ -191,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 	r("PUT /api/v1/sites/{id}/cache", operator, s.setCache)
 	r("POST /api/v1/sites/{id}/cache/purge", operator, s.purgeCache)
 	r("PUT /api/v1/sites/{id}/autoscale", operator, s.setAutoscale)
+	s.burstRoutes(r)
 	r("GET /api/v1/sites/{id}/events", viewer, s.siteEvents)
 	r("GET /api/v1/sites/{id}/metrics", viewer, s.siteMetrics)
 	r("GET /api/v1/sites/{id}/updates", viewer, s.siteUpdates)

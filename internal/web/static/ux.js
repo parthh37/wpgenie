@@ -191,7 +191,7 @@ function goSite(id, section = 'overview') {
 
 // The site open in the workspace ({id, section}), or null for the list.
 let FOCUS = null;
-const SHIELD_LABELS = { off: 'Shield off', standard: 'Shield on', under_attack: 'Under attack' };
+const SHIELD_LABELS = { off: 'Shield off', auto: 'Shield on', standard: 'Shield on', under_attack: 'Checking everyone' };
 
 // A section is a <details class="perf"> of the site template, keyed by the
 // first word of its summary: performance, insights, cdn, … activity.

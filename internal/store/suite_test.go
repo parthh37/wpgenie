@@ -117,7 +117,7 @@ func testSites(t *testing.T, s *Store) {
 	if err := s.SetShield(ctx, "sa", sh); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAutoscale(ctx, "sa", true, 1, 4, 60, 80, 900); err != nil {
+	if err := s.SetScaling(ctx, "sa", true, 1, 4, 60, 80, 900, "auto", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetPHP(ctx, "sa", "8.4", PHPSettings{UploadMaxMB: 64}); err != nil {

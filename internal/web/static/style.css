@@ -548,3 +548,27 @@ button.link.file-name:hover { color: var(--accent); }
 .editor .actions { align-items: center; margin-top: .75rem; }
 .editor-hint { margin-right: auto; }
 @media (max-width: 640px) { .editor-hint { display: none; } }
+
+/* ---- Simple choices: burst, protection level, visitor check (simple.js) ---- */
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .6rem; margin: .25rem 0 .9rem; }
+.choice { display: flex; align-items: flex-start; gap: .65rem; padding: .75rem .85rem; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  cursor: pointer; transition: border-color .15s var(--ease), background .15s var(--ease); }
+.choice:hover { background: var(--hover); }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.choice:has(input:disabled) { cursor: default; }
+.choice:has(input:disabled:not(:checked)) { opacity: .6; }
+.choice input { margin-top: .2rem; }
+.choice > span { display: grid; gap: .2rem; font-size: .9rem; font-weight: 400; color: var(--text); }
+.choice .badge { margin-left: .3rem; color: var(--accent); border-color: var(--accent); }
+.burst-status p { margin: .3rem 0; }
+.burst-status .usage-row { margin-top: .6rem; }
+details.advanced { margin: .5rem 0 1rem; padding: .55rem .85rem; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
+details.advanced > summary { cursor: pointer; font-size: .88rem; font-weight: 600; color: var(--muted); }
+details.advanced > summary:hover { color: var(--text); }
+details.advanced[open] > summary { margin-bottom: .6rem; }
+.attack-banner { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin: 0 0 1rem; padding: .7rem .9rem;
+  border: 1px solid var(--bad); border-radius: var(--r-sm); background: var(--bad-soft); }
+.attack-banner p { flex: 1 1 20rem; margin: 0; }
+.site[data-shield="auto"] .shield-chip { color: var(--ok); }
+.site[data-attack="1"] { box-shadow: inset 3px 0 0 var(--bad); }
+.site[data-attack="1"] .shield-chip { color: #fff; background: var(--bad-btn); border-color: transparent; }

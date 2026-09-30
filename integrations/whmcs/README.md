@@ -47,6 +47,7 @@ imports disk and bandwidth usage, and signs the client in to the WPGenie dashboa
 | Change Password | Sets the user's password (WPGenie needs 12+ characters). |
 | Usage Update | Disk (files + databases) and this month's bandwidth, in MB, with the plan's limits. |
 | Single Sign-On | A one-time link valid for two minutes. Clients with two-factor authentication still enter their code. |
+| Add burst minutes (button) | Adds the product's *Burst pack (minutes)* to the account's burst credit: bought minutes that never expire, used once the plan's monthly minutes are gone. Call it from an order hook (`ModuleCustom`) to sell packs. The client area shows what's left. |
 
 Passwords shorter than 12 characters aren't sent: WPGenie generates one and the client signs in through
 WHMCS (single sign-on). API calls are recorded in WHMCS's module log with the token and passwords masked.

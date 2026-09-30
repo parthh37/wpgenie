@@ -45,10 +45,12 @@ const (
 	FeatureCertificates = "certificates" // their own TLS certificates
 	FeatureCDN          = "cdn"          // Cloudflare / pull-zone CDNs
 	FeatureSMTP         = "smtp"         // WordPress mail through the mail server
+	FeatureBurst        = "burst"        // extra instances under load, within the plan's burst minutes
 )
 
 // Features lists every plan feature.
-var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureFiles, FeaturePHPMyAdmin, FeatureCertificates, FeatureCDN, FeatureSMTP}
+var Features = []string{FeatureStaging, FeatureBackups, FeatureSFTP, FeatureFiles, FeaturePHPMyAdmin, FeatureCertificates, FeatureCDN,
+	FeatureSMTP, FeatureBurst}
 
 // Suspension reasons: who suspended an account. Only the same party, or an
 // administrator, lifts a suspension; a stronger reason replaces a weaker
@@ -127,6 +129,9 @@ type Service struct {
 	// for subscriptions and metered usage.
 	Hooks  *Webhooks
 	Stripe *StripeAPI
+	// Burst counts sites' burst minutes and pauses their burst wherever
+	// they run (nil: burst isn't metered and never paused).
+	Burst BurstOps
 	// InWindow reports whether a time is in the nightly maintenance window
 	// (disk measurement runs then); nil: 03:00-05:00 local time.
 	InWindow func(time.Time) bool
@@ -140,6 +145,7 @@ type Service struct {
 	stripeMu  sync.Mutex // one Stripe event at a time (idempotency)
 	measureMu sync.Mutex
 	lastDisk  time.Time
+	burst     burstState
 }
 
 func (s *Service) now() time.Time {
@@ -181,7 +187,7 @@ func NormalizePlan(p *store.Plan) error {
 		return err
 	}
 	if p.MaxSites < 0 || p.DiskMB < 0 || p.BandwidthGB < 0 || p.MaxReplicas < 0 || p.MaxMemoryMB < 0 ||
-		p.MaxCPUs < 0 || p.MaxDomains < 0 {
+		p.MaxCPUs < 0 || p.MaxDomains < 0 || p.BurstMinutes < 0 {
 		return fmt.Errorf("%w: limits can't be negative (0 means unlimited)", ErrInvalid)
 	}
 	if p.MaxMemoryMB > 0 && p.MaxMemoryMB < 256 {
@@ -244,6 +250,7 @@ func Fits(child, parent *store.Plan) error {
 	check(fitsLimit(child.MaxMemoryMB, parent.MaxMemoryMB), "max_memory_mb")
 	check(fitsLimit(child.MaxCPUs, parent.MaxCPUs), "max_cpus")
 	check(fitsLimit(child.MaxDomains, parent.MaxDomains), "max_domains")
+	check(fitsLimit(child.BurstMinutes, parent.BurstMinutes), "burst_minutes")
 	for _, f := range child.Features {
 		check(slices.Contains(parent.Features, f), "feature "+f)
 	}
@@ -280,20 +287,23 @@ func (s *Service) ResellerPlans(ctx context.Context, reseller *store.Account) ([
 // its reseller's plan (a customer never gets more than their reseller has,
 // even if an administrator later lowers the reseller's plan).
 type Limits struct {
-	MaxSites    int      `json:"max_sites"`
-	DiskMB      int64    `json:"disk_mb"`
-	BandwidthGB int64    `json:"bandwidth_gb"`
-	MaxReplicas int      `json:"max_replicas"`
-	MaxMemoryMB int      `json:"max_memory_mb"`
-	MaxCPUs     float64  `json:"max_cpus"`
-	MaxDomains  int      `json:"max_domains"`
-	Features    []string `json:"features"`
-	BackupRepos []string `json:"backup_repos"`
+	MaxSites    int     `json:"max_sites"`
+	DiskMB      int64   `json:"disk_mb"`
+	BandwidthGB int64   `json:"bandwidth_gb"`
+	MaxReplicas int     `json:"max_replicas"`
+	MaxMemoryMB int     `json:"max_memory_mb"`
+	MaxCPUs     float64 `json:"max_cpus"`
+	MaxDomains  int     `json:"max_domains"`
+	// BurstMinutes are the account's own monthly minutes (a reseller's
+	// plan doesn't narrow them: each account has its own).
+	BurstMinutes int64    `json:"burst_minutes"`
+	Features     []string `json:"features"`
+	BackupRepos  []string `json:"backup_repos"`
 }
 
 func limitsOf(p *store.Plan) Limits {
 	return Limits{MaxSites: p.MaxSites, DiskMB: p.DiskMB, BandwidthGB: p.BandwidthGB, MaxReplicas: p.MaxReplicas,
-		MaxMemoryMB: p.MaxMemoryMB, MaxCPUs: p.MaxCPUs, MaxDomains: p.MaxDomains,
+		MaxMemoryMB: p.MaxMemoryMB, MaxCPUs: p.MaxCPUs, MaxDomains: p.MaxDomains, BurstMinutes: p.BurstMinutes,
 		Features: slices.Clone(p.Features), BackupRepos: slices.Clone(p.BackupRepos)}
 }
 
