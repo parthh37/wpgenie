@@ -584,3 +584,20 @@ func (s *Server) setSupportSettings(w http.ResponseWriter, r *http.Request) erro
 	}
 	return writeJSON(w, http.StatusOK, st)
 }
+
+// ticketFilesOf is called before an account is deleted: it returns what
+// removes the attachments of the account's tickets from disk once the
+// deletion succeeded (the tickets' rows go with the account, in
+// store.DeleteAccount). Best effort: failures are logged, and the support
+// service's hourly sweep removes what's left.
+func (s *Server) ticketFilesOf(ctx context.Context, accountID int64) func() {
+	if s.Support == nil {
+		return func() {}
+	}
+	ids, err := s.Store.AccountTicketIDs(ctx, accountID)
+	if err != nil {
+		s.Log.Warn("support: listing a deleted account's tickets", "account", accountID, "err", err)
+		return func() {}
+	}
+	return func() { s.Support.RemoveTicketFiles(ids) }
+}

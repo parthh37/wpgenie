@@ -370,15 +370,25 @@ function messageEl(m, t) {
   const mine = t.you === 'customer' ? m.side === 'customer' : m.side !== 'customer';
   const role = m.side === 'customer' ? (t.you === 'customer' ? '' : t.account_name)
     : t.you === 'customer' ? 'Support' : m.side === 'handler' ? 'Reseller' : 'Staff';
-  const noteFor = t.you === 'handler' ? 'Only you and your provider\'s staff see this' : 'Customers never see this';
+  const noteFor = m.staff_only ? 'Only staff see this: not the customer, not the reseller' : noteAudience(t);
   return h('li', { class: `tk-msg ${mine ? 'mine' : 'theirs'}` + (m.internal ? ' internal' : '') + (m.staff ? ' from-staff' : '') },
     h('span', { class: 'avatar', 'aria-hidden': 'true' }, (m.author || '?').slice(0, 1).toUpperCase()),
     h('div', { class: 'tk-bubble' },
       h('div', { class: 'tk-msg-head' }, h('strong', {}, m.author || 'Someone'), role ? h('span', { class: 'muted' }, role) : null,
-        m.internal ? h('span', { class: 'tk-note-tag', title: noteFor }, icon('lock'), 'Internal note') : null,
+        m.internal ? h('span', { class: 'tk-note-tag', title: noteFor }, icon('lock'), m.staff_only ? 'Staff-only note' : 'Internal note') : null,
         h('span', { class: 'muted tk-when' }, timeEl(m.at))),
       m.body ? h('div', { class: 'tk-body' }, linkify(m.body)) : null,
       attachmentsEl(t, m.attachments)));
+}
+
+// noteAudience says who reads a ticket's internal notes: never the
+// customer, but the account's reseller as well as staff (it handles the
+// ticket, or did), unless staff mark a note staff-only.
+function noteAudience(t) {
+  if (t.you === 'handler') return 'Only you and your provider\'s staff see notes.';
+  if (!t.reseller) return 'Customers never see notes.';
+  return t.handler === 'reseller' ? `Customers never see notes; ${t.reseller} does, as they handle this ticket.`
+    : `Customers never see notes; ${t.reseller}, the customer's reseller, does too (unless you tick Staff only).`;
 }
 
 function attachmentsEl(t, files) {
@@ -547,6 +557,10 @@ function composer(view, update) {
   });
   const label = h('label', { for: 'tk-reply-text', class: 'tk-reply-label' });
   const note = provider ? h('input', { type: 'checkbox' }) : null;
+  // Staff may keep a note from the reseller too.
+  const staffOnly = t0.you === 'staff' ? h('input', { type: 'checkbox' }) : null;
+  const staffOnlyLabel = staffOnly ? h('label', { class: 'check tk-note-toggle' }, staffOnly, 'Staff only') : null;
+  const audience = h('p', { class: 'small muted tk-note-help', 'aria-live': 'polite' });
   const send = h('button', { type: 'submit' }, icon('send'));
   const sendClose = provider ? h('button', { type: 'button', class: 'ghost' }, icon('check'), 'Reply & close') : null;
   const progress = h('progress', { max: 1, value: 0, hidden: true, 'aria-label': 'Uploading' });
@@ -572,9 +586,14 @@ function composer(view, update) {
 
   const sync = () => {
     const t = view.th.ticket, internal = note && note.checked;
+    const privateNote = internal && staffOnly && staffOnly.checked && !!t.reseller;
     form.classList.toggle('internal', !!internal);
-    label.textContent = internal ? 'Internal note' : provider ? 'Reply to the customer' : 'Your reply';
-    text.placeholder = internal ? (t.you === 'handler' ? 'Only you and your provider\'s staff will see this.' : 'Only staff will see this: customers never do.')
+    label.textContent = privateNote ? 'Staff-only note' : internal ? 'Internal note' : provider ? 'Reply to the customer' : 'Your reply';
+    if (staffOnlyLabel) staffOnlyLabel.hidden = !internal || !t.reseller;
+    audience.hidden = !internal;
+    audience.textContent = privateNote ? `Only staff see this note: not the customer, not ${t.reseller}.` : noteAudience(t);
+    text.placeholder = internal ? (privateNote ? 'Only staff will see this.' : t.you === 'handler' ? 'Only you and your provider\'s staff will see this.'
+      : t.reseller ? `Staff and ${t.reseller} will see this; the customer won't.` : 'Only staff will see this: customers never do.')
       : t.status === 'closed' && !provider ? 'This ticket is closed. Write here to reopen it.'
         : provider ? 'Write your reply… (Ctrl+Enter sends)' : 'Add more details or answer our questions… (Ctrl+Enter sends)';
     send.lastChild?.nodeType === Node.TEXT_NODE && send.lastChild.remove();
@@ -582,6 +601,7 @@ function composer(view, update) {
     if (sendClose) sendClose.hidden = internal || t.status === 'closed';
   };
   if (note) note.addEventListener('change', sync);
+  if (staffOnly) staffOnly.addEventListener('change', sync);
 
   async function submit(status) {
     const body = text.value.trim(), files = attach.files();
@@ -593,20 +613,22 @@ function composer(view, update) {
       return;
     }
     const internal = !!(note && note.checked);
+    const privateNote = internal && !!(staffOnly && staffOnly.checked && view.th.ticket.reseller);
     const buttons = [send, sendClose].filter(Boolean);
     buttons.forEach((b) => { b.disabled = true; });
     progress.hidden = !files.length;
     progress.value = 0;
     try {
-      const th = await sendForm('POST', `/tickets/${id}/replies`, { body, internal, ...(status ? { status } : {}) }, files,
+      const th = await sendForm('POST', `/tickets/${id}/replies`, { body, internal, ...(privateNote ? { staff_only: true } : {}), ...(status ? { status } : {}) }, files,
         (v) => { progress.value = v; });
       text.value = '';
       try { sessionStorage.removeItem(draftKey); } catch { /* no storage */ }
       attach.reset();
       if (note) note.checked = false;
+      if (staffOnly) staffOnly.checked = false;
       update(th);
       sync();
-      notify(internal ? 'Note added' : status === 'closed' ? 'Reply sent and ticket closed' : provider ? 'Reply sent: the customer gets an e-mail' : 'Reply sent. We\'ll e-mail you when we answer.');
+      notify(privateNote ? 'Staff-only note added' : internal ? 'Note added' : status === 'closed' ? 'Reply sent and ticket closed' : provider ? 'Reply sent: the customer gets an e-mail' : 'Reply sent. We\'ll e-mail you when we answer.');
       refreshSupportBadge();
       const convo = $('.tk-convo');
       convo?.lastElementChild?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -624,11 +646,12 @@ function composer(view, update) {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
   });
 
-  fill(form, label, text,
+  fill(form, label, audience, text,
     h('div', { class: 'tk-drop-overlay', 'aria-hidden': 'true' }, icon('paperclip'), 'Drop files to attach them'),
     attach.el, problem, progress,
     h('div', { class: 'tk-reply-bar' },
-      h('div', { class: 'tk-reply-tools' }, note ? h('label', { class: 'check tk-note-toggle' }, note, icon('lock'), 'Internal note') : null, canned),
+      h('div', { class: 'tk-reply-tools' }, note ? h('label', { class: 'check tk-note-toggle' }, note, icon('lock'), 'Internal note') : null,
+        staffOnlyLabel, canned),
       h('div', { class: 'actions' }, sendClose, send)));
   sync();
   return form;

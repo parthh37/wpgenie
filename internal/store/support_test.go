@@ -444,3 +444,56 @@ func testTicketIndexes(t *testing.T, s *Store) {
 		}
 	}
 }
+
+// An account's tickets, their messages and attachments' records go with
+// the account (in DeleteAccount's transaction); other accounts' stay.
+func TestStoreDeleteAccountTickets(t *testing.T) { forEachBackend(t, testDeleteAccountTickets) }
+
+func testDeleteAccountTickets(t *testing.T, s *Store) {
+	ctx := context.Background()
+	s.CreatePlan(ctx, &Plan{ID: "p", Name: "P", Overage: "notify"})
+	a, _, _, _ := s.CreateAccount(ctx, &Account{Name: "A", Kind: AccountCustomer, PlanID: "p"}, "", nil)
+	b, _, _, _ := s.CreateAccount(ctx, &Account{Name: "B", Kind: AccountCustomer, PlanID: "p"}, "", nil)
+	dept := &SupportDepartment{Name: "General"}
+	s.CreateSupportDepartment(ctx, dept)
+	at := time.Unix(1_800_000_000, 0).UTC()
+	open := func(acct int64) *Ticket {
+		tk := &Ticket{AccountID: acct, OpenedBy: "x", DepartmentID: dept.ID, Subject: "x", Status: TicketOpen, Priority: "low", CreatedAt: at}
+		m := &TicketMessage{Author: "x", Side: SideCustomer, Body: "x", CreatedAt: at,
+			Attachments: []*TicketAttachment{{Name: "a.txt", File: "0123456789abcdef0123456789abcdef", ContentType: "text/plain", Size: 1}}}
+		if err := s.CreateTicket(ctx, tk, m); err != nil {
+			t.Fatal(err)
+		}
+		s.AddTicketMessage(ctx, &TicketMessage{TicketID: tk.ID, Author: "s", Side: SideStaff, Internal: true, StaffOnly: true,
+			Body: "note", CreatedAt: at}, TicketActivity{})
+		return tk
+	}
+	a1, a2, b1 := open(a.ID), open(a.ID), open(b.ID)
+	if ids, err := s.AccountTicketIDs(ctx, a.ID); err != nil || len(ids) != 2 || ids[0] != a1.ID || ids[1] != a2.ID {
+		t.Errorf("AccountTicketIDs = %v, %v", ids, err)
+	}
+	if msgs, _ := s.TicketMessages(ctx, b1.ID); len(msgs) != 2 || !msgs[1].StaffOnly || !msgs[1].Internal {
+		t.Errorf("staff-only note: %+v", msgs)
+	}
+	if err := s.DeleteAccount(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{a1.ID, a2.ID} {
+		if _, err := s.GetTicket(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("ticket %d survived its account: %v", id, err)
+		}
+		if msgs, _ := s.TicketMessages(ctx, id); len(msgs) != 0 {
+			t.Errorf("ticket %d's messages survived: %d", id, len(msgs))
+		}
+		if atts, _ := s.TicketAttachments(ctx, id); len(atts) != 0 {
+			t.Errorf("ticket %d's attachments survived: %d", id, len(atts))
+		}
+	}
+	if msgs, _ := s.TicketMessages(ctx, b1.ID); len(msgs) != 2 {
+		t.Errorf("another account's messages: %d", len(msgs))
+	}
+	exist, err := s.ExistingTicketIDs(ctx, []int64{a1.ID, a2.ID, b1.ID, 999})
+	if err != nil || len(exist) != 1 || !exist[b1.ID] {
+		t.Errorf("ExistingTicketIDs = %v, %v", exist, err)
+	}
+}

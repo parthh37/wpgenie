@@ -197,7 +197,8 @@ func (s *Service) keep(ctx context.Context, ticketID int64, files []*Staged, row
 }
 
 // Attachment opens an attachment of a ticket for a party to it; an
-// attachment of an internal note is not there for the customer.
+// attachment of a message the party doesn't see (an internal note for the
+// customer, a staff-only note for the reseller) is not there.
 func (s *Service) Attachment(ctx context.Context, a Actor, ticketID, id int64) (*store.TicketAttachment, *os.File, error) {
 	_, p, err := s.ticket(ctx, a, ticketID)
 	if err != nil {
@@ -207,12 +208,12 @@ func (s *Service) Attachment(ctx context.Context, a Actor, ticketID, id int64) (
 	if err != nil {
 		return nil, nil, err
 	}
-	if !p.provider() {
+	if p != PartyStaff {
 		m, err := s.Store.GetTicketMessage(ctx, ticketID, att.MessageID)
 		if err != nil {
 			return nil, nil, err
 		}
-		if m.Internal {
+		if !visible(m, p) {
 			return nil, nil, store.ErrNotFound
 		}
 	}
@@ -237,4 +238,44 @@ func (s *Service) CleanStaging(olderThan time.Duration) {
 			os.Remove(filepath.Join(s.stagingDir(), e.Name()))
 		}
 	}
+}
+
+// RemoveTicketFiles deletes tickets' attachment folders (their tickets
+// deleted with their account). Best effort: failures are logged.
+func (s *Service) RemoveTicketFiles(ids []int64) {
+	for _, id := range ids {
+		if err := os.RemoveAll(s.ticketDir(id)); err != nil {
+			s.Log.Warn("support: removing a deleted ticket's attachments", "ticket", id, "err", err)
+		}
+	}
+}
+
+// RemoveOrphanFiles deletes the attachment folders of tickets that no
+// longer exist (a deletion whose clean-up didn't finish), and reports
+// how many.
+func (s *Service) RemoveOrphanFiles(ctx context.Context) (int, error) {
+	entries, err := os.ReadDir(s.Dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	} else if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for _, e := range entries {
+		if id, err := strconv.ParseInt(e.Name(), 10, 64); err == nil && id > 0 && e.IsDir() && strconv.FormatInt(id, 10) == e.Name() {
+			ids = append(ids, id)
+		}
+	}
+	exist, err := s.Store.ExistingTicketIDs(ctx, ids)
+	if err != nil {
+		return 0, err
+	}
+	var gone []int64
+	for _, id := range ids {
+		if !exist[id] {
+			gone = append(gone, id)
+		}
+	}
+	s.RemoveTicketFiles(gone)
+	return len(gone), nil
 }

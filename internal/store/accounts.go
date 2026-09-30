@@ -413,6 +413,9 @@ func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 			return err
 		}
 	}
+	if err := deleteAccountTickets(ctx, tx, id); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
 	if err != nil {
 		return err
