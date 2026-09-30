@@ -234,7 +234,8 @@ func TestEveryRouteIsClosedToOtherTenants(t *testing.T) {
 			switch {
 			case !open:
 			case rule.reseller && !strings.Contains(who, "rita"):
-			case sc == scopeSite || sc == scopeAccount || sc == scopeJob:
+			case sc == scopeSite || sc == scopeAccount || sc == scopeJob || sc == scopeOwned:
+				// Owned resources ({id} "x" here) are nobody's either.
 				want = http.StatusNotFound
 			default:
 				skipped++ // not about someone else's resource: see the tests below
@@ -247,8 +248,9 @@ func TestEveryRouteIsClosedToOtherTenants(t *testing.T) {
 			checked++
 		}
 		// Only tenant routes without a site, account or job in their path
-		// (listing their own, their own user) are left to the tests below.
-		if skipped > 25 || checked+skipped != len(e.api.routes) {
+		// (listing their own, their own user) are left to the tests below
+		// (and to the features' own tests: invoicing_test.go…).
+		if skipped > 30 || checked+skipped != len(e.api.routes) {
 			t.Errorf("%s: %d routes checked, %d skipped of %d", who, checked, skipped, len(e.api.routes))
 		}
 	}

@@ -505,16 +505,25 @@ func serve(cfg *config.Config, node bool) error {
 	if !node {
 		mailr = &mailer.Service{Store: st, Log: log, PanelURL: panelURL, Brand: func(ctx context.Context) mailer.Brand {
 			b, err := svc.Branding(ctx)
-			if err != nil || !b.Enabled() {
-				return mailer.Brand{}
+			// Built-in billing's company (name, website, address) when set,
+			// else the panel's brand; the logo is the panel's.
+			out := bill.MailBrand(ctx)
+			if out.Name == "" {
+				if err != nil || !b.Enabled() {
+					return mailer.Brand{}
+				}
+				out = mailer.Brand{Name: b.Name, URL: b.URL}
 			}
-			out := mailer.Brand{Name: b.Name, URL: b.URL}
-			if v := b.LogoVersion(); v != "" {
+			if v := b.LogoVersion(); err == nil && v != "" {
 				out.LogoURL = panelURL + site.BrandLogoPath + "?v=" + v
 			}
 			return out
 		}}
 		go mailr.Run(ctx)
+		// Built-in billing: invoices, payments, the order form, and the
+		// automation (renewals, reminders, suspensions).
+		bill.Mailer, bill.Razorpay, bill.PanelURL = mailr, &billing.RazorpayAPI{}, panelURL
+		go bill.RunInvoicing(ctx)
 	}
 
 	// IP reputation: blocklists (saved, so a restart without network keeps

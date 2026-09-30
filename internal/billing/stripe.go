@@ -279,6 +279,11 @@ func (s *Service) HandleStripeWebhook(ctx context.Context, payload []byte, sigHe
 }
 
 func (s *Service) processStripe(ctx context.Context, cfg *StripeSettings, ev *stripeEvent) error {
+	// Payments of built-in billing's invoices first (stripe_checkout.go);
+	// the rest is the subscriptions' flow.
+	if handled, err := s.stripeInvoiceEvent(ctx, cfg, ev); handled || err != nil {
+		return err
+	}
 	obj := ev.Data.Object
 	switch ev.Type {
 	case "checkout.session.completed":
@@ -571,6 +576,13 @@ type StripeAPI struct {
 }
 
 func (a *StripeAPI) call(ctx context.Context, key, method, path string, form url.Values, out any) error {
+	return a.callIdem(ctx, key, "", method, path, form, out)
+}
+
+// callIdem is call with an Idempotency-Key ("": none): Stripe answers a
+// retried request with the first one's result instead of doing it again
+// (a charge or a refund whose answer was lost).
+func (a *StripeAPI) callIdem(ctx context.Context, key, idem, method, path string, form url.Values, out any) error {
 	base := a.Base
 	if base == "" {
 		base = "https://api.stripe.com"
@@ -588,6 +600,9 @@ func (a *StripeAPI) call(ctx context.Context, key, method, path string, form url
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
+	if idem != "" {
+		req.Header.Set("Idempotency-Key", idem)
+	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

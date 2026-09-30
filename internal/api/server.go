@@ -77,6 +77,8 @@ type Server struct {
 	Mailer *mailer.Service
 
 	guard loginGuard
+	// storeGuard limits the public order form per client (invoicing.go).
+	storeGuard loginGuard
 	// routes is every route registered through route(), in order.
 	routes []routeInfo
 	// measured: account ID -> last on-demand disk measurement.
