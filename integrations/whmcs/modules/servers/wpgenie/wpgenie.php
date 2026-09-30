@@ -50,6 +50,12 @@ function wpgenie_ConfigOptions()
             'Default' => 'customer',
             'Description' => 'A reseller account can create its own customer accounts',
         ],
+        'Burst pack (minutes)' => [
+            'Type' => 'text',
+            'Size' => '8',
+            'Default' => '600',
+            'Description' => 'Burst minutes the "Add burst minutes" button adds (they never expire)',
+        ],
     ];
 }
 
@@ -303,11 +309,43 @@ function wpgenie_AdminSingleSignOn(array $params)
     return wpgenie_ServiceSingleSignOn($params);
 }
 
+function wpgenie_AdminCustomButtonArray()
+{
+    return ['Add burst minutes' => 'AddBurstMinutes'];
+}
+
+/**
+ * wpgenie_AddBurstMinutes adds the product's burst pack to the account's
+ * credit: bought minutes, used once the plan's monthly ones are gone. Run it
+ * from an order hook to sell packs.
+ */
+function wpgenie_AddBurstMinutes(array $params)
+{
+    try {
+        $minutes = (int) ($params['configoption3'] ?? 0);
+        if ($minutes <= 0) {
+            throw new Exception('Set the product\'s "Burst pack (minutes)" option first');
+        }
+        $a = wpgenie_account($params);
+        wpgenie_api($params, 'POST', '/accounts/' . (int) $a['id'] . '/burst-credit', ['minutes' => $minutes]);
+        return 'success';
+    } catch (Exception $e) {
+        return $e->getMessage();
+    }
+}
+
 function wpgenie_ClientArea(array $params)
 {
     try {
         $a = wpgenie_account($params);
         $u = wpgenie_api($params, 'GET', '/accounts/' . (int) $a['id'] . '/usage');
+        $b = wpgenie_api($params, 'GET', '/accounts/' . (int) $a['id'] . '/burst');
+        $burst = '';
+        if (!empty($b['allowed'])) {
+            $burst = !empty($b['unlimited']) ? number_format($b['used']) . ' used (unlimited)'
+                : number_format($b['remaining']) . ' left (' . number_format(max(0, $b['included'] - $b['used'])) . ' of '
+                    . number_format($b['included']) . ' this month, ' . number_format($b['credit']) . ' bought)';
+        }
         $gb = 1024 * 1024 * 1024;
         $fmt = function ($used, $limit) use ($gb) {
             $text = number_format($used / $gb, 2) . ' GB';
@@ -321,6 +359,7 @@ function wpgenie_ClientArea(array $params)
                 'wpgSites' => $u['sites'] . ($u['max_sites'] > 0 ? ' of ' . $u['max_sites'] : ''),
                 'wpgDisk' => $fmt($u['disk_bytes'], $u['disk_limit_bytes']),
                 'wpgBandwidth' => $fmt($u['bandwidth_bytes'], $u['bandwidth_limit_bytes']),
+                'wpgBurst' => $burst,
             ],
         ];
     } catch (Exception $e) {

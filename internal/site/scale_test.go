@@ -197,7 +197,8 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.flushed = &[]string{}
 	h.svc = &Service{Cfg: cfg, Store: st, Runtime: h.rt, DB: h.db, Proxy: h.proxy,
-		Cache: fakeCache{h.flushed}, Log: slog.New(slog.DiscardHandler)}
+		Cache: fakeCache{h.flushed}, Log: slog.New(slog.DiscardHandler),
+		HostLoad: func() float64 { return -1 }} // the test machine's own load mustn't hold up scaling
 	ctx := context.Background()
 	site := &store.Site{ID: "s1", Name: "s1", PrimaryDomain: "a.test", PHPVersion: "8.3", FPMPort: 19000,
 		DBName: "wp_s1", Status: store.StatusActive, ShieldMode: "standard",

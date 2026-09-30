@@ -504,6 +504,14 @@ func (s *Service) sanitizeImport(st *store.Site) error {
 	if st.TargetCPU < MinTargetCPU || st.TargetCPU > MaxTargetCPU {
 		st.TargetCPU = 70
 	}
+	if !slices.Contains([]string{BurstOff, BurstAuto, BurstOn}, st.BurstMode) || !st.Autoscale {
+		// From an older version (autoscaling only), or burst without the
+		// autoscaling it runs on.
+		st.BurstMode, st.BurstUntil = BurstOff, time.Time{}
+		if st.Autoscale {
+			st.BurstMode = BurstAuto
+		}
+	}
 	if st.TargetWorkers != 0 && (st.TargetWorkers < MinTargetWorkers || st.TargetWorkers > MaxTargetWorkers) {
 		st.TargetWorkers = 0
 	}

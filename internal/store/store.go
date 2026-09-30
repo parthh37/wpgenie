@@ -625,6 +625,41 @@ var migrations = []string{
 	WHERE ',' || features || ',' LIKE '%,sftp,%' AND ',' || features || ',' NOT LIKE '%,files,%';`,
 	// Database access moved from Adminer to phpMyAdmin: plans keep it.
 	`UPDATE plans SET features = REPLACE(features, 'adminer', 'phpmyadmin');`,
+	// Burst: a site's extra instances under load, paid for in minutes.
+	// Autoscaled sites become automatic burst; existing plans get the
+	// feature with unlimited minutes (0), so nobody loses what they had.
+	`ALTER TABLE sites ADD COLUMN burst_mode TEXT NOT NULL DEFAULT 'off';
+	ALTER TABLE sites ADD COLUMN burst_until INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sites ADD COLUMN burst_paused INTEGER NOT NULL DEFAULT 0;
+	UPDATE sites SET burst_mode = 'auto' WHERE autoscale = 1;
+	CREATE TABLE burst_usage (
+		site_id     TEXT NOT NULL,
+		month_start INTEGER NOT NULL,
+		minutes     INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (site_id, month_start)
+	);
+	CREATE TABLE burst_reports (
+		site_id     TEXT NOT NULL,
+		node_id     TEXT NOT NULL,
+		month_start INTEGER NOT NULL,
+		minutes     INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (site_id, node_id, month_start)
+	);
+	CREATE TABLE burst_charges (
+		account_id  INTEGER NOT NULL,
+		site_id     TEXT NOT NULL,
+		month_start INTEGER NOT NULL,
+		minutes     INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (account_id, site_id, month_start)
+	);
+	ALTER TABLE plans ADD COLUMN burst_minutes INTEGER NOT NULL DEFAULT 0;
+	UPDATE plans SET features = CASE WHEN features = '' THEN 'burst' ELSE features || ',burst' END
+	WHERE ',' || features || ',' NOT LIKE '%,burst,%';
+	ALTER TABLE accounts ADD COLUMN burst_credit INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE account_usage ADD COLUMN burst_minutes INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE account_usage ADD COLUMN burst_from_credit INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE account_usage ADD COLUMN burst_credit_taken INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE account_usage ADD COLUMN burst_notified INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

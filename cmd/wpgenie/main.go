@@ -69,6 +69,10 @@ Usage:
                           [--target-workers PCT] [--target-ms MS]
                                         scale replicas with CPU use, PHP workers busy
                                         (queue included) and response time (0: off)
+  wpgenie site burst <site-id> [off|auto|on] [--hours N] [--base N]
+                                        extra instances under load, paid in burst
+                                        minutes: auto (when needed), on (now; --hours
+                                        then auto), off; no mode shows the status
   wpgenie site images <site-id> [status|avif,webp|webp|off|convert]
                                         serve uploads as AVIF/WebP (converted copies)
   wpgenie site insights <site-id> [--hours N] [--json] [--clear-errors]
@@ -486,8 +490,9 @@ func serve(cfg *config.Config, node bool) error {
 		hooks := &billing.Webhooks{Store: st, Log: log}
 		go hooks.Run(ctx)
 		bill = &billing.Service{Store: st, Sites: ops, Meter: ops, Usage: ops, Hooks: hooks, Stripe: &billing.StripeAPI{},
-			InWindow: svc.InMaintenanceWindow, Log: log}
+			Burst: ops, InWindow: svc.InMaintenanceWindow, Log: log}
 		go bill.RunUsage(ctx)
+		go bill.RunBurst(ctx)
 	}
 	panelURL := "http://" + cfg.ListenAddr // through an SSH tunnel
 	if cfg.PanelDomain != "" {
@@ -507,7 +512,18 @@ func serve(cfg *config.Config, node bool) error {
 	go countries.Run(ctx)
 
 	sh := shield.New(shield.Options{Secret: []byte(cfg.ShieldSecret), Sites: svc.ShieldLookup, Logger: log,
-		HealthToken: healthToken, Reputation: &iprep.Reputation{Lists: lists, Countries: countries}})
+		HealthToken: healthToken, Reputation: &iprep.Reputation{Lists: lists, Countries: countries},
+		// Automatic Under attack periods go in the site's activity (and are
+		// alerts: see the monitor's Attacks).
+		OnAttack: func(id string, active bool, a shield.AttackState) {
+			msg := "Attack over: " + a.Reason + ". Visitors are no longer checked."
+			if active {
+				msg = "Attack detected: " + a.Reason + ". Every visitor is checked until it's over."
+			}
+			if err := st.AddEvent(context.WithoutCancel(ctx), id, "shield", msg); err != nil && !errors.Is(err, store.ErrNotFound) {
+				log.Warn("recording an attack", "site", id, "err", err)
+			}
+		}})
 	if g, err := svc.GlobalLists(ctx); err != nil {
 		return err
 	} else {
@@ -556,6 +572,7 @@ func serve(cfg *config.Config, node bool) error {
 
 	go svc.RunCron(ctx)
 	go svc.RunAutoscaler(ctx)
+	go svc.RunBurst(ctx)
 	go svc.RunMaintenance(ctx)
 	go svc.RunCDN(ctx)
 	go svc.RunCDNRanges(ctx)
@@ -572,7 +589,7 @@ func serve(cfg *config.Config, node bool) error {
 
 	// Monitoring: Prometheus metrics (GET /metrics, with its own token) and
 	// alerts (uptime, certificates, disk, backups) by e-mail and webhooks.
-	mon := &monitor.Service{Store: st, Log: log, Version: version, Shield: sh, Load: svc.CPU,
+	mon := &monitor.Service{Store: st, Log: log, Version: version, Shield: sh, Load: svc.CPU, Attacks: sh.Attacks,
 		Probe: monitor.LocalProbe(svc.Prober), Hosts: monitor.LocalHost(cfg.DataDir, filepath.Dir(cfg.AccessLog))}
 	ing.Observer, ing.HealthToken = mon.ObserveTraffic, healthToken
 	// The panel watches every server (uptime through each node's Caddy,
@@ -653,7 +670,7 @@ func serve(cfg *config.Config, node bool) error {
 // always go through the same validation and code paths.
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|" +
+		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|burst|shield|updates|update|auto-update|scan|" +
 			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|phpmyadmin|wp|optimize|analyse")
 	}
 	switch args[0] {
@@ -682,6 +699,8 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return cacheCmd(cfg, args[1:])
 	case "autoscale":
 		return autoscaleCmd(cfg, args[1:])
+	case "burst":
+		return burstCmd(cfg, args[1:])
 	case "shield":
 		return shieldCmd(cfg, args[1:])
 	case "updates", "update", "auto-update", "scan", "plugins", "smtp", "events", "cdn", "images", "insights":

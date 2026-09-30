@@ -29,12 +29,13 @@ func TestMigrationAdminerToPHPMyAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
+	// (Every plan also gets burst, a later migration.)
 	a, err := st.GetPlan(context.Background(), "a")
-	if err != nil || !slices.Equal(a.Features, []string{"staging", "phpmyadmin", "sftp"}) {
+	if err != nil || !slices.Equal(a.Features, []string{"staging", "phpmyadmin", "sftp", "burst"}) {
 		t.Fatalf("%+v %v", a, err)
 	}
 	b, err := st.GetPlan(context.Background(), "b")
-	if err != nil || !slices.Equal(b.Features, []string{"backups"}) {
+	if err != nil || !slices.Equal(b.Features, []string{"backups", "burst"}) {
 		t.Fatalf("%+v %v", b, err)
 	}
 }

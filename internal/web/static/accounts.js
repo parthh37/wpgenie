@@ -4,9 +4,9 @@
 // with app.js and panels.js. Everything shown here is also enforced by the
 // server; hiding a button is only a convenience.
 
-const FEATURES = ['staging', 'backups', 'sftp', 'files', 'phpmyadmin', 'certificates', 'cdn', 'smtp'];
+const FEATURES = ['staging', 'backups', 'sftp', 'files', 'phpmyadmin', 'certificates', 'cdn', 'smtp', 'burst'];
 const EVENTS = ['account.created', 'account.suspended', 'account.unsuspended', 'account.terminated',
-  'account.payment_failed', 'plan.changed', 'usage.threshold', 'site.created', 'site.deleted'];
+  'account.payment_failed', 'plan.changed', 'usage.threshold', 'burst.threshold', 'site.created', 'site.deleted'];
 
 loaders.accounts = loadAccounts;
 loaders.plans = loadPlans;
@@ -24,21 +24,32 @@ function usageRow(label, used, limit, fmt) {
   return h('div', { class: 'usage-row' }, h('span', { class: 'small' }, label), meter, h('span', { class: 'small muted' }, text));
 }
 
-function usageBars(u) {
+// usageBars shows an account's month; b is its burst balance (optional).
+function usageBars(u, b) {
   return h('div', {},
     h('p', { class: 'muted small' }, `${new Date(u.month_start).toLocaleDateString([], { month: 'long', year: 'numeric', timeZone: 'UTC' })}` +
       (u.includes_customers ? ' · totals include every customer account' : '')),
     usageRow('Sites', u.sites, u.max_sites, String),
     usageRow('Disk', u.disk_bytes, u.disk_limit_bytes, fmtBytes),
     usageRow('Bandwidth', u.bandwidth_bytes, u.bandwidth_limit_bytes, fmtBytes),
+    b && b.allowed ? burstRow(b) : null,
     u.per_site.length ? table(['Site', 'Files', 'Database', 'Bandwidth', 'Measured'], u.per_site.map((s) => [
       SITES.get(s.site_id)?.primary_domain || s.site_id, fmtBytes(s.files_bytes), fmtBytes(s.db_bytes), fmtBytes(s.bandwidth_bytes),
       s.measured_at ? fmtTime(s.measured_at) : 'not yet'])) : null);
 }
 
+// burstRow: burst minutes used this month against the plan's, and the
+// bought minutes left.
+function burstRow(b) {
+  const row = usageRow('Burst minutes', b.used, b.unlimited ? 0 : b.included, fmtNum);
+  if (b.credit) row.lastChild.textContent += ` · ${fmtNum(b.credit)} extra`;
+  return row;
+}
+
 function planSummary(p) {
   return `${limitText(p.max_sites, ' sites')} · ${limitText(p.disk_mb, ' MB disk')} · ${limitText(p.bandwidth_gb, ' GB/month')} · ` +
     `per site ${limitText(p.max_replicas, ' replicas')} × ${limitText(p.max_memory_mb, ' MB')}, ${limitText(p.max_cpus, ' CPU')}` +
+    (p.features.includes('burst') ? ` · burst ${limitText(p.burst_minutes, ' min/month')}` : '') +
     (p.features.length ? ` · ${p.features.join(', ')}` : '');
 }
 
@@ -62,7 +73,7 @@ async function loadAccountPlan() {
   const box = $('#account-plan');
   if (!acct.account) { box.replaceChildren(); return; }
   const a = acct.account;
-  const u = await api('GET', `/accounts/${a.id}/usage`);
+  const [u, b] = await Promise.all([api('GET', `/accounts/${a.id}/usage`), api('GET', `/accounts/${a.id}/burst`).catch(() => null)]);
   const measure = h('button', { class: 'ghost' }, 'Measure disk now');
   measure.addEventListener('click', async () => {
     measure.disabled = true;
@@ -74,7 +85,7 @@ async function loadAccountPlan() {
     a.effectively_suspended ? h('p', { class: 'suspended small' }, 'This account is suspended: its sites show a "temporarily unavailable" page ' +
       'and nothing can be changed. Contact your provider.') : null,
     h('p', { class: 'muted small' }, planSummary(a.limits)),
-    usageBars(u), h('div', { class: 'actions' }, measure)));
+    usageBars(u, b), h('div', { class: 'actions' }, measure)));
 }
 
 // Deferred scripts run once the document is parsed, before app.js's init.
@@ -143,8 +154,8 @@ async function createAccount(e) {
 }
 
 async function showAccountDetail(id) {
-  const [a, u, events] = await Promise.all([api('GET', `/accounts/${id}`), api('GET', `/accounts/${id}/usage`),
-    api('GET', `/accounts/${id}/events?limit=20`)]);
+  const [a, u, events, burst] = await Promise.all([api('GET', `/accounts/${id}`), api('GET', `/accounts/${id}/usage`),
+    api('GET', `/accounts/${id}/events?limit=20`), api('GET', `/accounts/${id}/burst`).catch(() => null)]);
   const own = isTenant() && ME.account_id === a.id; // a reseller's own account: read-only here
   const canManage = isAdmin() || (ME.role === 'reseller' && !own);
   const box = $('#account-detail');
@@ -184,6 +195,16 @@ async function showAccountDetail(id) {
     }
   }
   actions.push(act('Measure disk now', () => api('POST', `/accounts/${id}/usage/measure`)));
+  if (isAdmin() && burst && burst.allowed && !burst.unlimited) {
+    actions.push(act('Add burst minutes…', async () => {
+      const n = await askText(`${a.name} has ${fmtNum(burst.remaining)} burst minutes left (${fmtNum(burst.credit)} of them bought). ` +
+        'Bought minutes never expire and are used once the month\'s are gone. A negative number takes minutes away.',
+      { title: 'Add burst minutes', label: 'Minutes', type: 'number', value: '600', ok: 'Add' });
+      if (!n || !Number(n)) throw new Error('Cancelled');
+      await api('POST', `/accounts/${id}/burst-credit`, { minutes: Math.trunc(Number(n)) });
+      notify(`${fmtNum(Math.trunc(Number(n)))} burst minutes added to ${a.name}`);
+    }));
+  }
 
   let planPicker = null;
   if (canManage) {
@@ -229,7 +250,7 @@ async function showAccountDetail(id) {
     h('p', { class: 'muted small' }, `Plan ${a.plan.name}: ${planSummary(a.limits)}`),
     table(['', ''], [['Email', a.email || '–'], ['Reseller', a.parent_name || '–'], ['WHMCS service', a.whmcs_service_id || '–'],
       ['Stripe customer', a.stripe_customer_id || '–'], ['Created', fmtTime(a.created_at)]]),
-    usageBars(u),
+    usageBars(u, burst),
     planPicker,
     h('div', { class: 'actions' }, ...actions),
     users.length || canManage ? h('h2', {}, 'Users') : null,
@@ -258,7 +279,8 @@ async function loadPlans() {
 
 function fillPlanForm(p) {
   const f = $('#plan-form');
-  for (const k of ['id', 'name', 'max_sites', 'disk_mb', 'bandwidth_gb', 'max_replicas', 'max_memory_mb', 'max_cpus', 'max_domains', 'overage']) {
+  for (const k of ['id', 'name', 'max_sites', 'disk_mb', 'bandwidth_gb', 'max_replicas', 'max_memory_mb', 'max_cpus', 'max_domains',
+    'burst_minutes', 'overage']) {
     f[k].value = p[k];
   }
   f.backup_repos.value = p.backup_repos.join(', ');
@@ -275,7 +297,8 @@ async function savePlan(e) {
   const body = {
     id: f.id.value.trim(), name: f.name.value.trim(), max_sites: num('max_sites'), disk_mb: num('disk_mb'),
     bandwidth_gb: num('bandwidth_gb'), max_replicas: num('max_replicas'), max_memory_mb: num('max_memory_mb'),
-    max_cpus: num('max_cpus'), max_domains: num('max_domains'), overage: f.overage.value, resellable: f.resellable.checked,
+    max_cpus: num('max_cpus'), max_domains: num('max_domains'), burst_minutes: num('burst_minutes'),
+    overage: f.overage.value, resellable: f.resellable.checked,
     features: [...f.querySelectorAll('input[name=feature]:checked')].map((c) => c.value),
     backup_repos: splitList(f.backup_repos.value),
   };

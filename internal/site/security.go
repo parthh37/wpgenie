@@ -16,13 +16,16 @@ import (
 // current value, so older clients that only send mode and block_ai_bots
 // don't switch the WAF off by omission.
 type ShieldInput struct {
-	Mode        shield.Mode `json:"mode"`
-	BlockAIBots bool        `json:"block_ai_bots"`
-	WAF         *bool       `json:"waf,omitempty"`
-	AdminAllow  *[]string   `json:"admin_allow,omitempty"`
-	TrustedIPs  *[]string   `json:"trusted_ips,omitempty"`
-	DenyIPs     *[]string   `json:"deny_ips,omitempty"`
-	XMLRPC      *bool       `json:"xmlrpc,omitempty"`
+	Mode shield.Mode `json:"mode"`
+	// Level applies a protection level (basic, recommended, strict) to
+	// the settings this input doesn't set itself.
+	Level       string    `json:"level,omitempty"`
+	BlockAIBots bool      `json:"block_ai_bots"`
+	WAF         *bool     `json:"waf,omitempty"`
+	AdminAllow  *[]string `json:"admin_allow,omitempty"`
+	TrustedIPs  *[]string `json:"trusted_ips,omitempty"`
+	DenyIPs     *[]string `json:"deny_ips,omitempty"`
+	XMLRPC      *bool     `json:"xmlrpc,omitempty"`
 	// Rate limits and challenge difficulty; 0 restores the server default.
 	RateRPS       *float64  `json:"rate_rps,omitempty"`
 	RateBurst     *int      `json:"rate_burst,omitempty"`
@@ -73,6 +76,11 @@ func (s *Service) SetShield(ctx context.Context, id string, in ShieldInput) (*st
 	st, err := s.Store.GetSite(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if in.Level != "" {
+		if err := applyLevel(&in, in.Level); err != nil {
+			return nil, err
+		}
 	}
 	c := st.ShieldSettings()
 	c.Mode, c.BlockAIBots = string(in.Mode), in.BlockAIBots

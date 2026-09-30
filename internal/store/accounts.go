@@ -40,6 +40,9 @@ type Plan struct {
 	MaxMemoryMB int     `json:"max_memory_mb"`
 	MaxCPUs     float64 `json:"max_cpus"`
 	MaxDomains  int     `json:"max_domains"`
+	// BurstMinutes are the burst minutes included per account per UTC
+	// calendar month (0: unlimited; the "burst" feature allows burst at all).
+	BurstMinutes int64 `json:"burst_minutes"`
 	// Features are optional capabilities (see billing.Features); a tenant
 	// only gets those listed.
 	Features []string `json:"features"`
@@ -54,14 +57,14 @@ type Plan struct {
 }
 
 const planCols = `id, name, max_sites, disk_mb, bandwidth_gb, max_replicas, max_memory_mb, max_cpus, max_domains,
-	features, backup_repos, overage, resellable, created_at, updated_at`
+	features, backup_repos, overage, resellable, burst_minutes, created_at, updated_at`
 
 func scanPlan(row interface{ Scan(...any) error }) (*Plan, error) {
 	var p Plan
 	var features, repos string
 	var created, updated int64
 	err := row.Scan(&p.ID, &p.Name, &p.MaxSites, &p.DiskMB, &p.BandwidthGB, &p.MaxReplicas, &p.MaxMemoryMB,
-		&p.MaxCPUs, &p.MaxDomains, &features, &repos, &p.Overage, &p.Resellable, &created, &updated)
+		&p.MaxCPUs, &p.MaxDomains, &features, &repos, &p.Overage, &p.Resellable, &p.BurstMinutes, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -75,9 +78,9 @@ func scanPlan(row interface{ Scan(...any) error }) (*Plan, error) {
 
 func (s *Store) CreatePlan(ctx context.Context, p *Plan) error {
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans (`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plans (`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas, p.MaxMemoryMB, p.MaxCPUs, p.MaxDomains,
-		strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage, p.Resellable, now, now)
+		strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage, p.Resellable, p.BurstMinutes, now, now)
 	if isUnique(err) {
 		return ErrExists
 	}
@@ -87,9 +90,9 @@ func (s *Store) CreatePlan(ctx context.Context, p *Plan) error {
 func (s *Store) UpdatePlan(ctx context.Context, p *Plan) error {
 	return s.exec1(ctx, `UPDATE plans SET name = ?, max_sites = ?, disk_mb = ?, bandwidth_gb = ?, max_replicas = ?,
 		max_memory_mb = ?, max_cpus = ?, max_domains = ?, features = ?, backup_repos = ?, overage = ?, resellable = ?,
-		updated_at = ? WHERE id = ?`, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas, p.MaxMemoryMB,
-		p.MaxCPUs, p.MaxDomains, strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage,
-		p.Resellable, time.Now().Unix(), p.ID)
+		burst_minutes = ?, updated_at = ? WHERE id = ?`, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas,
+		p.MaxMemoryMB, p.MaxCPUs, p.MaxDomains, strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage,
+		p.Resellable, p.BurstMinutes, time.Now().Unix(), p.ID)
 }
 
 func (s *Store) GetPlan(ctx context.Context, id string) (*Plan, error) {
@@ -157,26 +160,29 @@ type Account struct {
 	Status string `json:"status"`
 	// SuspendReason is who suspended it: admin, billing, overage or
 	// reseller (only that party, or an administrator, lifts it).
-	SuspendReason        string    `json:"suspend_reason,omitempty"`
-	PlanID               string    `json:"plan_id"`
-	ParentID             int64     `json:"parent_id,omitempty"`
-	Email                string    `json:"email,omitempty"`
-	WHMCSServiceID       string    `json:"whmcs_service_id,omitempty"`
-	StripeCustomerID     string    `json:"stripe_customer_id,omitempty"`
-	StripeSubscriptionID string    `json:"stripe_subscription_id,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-	SuspendedAt          time.Time `json:"suspended_at,omitzero"`
+	SuspendReason        string `json:"suspend_reason,omitempty"`
+	PlanID               string `json:"plan_id"`
+	ParentID             int64  `json:"parent_id,omitempty"`
+	Email                string `json:"email,omitempty"`
+	WHMCSServiceID       string `json:"whmcs_service_id,omitempty"`
+	StripeCustomerID     string `json:"stripe_customer_id,omitempty"`
+	StripeSubscriptionID string `json:"stripe_subscription_id,omitempty"`
+	// BurstCredit is burst minutes bought on top of the plan's monthly
+	// ones; they never expire and are used once the month's are gone.
+	BurstCredit int64     `json:"burst_credit"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	SuspendedAt time.Time `json:"suspended_at,omitzero"`
 }
 
 const accountCols = `id, name, kind, status, suspend_reason, plan_id, parent_id, email, whmcs_service_id,
-	stripe_customer_id, stripe_subscription_id, created_at, updated_at, suspended_at`
+	stripe_customer_id, stripe_subscription_id, burst_credit, created_at, updated_at, suspended_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (*Account, error) {
 	var a Account
 	var created, updated, suspended int64
 	err := row.Scan(&a.ID, &a.Name, &a.Kind, &a.Status, &a.SuspendReason, &a.PlanID, &a.ParentID, &a.Email,
-		&a.WHMCSServiceID, &a.StripeCustomerID, &a.StripeSubscriptionID, &created, &updated, &suspended)
+		&a.WHMCSServiceID, &a.StripeCustomerID, &a.StripeSubscriptionID, &a.BurstCredit, &created, &updated, &suspended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
