@@ -44,6 +44,7 @@ const (
 	EventAccountPaymentFailed  = "account.payment_failed"
 	EventPlanChanged           = "plan.changed"
 	EventUsageThreshold        = "usage.threshold"
+	EventBurstThreshold        = "burst.threshold"
 	EventSiteCreated           = "site.created"
 	EventSiteDeleted           = "site.deleted"
 	EventWebhookTest           = "webhook.test"
@@ -58,7 +59,7 @@ const (
 
 // Events lists the events endpoints can subscribe to.
 var Events = []string{EventAccountCreated, EventAccountSuspended, EventAccountUnsuspended, EventAccountTerminated,
-	EventAccountPaymentFailed, EventPlanChanged, EventUsageThreshold, EventSiteCreated, EventSiteDeleted}
+	EventAccountPaymentFailed, EventPlanChanged, EventUsageThreshold, EventBurstThreshold, EventSiteCreated, EventSiteDeleted}
 
 type Webhooks struct {
 	Store *store.Store

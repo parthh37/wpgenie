@@ -43,6 +43,7 @@ const (
 	KindDisk     = "disk"
 	KindBackup   = "backup"
 	KindNode     = "node"
+	KindAttack   = "attack"
 )
 
 const (
@@ -92,6 +93,9 @@ type Service struct {
 	Load func(siteID string) (site.CPUReading, bool)
 	// Shield is the request shield (metrics only; optional).
 	Shield ShieldStats
+	// Attacks lists sites in an automatic Under attack period (the
+	// shield's Attacks); each is an alert until it ends. nil: not watched.
+	Attacks func() map[string]shield.AttackState
 	// Notifier delivers notifications (e-mail, webhooks).
 	Notifier *Notifier
 
@@ -270,6 +274,10 @@ func (s *Service) Evaluate(ctx context.Context) error {
 			checked[KindNode] = true
 		}
 	}
+	if s.Attacks != nil {
+		findings = append(findings, attackFindings(s.Attacks(), live)...)
+		checked[KindAttack] = true
+	}
 	if backups, err := s.checkBackups(ctx, now, live); err != nil {
 		s.Log.Warn("monitor: backups", "err", err)
 	} else {
@@ -296,6 +304,21 @@ func (s *Service) Evaluate(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// attackFindings: a site under attack is a warning, not a page: the
+// shield already checks every visitor, and the owner has nothing to do.
+func attackFindings(attacks map[string]shield.AttackState, live []*store.Site) []finding {
+	out := make([]finding, 0, len(live))
+	for _, st := range live {
+		f := finding{key: KindAttack + ":" + st.ID, kind: KindAttack, siteID: st.ID, target: st.PrimaryDomain}
+		if a, ok := attacks[st.ID]; ok {
+			f.severity = SevWarning
+			f.message = "Under attack: " + a.Reason + ". Every visitor is checked automatically until it's over; nothing to do."
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // isLive: sites visitors rely on. Staging copies, sites being created or

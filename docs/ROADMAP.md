@@ -66,6 +66,9 @@ issue candidate once its phase starts.
 - [x] System cron (jailed) instead of page-view WP-Cron
 - [x] Per-site MariaDB connection limits
 - [x] CPU autoscaling (HPA-style, stabilization window, host-memory cap)
+- [x] Burst: autoscaling as customers see it (off / automatic / on now), ceiling computed from the plan,
+  the database and server load, billed in burst minutes (plan allowance + credit, paused at zero)
+- [x] Simple security: protection levels, automatic Under attack on floods
 - [x] Autoscale on PHP-FPM load (requests per worker, the listen queue included, read from the replica's socket
       table) and on the 95th percentile of PHP response times (from Caddy's log, only under load); the highest
       proposal of the three metrics wins

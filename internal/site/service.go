@@ -88,7 +88,12 @@ type Service struct {
 	// Latency reports sites' recent PHP response times (the analytics
 	// ingester), for autoscaling on them; nil: CPU and workers only.
 	Latency LatencySource
-	Log     *slog.Logger
+	// HostLoad reports the share of the server's CPUs in use (-1:
+	// unknown); nil: measured from /proc/stat. No site gets more instances
+	// while it is at hostBusyCPU.
+	HostLoad func() float64
+	hostCPU  hostCPU
+	Log      *slog.Logger
 	// Jobs runs long operations (create, backups, restores, clones) in the
 	// background; Backups is restic (see internal/backup); Images builds
 	// the PHP image of a version the first time a site switches to it.
@@ -215,7 +220,7 @@ func (b *siteBuild) rollback(cause error) {
 func newSite(domain, name string) *store.Site {
 	return &store.Site{
 		Name: name, PrimaryDomain: domain, PHPVersion: "8.3",
-		ShieldMode: string(shield.ModeStandard), BlockAIBots: true, WAF: true,
+		ShieldMode: string(shield.ModeAuto), BlockAIBots: true, WAF: true,
 		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
 		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(),

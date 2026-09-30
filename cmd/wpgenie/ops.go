@@ -49,6 +49,52 @@ func autoscaleCmd(cfg *config.Config, args []string) error {
 	return nil
 }
 
+func burstCmd(cfg *config.Config, args []string) error {
+	const usage = "usage: wpgenie site burst <site-id> [off|auto|on] [--hours N] [--base N]"
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New(usage)
+	}
+	id, rest := args[0], args[1:]
+	var in site.BurstInput
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		in.Mode, rest = rest[0], rest[1:]
+	}
+	fs := flag.NewFlagSet("burst", flag.ContinueOnError)
+	fs.IntVar(&in.Hours, "hours", 0, "with on: go back to auto after this many hours (0: stay on)")
+	fs.IntVar(&in.Base, "base", 0, "normal size in instances (0: keep)")
+	if err := fs.Parse(rest); err != nil || fs.NArg() > 0 {
+		return errors.New(usage)
+	}
+	if in.Mode != "" {
+		if err := call(cfg, "PUT", "/sites/"+id+"/burst", in, nil); err != nil {
+			return err
+		}
+	}
+	var b struct {
+		site.BurstStatus
+		Account *struct {
+			Unlimited bool  `json:"unlimited"`
+			Remaining int64 `json:"remaining"`
+		} `json:"account"`
+	}
+	if err := call(cfg, "GET", "/sites/"+id+"/burst", nil, &b); err != nil {
+		return err
+	}
+	fmt.Printf("Site %s: burst %s", id, b.Mode)
+	if !b.Until.IsZero() {
+		fmt.Printf(" until %s", b.Until.Local().Format("2006-01-02 15:04"))
+	}
+	fmt.Printf("; %d of up to %d instance(s) (normally %d); %d burst minute(s) this month", b.Replicas, b.Max, b.Base, b.Minutes)
+	switch {
+	case b.Paused:
+		fmt.Print("; paused: no minutes left")
+	case b.Account != nil && !b.Account.Unlimited:
+		fmt.Printf("; the account has %d left", b.Account.Remaining)
+	}
+	fmt.Println(".")
+	return nil
+}
+
 type listFlag struct {
 	v   *[]string
 	set bool

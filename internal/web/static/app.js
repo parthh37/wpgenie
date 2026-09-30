@@ -137,17 +137,20 @@ function renderSite(site) {
   const saveShield = async () => {
     try { await api('PUT', `/sites/${site.id}/shield`, { mode: mode.value, block_ai_bots: ai.checked }); }
     catch (e) { showError(e); }
+    await load(); // the Security section shows the same settings
   };
   mode.addEventListener('change', saveShield);
   ai.addEventListener('change', saveShield);
 
   renderPerf(el, site);
   renderAutoscale(el, site);
+  renderBurst(el, site);
   renderCDN(el, site);
   renderOffload(el, site);
   renderCluster(el, site);
   renderInsights(el, site);
   renderSecurity(el, site);
+  renderProtection(el, site);
   renderPlugins(el, site);
   renderHealth(el, site);
   renderWordPress(el, site);
@@ -190,10 +193,8 @@ function fillSelect(sel, values, current, label) {
 
 const fmtMem = (mb) => (mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`);
 
+// renderPerf: the Advanced size controls and the caches (burst: simple.js).
 function renderPerf(el, site) {
-  $('.shape', el).textContent =
-    `· ${site.replicas} × ${fmtMem(site.memory_mb)} / ${site.cpus} CPU` +
-    (site.page_cache ? ' · page cache' : '') + (site.object_cache ? ' · object cache' : '');
   const replicas = $('.replicas', el), memory = $('.memory', el), cpus = $('.cpus', el);
   fillSelect(replicas, [1, 2, 3, 4, 5, 6, 7, 8], site.replicas, (v) => String(v));
   fillSelect(memory, MEMORY_MB, site.memory_mb, fmtMem);
@@ -232,7 +233,6 @@ function renderPerf(el, site) {
   const images = $('.images', el), convert = $('.images-convert', el);
   images.value = (site.image_formats || []).join(',');
   convert.hidden = !images.value;
-  if (images.value) $('.shape', el).textContent += ' · ' + images.value.toUpperCase().replace(',', '/');
   images.addEventListener('change', async () => {
     images.disabled = true;
     try {
@@ -354,6 +354,7 @@ async function loadStats(site) {
     set('blocked', fmtNum(s.totals.blocked));
     set('bot_hits', fmtNum(s.totals.bot_hits));
     siteStatsLoaded(site.id, s, el);
+    loadAttack(el, site);
   } catch (e) { /* stats are best-effort */ }
   loadCPU(site);
 }
@@ -365,7 +366,7 @@ async function loadCPU(site) {
     if (!el) return;
     const c = m.cpu;
     $('[data-k="cpu"]', el).textContent = c ? `${c.percent}%` : '–';
-    const parts = c ? [`CPU ${c.percent}% of each replica's allowance across ${c.replicas} replica(s)`] : [];
+    const parts = c ? [`CPU ${c.percent}% of each instance's allowance across ${c.replicas} instance(s)`] : [];
     if (c && c.workers_percent != null) parts.push(`PHP workers ${c.workers_percent}% busy` + (c.queued ? `, ${c.queued} request(s) waiting` : ''));
     if (c && c.p95_ms != null) parts.push(`95% of the last minute's ${c.responses} responses within ${Math.round(c.p95_ms)} ms`);
     $('.cpu-line', el).textContent = c ? `${parts.join(' · ')}; sampled ${fmtTime(c.at)}.` : '';
@@ -382,10 +383,7 @@ function renderAutoscale(el, site) {
   // Suggest room to grow when turning it on; the server enforces its own limit.
   max.value = site.autoscale ? site.max_replicas : Math.max(site.replicas, site.max_replicas, 2);
   target.value = site.target_cpu;
-  if (site.autoscale) {
-    $('.replicas', el).disabled = true;
-    $('.shape', el).textContent += ` · autoscaling ${site.min_replicas}–${site.max_replicas}`;
-  }
+  if (site.autoscale) $('.replicas', el).disabled = true; // the normal size is Min
   const save = $('.as-save', el);
   save.addEventListener('click', async () => {
     save.disabled = true;
@@ -394,7 +392,7 @@ function renderAutoscale(el, site) {
         enabled: on.checked, min_replicas: Number(min.value), max_replicas: Number(max.value), target_cpu: Number(target.value),
         target_workers: Number(workers.value || 0), target_response_ms: Number(ms.value || 0),
       });
-      notify(on.checked ? `Autoscaling ${min.value}–${max.value} replicas` : 'Autoscaling off');
+      notify(on.checked ? `Scaling between ${min.value} and ${max.value} instances` : 'Automatic scaling off');
       await load();
     } catch (e) { showError(e); save.disabled = false; }
   });
@@ -416,11 +414,6 @@ function renderSecurity(el, site) {
   f('burst').value = site.rate_burst || 0;
   f('login-rate').value = site.login_per_min || 0;
   f('difficulty').value = site.challenge_bits || 0;
-  const parts = [`WAF ${site.waf ? 'on' : 'off'}`];
-  if (site.body_waf && site.body_waf !== 'off') parts.push(`bodies: ${site.body_waf === 'detect' ? 'log only' : 'block'}`);
-  if (site.admin_allow.length) parts.push('admin allowlist');
-  if (site.country_mode && site.country_mode !== 'off') parts.push(`countries: ${site.country_mode} ${site.countries.join(' ')}`);
-  f('sec-summary').textContent = '· ' + parts.join(' · ');
   const note = f('waf-note');
   if (site.body_waf === 'detect') note.textContent = 'Log only: matches appear under Security → Recent blocks as "detect". Switch to Block once nothing legitimate shows up there.';
   const save = f('sec-save');
@@ -435,7 +428,7 @@ function renderSecurity(el, site) {
         rate_rps: Number(f('rate').value || 0), rate_burst: Number(f('burst').value || 0),
         login_per_min: Number(f('login-rate').value || 0), challenge_bits: Number(f('difficulty').value || 0),
       });
-      notify(`Security settings saved for ${site.primary_domain}`);
+      notify(`Advanced security settings saved for ${site.primary_domain}`);
       await load();
     } catch (e) { showError(e); save.disabled = false; }
   });
@@ -693,6 +686,12 @@ setInterval(() => {
   if ($('#app').hidden || !ME) return;
   document.querySelectorAll('#sites [data-id]').forEach((el) => loadCPU({ id: el.dataset.id }));
 }, 15000);
+
+// An attack starts and ends by itself: look again every minute.
+setInterval(() => {
+  if ($('#app').hidden || !ME) return;
+  document.querySelectorAll('#sites [data-id][data-status="active"]').forEach((el) => loadAttack(el, { id: el.dataset.id }));
+}, 60000);
 
 // After every deferred script (accounts.js adds sign-on links) has run.
 document.addEventListener('DOMContentLoaded', init);

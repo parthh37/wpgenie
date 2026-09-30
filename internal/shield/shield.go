@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -102,6 +103,11 @@ type Options struct {
 	HealthToken string
 	// Reputation, if set, provides IP blocklists and country lookups.
 	Reputation Reputation
+	// OnAttack, if set, is told when a site in ModeAuto enters (active) or
+	// leaves an automatic Under attack period, including by EndAttack; on
+	// the end, st.Until is when it ended. Calls come from a goroutine of
+	// their own, in order, and may be slow without holding up requests.
+	OnAttack func(siteID string, active bool, st AttackState)
 
 	Logger *slog.Logger
 }
@@ -113,8 +119,14 @@ type Shield struct {
 	verifier *crawlerVerifier
 	bans     *banList
 	events   *eventLog
+	attacks  *attackDetector
 	global   atomic.Pointer[Global]
 	now      func() time.Time
+
+	// OnAttack deliveries waiting for the callback goroutine (attack.go).
+	cbMu      sync.Mutex
+	cbQueue   []attackChange
+	cbRunning bool
 
 	// decisions counts verdicts since start, by Verdict (metrics).
 	decisions [4]atomic.Uint64
@@ -136,7 +148,7 @@ func New(o Options) *Shield {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
-	return &Shield{
+	s := &Shield{
 		o:        o,
 		limiter:  newRateLimiter(),
 		login:    newRateLimiter(),
@@ -145,12 +157,15 @@ func New(o Options) *Shield {
 		events:   newEventLog(500),
 		now:      time.Now,
 	}
+	s.attacks = newAttackDetector(s.attackChanged)
+	return s
 }
 
 // SetGlobal replaces the server-wide allow and deny lists.
 func (s *Shield) SetGlobal(g Global) { s.global.Store(&g) }
 
-// Run sweeps idle rate-limit buckets until ctx is cancelled.
+// Run sweeps idle rate-limit buckets and ends automatic attacks on sites
+// that went quiet, until ctx is cancelled.
 func (s *Shield) Run(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
@@ -162,6 +177,7 @@ func (s *Shield) Run(ctx context.Context) {
 			s.limiter.sweep(now)
 			s.login.sweep(now)
 			s.bans.sweep(now)
+			s.checkAttacks(s.now())
 		}
 	}
 }
@@ -214,6 +230,14 @@ func (s *Shield) CheckHandler() http.Handler {
 			w.WriteHeader(http.StatusOK) // skip the DNS lookups and rate limit accounting
 			return
 		}
+		// Every judged request counts towards flood detection, whatever the
+		// verdict: a flood the shield refuses is still a flood.
+		traffic, flooded := s.attacks.record(site.ID, site.Mode == ModeAuto, now)
+		if flooded && site.Mode == ModeAuto {
+			// Decide sees the effective mode; the challenge gets Under
+			// attack's difficulty too.
+			sig.Mode, sig.AutoAttack, site.Mode = ModeUnderAttack, true, ModeUnderAttack
+		}
 		sig.Banned = s.bans.banned(banKey, now)
 		sig.Class = s.Classify(r.Context(), ip, ua)
 		sig.HasPass = s.validPass(r, site.ID, ip, ua, now)
@@ -246,6 +270,13 @@ func (s *Shield) CheckHandler() http.Handler {
 
 		v := Decide(sig)
 		s.decisions[v].Add(1)
+		if floodRefusal(sig, v) {
+			client := banKey
+			if client == "" {
+				client = ip
+			}
+			traffic.refuse(client)
+		}
 		if v != Allow {
 			w.Header().Set(VerdictHeader, v.String())
 			path, _, _ := strings.Cut(uri, "?")
@@ -355,6 +386,8 @@ func reasonFor(s Signals, v Verdict) string {
 		return "login_rate_limit"
 	case s.RateExceeded:
 		return "rate_limit"
+	case s.Mode == ModeUnderAttack && s.AutoAttack:
+		return "under_attack_auto"
 	case s.Mode == ModeUnderAttack:
 		return "under_attack"
 	case s.Country != Allow:

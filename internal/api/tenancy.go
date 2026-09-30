@@ -72,6 +72,7 @@ var tenantRoutes = map[string]tenantRule{
 	"GET /api/v1/php":                                  anyTenant,
 	"GET /api/v1/dns-check":                            anyTenant, // public DNS; no server names
 	"GET /api/v1/security/events":                      anyTenant, // filtered to their sites
+	"GET /api/v1/security/levels":                      anyTenant,
 	"GET /api/v1/jobs":                                 anyTenant, // filtered to their sites and jobs
 	"GET /api/v1/jobs/{id}":                            anyTenant,
 	"DELETE /api/v1/jobs/{id}/secret":                  anyTenant,
@@ -83,6 +84,7 @@ var tenantRoutes = map[string]tenantRule{
 	"POST /api/v1/accounts/{id}/unsuspend":             resellerKids,
 	"POST /api/v1/accounts/{id}/terminate":             resellerKids,
 	"GET /api/v1/accounts/{id}/usage":                  anyTenant,
+	"GET /api/v1/accounts/{id}/burst":                  anyTenant,
 	"POST /api/v1/accounts/{id}/usage/measure":         anyTenant,
 	"GET /api/v1/accounts/{id}/events":                 anyTenant,
 	"GET /api/v1/accounts/{id}/users":                  resellerOnly,
@@ -102,7 +104,11 @@ var tenantRoutes = map[string]tenantRule{
 	"PUT /api/v1/sites/{id}/resources":                        anyTenant, // within the plan
 	"PUT /api/v1/sites/{id}/cache":                            anyTenant,
 	"POST /api/v1/sites/{id}/cache/purge":                     anyTenant,
-	"PUT /api/v1/sites/{id}/autoscale":                        anyTenant, // within the plan
+	"PUT /api/v1/sites/{id}/autoscale":                        feature(billing.FeatureBurst), // within the plan
+	"GET /api/v1/sites/{id}/burst":                            anyTenant,
+	"PUT /api/v1/sites/{id}/burst":                            feature(billing.FeatureBurst), // within the plan
+	"GET /api/v1/sites/{id}/attack":                           anyTenant,
+	"DELETE /api/v1/sites/{id}/attack":                        anyTenant,
 	"GET /api/v1/sites/{id}/events":                           anyTenant,
 	"GET /api/v1/sites/{id}/metrics":                          anyTenant,
 	"GET /api/v1/sites/{id}/updates":                          anyTenant,

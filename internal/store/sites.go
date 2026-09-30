@@ -96,6 +96,14 @@ type Site struct {
 	// drive autoscaling; 0 turns either off.
 	TargetWorkers    int `json:"target_workers"`
 	TargetResponseMS int `json:"target_response_ms"`
+	// Burst is how the site gets extra instances under load, paid for in
+	// burst minutes: off, auto (only while the load needs them) or on
+	// (at least one extra instance until BurstUntil, zero: until turned
+	// off). BurstPaused: the site's account has no minutes left, so it
+	// stays at its normal size (MinReplicas) until it does.
+	BurstMode   string    `json:"burst_mode"`
+	BurstUntil  time.Time `json:"burst_until,omitzero"`
+	BurstPaused bool      `json:"burst_paused"`
 	// AutoUpdate is the nightly WordPress update policy: off, security or all.
 	AutoUpdate string `json:"auto_update"`
 	// SMTP: WordPress sends its mail through the WPGenie mail server.
@@ -117,7 +125,8 @@ const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, stat
 	autoscale, min_replicas, max_replicas, target_cpu, auto_update, smtp,
 	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
 	country_mode, countries, country_action, body_waf, parent_id, php_settings,
-	cache_mobile, image_formats, target_workers, target_response_ms, optimize, created_at, updated_at`
+	cache_mobile, image_formats, target_workers, target_response_ms, optimize, burst_mode, burst_until, burst_paused,
+	created_at, updated_at`
 
 // PHPSettings are per-site PHP limits. Zero means the image default
 // (images/php/php.ini).
@@ -130,14 +139,15 @@ type PHPSettings struct {
 
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
-	var created, updated int64
+	var created, updated, burstUntil int64
 	var adminAllow, trusted, deny, countries, php, images, optimize string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
 		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
 		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php,
-		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &optimize, &created, &updated)
+		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &optimize, &s.BurstMode, &burstUntil,
+		&s.BurstPaused, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -150,6 +160,9 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	s.Optimize = splitList(optimize)
 	if err := json.Unmarshal([]byte(php), &s.PHP); err != nil {
 		return nil, err
+	}
+	if burstUntil > 0 {
+		s.BurstUntil = time.Unix(burstUntil, 0).UTC()
 	}
 	s.CreatedAt, s.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return &s, nil
@@ -193,11 +206,14 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if site.BodyWAF == "" {
 		site.BodyWAF = "off"
 	}
+	if site.BurstMode == "" {
+		site.BurstMode = "off"
+	}
 	php, err := json.Marshal(site.PHP)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 42)+`?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 45)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
@@ -207,7 +223,7 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
 		site.CountryAction, site.BodyWAF, site.ParentID, string(php),
 		site.CacheMobile, strings.Join(site.ImageFormats, ","), site.TargetWorkers, site.TargetResponseMS,
-		strings.Join(site.Optimize, ","), now, now)
+		strings.Join(site.Optimize, ","), site.BurstMode, unixOrZero(site.BurstUntil), site.BurstPaused, now, now)
 	if err != nil {
 		return err
 	}
@@ -519,10 +535,26 @@ func (s *Store) SetShield(ctx context.Context, id string, c ShieldSettings) erro
 		c.CountryMode, strings.Join(c.Countries, ","), c.CountryAction, c.BodyWAF, time.Now().Unix(), id)
 }
 
-func (s *Store) SetAutoscale(ctx context.Context, id string, on bool, minR, maxR, targetCPU, targetWorkers, targetMS int) error {
+// SetScaling records a site's autoscaling and burst together (one write:
+// they describe one decision).
+func (s *Store) SetScaling(ctx context.Context, id string, on bool, minR, maxR, targetCPU, targetWorkers, targetMS int,
+	burstMode string, burstUntil time.Time) error {
 	return s.exec1(ctx, `UPDATE sites SET autoscale = ?, min_replicas = ?, max_replicas = ?, target_cpu = ?,
-		target_workers = ?, target_response_ms = ?, updated_at = ? WHERE id = ?`,
-		on, minR, maxR, targetCPU, targetWorkers, targetMS, time.Now().Unix(), id)
+		target_workers = ?, target_response_ms = ?, burst_mode = ?, burst_until = ?, updated_at = ? WHERE id = ?`,
+		on, minR, maxR, targetCPU, targetWorkers, targetMS, burstMode, unixOrZero(burstUntil), time.Now().Unix(), id)
+}
+
+// SetBurst records a site's burst mode and when "on" ends (zero: when
+// turned off).
+func (s *Store) SetBurst(ctx context.Context, id, mode string, until time.Time) error {
+	return s.exec1(ctx, `UPDATE sites SET burst_mode = ?, burst_until = ?, updated_at = ? WHERE id = ?`,
+		mode, unixOrZero(until), time.Now().Unix(), id)
+}
+
+// SetBurstPaused records whether a site's burst is paused for want of
+// minutes.
+func (s *Store) SetBurstPaused(ctx context.Context, id string, paused bool) error {
+	return s.exec1(ctx, `UPDATE sites SET burst_paused = ?, updated_at = ? WHERE id = ?`, paused, time.Now().Unix(), id)
 }
 
 func (s *Store) SetPHP(ctx context.Context, id, version string, settings PHPSettings) error {

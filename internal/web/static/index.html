@@ -19,6 +19,7 @@
 <script src="/accounts.js" defer></script>
 <script src="/wordpress.js" defer></script>
 <script src="/files.js" defer></script>
+<script src="/simple.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -356,7 +357,9 @@
     <div class="card">
       <p class="muted small">Limits per account (sites, staging copies included; disk: files and databases; bandwidth per calendar month, UTC)
         and per site. 0 means unlimited (the server's own limits still apply). Resellers can give their customers resellable
-        plans that fit within their own.</p>
+        plans that fit within their own. <em>Burst</em> lets sites get extra instances under load, up to the replicas per site;
+        each minute a site runs above its normal size uses a burst minute. Minutes bought on top (an account's
+        <em>Add burst minutes</em>, or <code>POST /api/v1/accounts/{id}/burst-credit</code>) never expire.</p>
       <div id="plans"></div>
     </div>
     <form id="plan-form" class="card admin-only">
@@ -371,6 +374,7 @@
         <label>Memory per replica (MB)<input name="max_memory_mb" type="number" min="0" value="512"></label>
         <label>CPUs per replica<input name="max_cpus" type="number" min="0" step="0.25" value="1"></label>
         <label>Domains per site<input name="max_domains" type="number" min="0" value="5"></label>
+        <label>Burst minutes / month <span class="muted">(with the burst feature)</span><input name="burst_minutes" type="number" min="0" value="600"></label>
         <label>Past the bandwidth
           <select name="overage"><option value="notify">Notify</option><option value="suspend">Suspend the account</option></select>
         </label>
@@ -563,18 +567,21 @@
       <div class="spark"></div>
       <div class="ov-controls">
         <h2>Protection</h2>
+        <div class="attack-banner" role="status" hidden></div>
         <div class="controls">
-          <label>Shield
+          <label>Visitor check
             <select class="mode">
-              <option value="off">Off</option>
-              <option value="standard">Standard</option>
-              <option value="under_attack">Under attack</option>
+              <option value="auto">Automatic</option>
+              <option value="standard">Suspicious visitors only</option>
+              <option value="under_attack">Everyone (under attack)</option>
+              <option value="off">Off: no protection</option>
             </select>
           </label>
           <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
           <button class="danger ghost delete can-create">Delete site</button>
         </div>
-        <p class="muted small"><em>Under attack</em> challenges every visitor with a proof-of-work page a browser solves in about a second; scripts can't.</p>
+        <p class="muted small"><em>Automatic</em> checks suspicious visitors, and every visitor while an attack is detected: a quick
+          check in the browser, no CAPTCHA puzzle. More under Security.</p>
       </div>
     </div>
     <details class="perf analysis">
@@ -594,26 +601,58 @@
     </details>
     <details class="perf">
       <summary>Performance &amp; scaling <span class="muted small shape"></span></summary>
-      <div class="controls">
-        <label>Replicas<select class="replicas"></select></label>
-        <label>Memory / replica<select class="memory"></select></label>
-        <label>CPU / replica<select class="cpus"></select></label>
-        <button class="apply">Apply</button>
+      <div class="burst">
+        <h2>Burst</h2>
+        <p class="muted small">When lots of visitors arrive at once, your site gets extra copies of itself so it stays fast, then goes
+          back to normal. How many it gets depends on the traffic and on how busy the server is. You use burst minutes only
+          while extra copies are running.</p>
+        <div class="choices burst-modes" role="radiogroup" aria-label="Burst">
+          <label class="choice"><input type="radio" value="off"><span><strong>Off</strong>
+            <span class="muted small">Always the normal size. Uses no minutes.</span></span></label>
+          <label class="choice"><input type="radio" value="auto"><span><strong>Automatic <span class="badge">Recommended</span></strong>
+            <span class="muted small">Extra copies only while traffic needs them.</span></span></label>
+          <label class="choice"><input type="radio" value="on"><span><strong>On now</strong>
+            <span class="muted small">Extra copies right away: for a launch, a sale or a campaign.</span></span></label>
+        </div>
+        <div class="controls burst-on" hidden>
+          <label>Keep it on
+            <select class="burst-hours">
+              <option value="1">for 1 hour</option>
+              <option value="3" selected>for 3 hours</option>
+              <option value="24">for 24 hours</option>
+              <option value="0">until I turn it off</option>
+            </select>
+          </label>
+          <button class="burst-start">Start burst</button>
+        </div>
+        <div class="burst-status"></div>
       </div>
-      <p class="muted small">Replicas are rolled one set at a time with no downtime. Each replica gets the full memory and CPU shown.</p>
-      <div class="controls">
-        <label class="check"><input type="checkbox" class="autoscale"> Autoscale</label>
-        <label>Min<input type="number" class="as-min" min="1"></label>
-        <label>Max<input type="number" class="as-max" min="1"></label>
-        <label>Target CPU %<input type="number" class="as-target" min="20" max="95"></label>
-        <label>Workers busy % <span class="muted">(0 = off)</span><input type="number" class="as-workers" min="0" max="100"></label>
-        <label>Response ms <span class="muted">(p95, 0 = off)</span><input type="number" class="as-ms" min="0" max="30000" step="50"></label>
-        <button class="ghost as-save">Save autoscaling</button>
-      </div>
-      <p class="muted small">Replicas follow whichever target asks for the most. <em>Workers busy</em> counts requests waiting for a PHP worker too:
-        it catches sites that wait on slow APIs or queries while their CPU stays low. <em>Response ms</em> adds a replica while 95% of
-        PHP responses take longer and the site is busy.</p>
-      <p class="muted small cpu-line"></p>
+      <details class="advanced burst-adv">
+        <summary>Advanced: size and scaling targets</summary>
+        <div class="controls">
+          <label>Instances<select class="replicas"></select></label>
+          <label>Memory / instance<select class="memory"></select></label>
+          <label>CPU / instance<select class="cpus"></select></label>
+          <button class="apply">Apply</button>
+        </div>
+        <p class="muted small">Instances (PHP containers) are replaced one set at a time with no downtime. Each gets the full memory and
+          CPU shown. While scaling automatically, <em>Instances</em> is what runs now and <em>Min</em> is the normal size.</p>
+        <div class="controls">
+          <label class="check"><input type="checkbox" class="autoscale"> Scale automatically</label>
+          <label>Min<input type="number" class="as-min" min="1"></label>
+          <label>Max<input type="number" class="as-max" min="1"></label>
+          <label>Target CPU %<input type="number" class="as-target" min="20" max="95"></label>
+          <label>Workers busy % <span class="muted">(0 = off)</span><input type="number" class="as-workers" min="0" max="100"></label>
+          <label>Response ms <span class="muted">(p95, 0 = off)</span><input type="number" class="as-ms" min="0" max="30000" step="50"></label>
+          <button class="ghost as-save">Save</button>
+        </div>
+        <p class="muted small">This is what burst does underneath: <em>Min</em> is the normal size, and instances follow whichever target
+          asks for the most. <em>Workers busy</em> counts requests waiting for a PHP worker too: it catches sites that wait on slow
+          APIs or queries while their CPU stays low. <em>Response ms</em> adds an instance while 95% of PHP responses take longer
+          and the site is busy.</p>
+        <p class="muted small cpu-line"></p>
+      </details>
+      <h2>Speed</h2>
       <div class="controls">
         <label class="check"><input type="checkbox" class="page-cache"> Page cache</label>
         <label class="check"><input type="checkbox" class="cache-mobile"> Separate mobile cache</label>
@@ -746,54 +785,89 @@
     </details>
     <details class="perf sec">
       <summary>Security <span class="muted small sec-summary"></span></summary>
-      <div class="controls">
-        <label class="check"><input type="checkbox" class="waf"> Firewall (URLs and headers)</label>
-        <label>Request bodies (OWASP CRS)
-          <select class="body-waf">
-            <option value="off">Off</option>
-            <option value="detect">Log only</option>
-            <option value="block">Block</option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" class="xmlrpc"> Allow XML-RPC <span class="muted">(Jetpack, mobile apps)</span></label>
+      <div class="attack-banner" role="status" hidden></div>
+      <p class="sec-off st-warning small" hidden>Protection is off: nothing is checked or blocked on this site. Pick a visitor check
+        below to turn it on.</p>
+      <h2>Protection level</h2>
+      <div class="choices sec-levels" role="radiogroup" aria-label="Protection level">
+        <label class="choice"><input type="radio" value="basic"><span><strong>Basic</strong>
+          <span class="muted small">Blocks known attacks and never gets in a visitor's way. For shops and apps with unusual traffic.</span></span></label>
+        <label class="choice"><input type="radio" value="recommended"><span><strong>Recommended <span class="badge">Recommended</span></strong>
+          <span class="muted small">Firewall, login protection, and a check for suspicious visitors.</span></span></label>
+        <label class="choice"><input type="radio" value="strict"><span><strong>Strict</strong>
+          <span class="muted small">For sites that are attacked often: tighter limits, and known bad addresses are blocked.</span></span></label>
       </div>
-      <p class="muted small waf-note"></p>
-      <div class="grid">
-        <label>Admin allowlist <span class="muted">(only these IPs/CIDRs reach wp-admin; empty = anyone)</span><input class="admin-allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
-        <label>Trusted IPs <span class="muted">(bypass the shield: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
-        <label>Blocked IPs <span class="muted">(denied on this site)</span><input class="deny" placeholder="198.51.100.0/24"></label>
-      </div>
-      <div class="controls">
-        <label>IP blocklists
-          <select class="reputation">
-            <option value="off">Ignore</option>
-            <option value="challenge">Challenge listed clients</option>
-            <option value="block">Block listed clients</option>
-          </select>
-        </label>
-        <label>Countries
-          <select class="country-mode">
-            <option value="off">No country rule</option>
-            <option value="block">Rule applies to these countries</option>
-            <option value="allow">Rule applies to all others</option>
-          </select>
-        </label>
-        <label>Country codes<input class="countries" placeholder="CN, RU"></label>
-        <label>Rule
-          <select class="country-action">
-            <option value="block">Block</option>
-            <option value="challenge">Challenge</option>
-          </select>
-        </label>
+      <p class="muted small sec-custom" hidden>This site has custom settings (see Advanced). Choosing a level replaces them.</p>
+      <h2>Visitor check</h2>
+      <p class="muted small">A quick check that runs in the visitor's browser instead of a CAPTCHA: no puzzles or pictures to click.
+        People get through in about a second; bots don't.</p>
+      <div class="choices sec-check" role="radiogroup" aria-label="Visitor check">
+        <label class="choice"><input type="radio" value="auto"><span><strong>Automatic <span class="badge">Recommended</span></strong>
+          <span class="muted small">Suspicious visitors only, and everyone while an attack is detected.</span></span></label>
+        <label class="choice"><input type="radio" value="under_attack"><span><strong>Everyone</strong>
+          <span class="muted small">Every visitor, until you switch it back. For an attack in progress.</span></span></label>
+        <label class="choice"><input type="radio" value="standard"><span><strong>Suspicious visitors only</strong>
+          <span class="muted small">Never switches on for everyone by itself.</span></span></label>
       </div>
       <div class="controls">
-        <label>Requests / s <span class="muted">(0 = 10)</span><input type="number" class="rate" min="0" step="any"></label>
-        <label>Burst <span class="muted">(0 = 60)</span><input type="number" class="burst" min="0"></label>
-        <label>Logins / min <span class="muted">(0 = 6)</span><input type="number" class="login-rate" min="0" step="any"></label>
-        <label>Challenge bits <span class="muted">(0 = 16)</span><input type="number" class="difficulty" min="0" max="22"></label>
+        <label class="check"><input type="checkbox" class="sec-ai"> Block AI crawlers <span class="muted">(bots that copy your content to train AI)</span></label>
+        <label class="check"><input type="checkbox" class="xmlrpc"> Allow Jetpack and the WordPress app <span class="muted">(XML-RPC)</span></label>
       </div>
-      <p class="muted small">Per visitor address. Challenges are a proof-of-work page a browser solves in about a second; scripts can't.</p>
-      <div class="actions"><button class="ghost sec-save">Save security</button><button class="scan">Scan now</button></div>
+      <details class="advanced sec-adv">
+        <summary>Advanced: firewall rules, lists and limits</summary>
+        <div class="controls">
+          <label class="check"><input type="checkbox" class="waf"> Firewall (URLs and headers)</label>
+          <label>Request bodies (OWASP CRS)
+            <select class="body-waf">
+              <option value="off">Off</option>
+              <option value="detect">Log only</option>
+              <option value="block">Block</option>
+            </select>
+          </label>
+        </div>
+        <p class="muted small waf-note"></p>
+        <div class="grid">
+          <label>Admin allowlist <span class="muted">(only these IPs/CIDRs reach wp-admin; empty = anyone)</span><input class="admin-allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
+          <label>Trusted IPs <span class="muted">(bypass the shield: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
+          <label>Blocked IPs <span class="muted">(denied on this site)</span><input class="deny" placeholder="198.51.100.0/24"></label>
+        </div>
+        <div class="controls">
+          <label>IP blocklists
+            <select class="reputation">
+              <option value="off">Ignore</option>
+              <option value="challenge">Check listed visitors</option>
+              <option value="block">Block listed visitors</option>
+            </select>
+          </label>
+          <label>Countries
+            <select class="country-mode">
+              <option value="off">No country rule</option>
+              <option value="block">Rule applies to these countries</option>
+              <option value="allow">Rule applies to all others</option>
+            </select>
+          </label>
+          <label>Country codes<input class="countries" placeholder="CN, RU"></label>
+          <label>Rule
+            <select class="country-action">
+              <option value="block">Block</option>
+              <option value="challenge">Check</option>
+            </select>
+          </label>
+        </div>
+        <div class="controls">
+          <label>Requests / s <span class="muted">(0 = 10)</span><input type="number" class="rate" min="0" step="any"></label>
+          <label>Request bursts <span class="muted">(0 = 60)</span><input type="number" class="burst" min="0"></label>
+          <label>Logins / min <span class="muted">(0 = 6)</span><input type="number" class="login-rate" min="0" step="any"></label>
+          <label>Check difficulty, bits <span class="muted">(0 = 16)</span><input type="number" class="difficulty" min="0" max="22"></label>
+        </div>
+        <p class="muted small">Limits are per visitor address. The visitor check is a proof-of-work a browser solves in about a second;
+          each extra bit doubles the work.</p>
+        <div class="actions"><button class="ghost sec-save">Save advanced settings</button></div>
+      </details>
+      <h2>Vulnerability and hack scan</h2>
+      <p class="muted small">Checks what's installed against known vulnerabilities, and looks for signs of a break-in (changed WordPress
+        or plugin files, PHP hidden in uploads). Runs every night.</p>
+      <div class="actions"><button class="scan">Scan now</button></div>
       <div class="scan-report"></div>
     </details>
     <details class="perf plugins">

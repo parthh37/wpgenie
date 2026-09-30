@@ -52,6 +52,18 @@ check.
   challenged, because a challenge they can't solve would silently become a block (and challenging
   Googlebot de-indexes a site). *Under attack* challenges everyone but pass holders and verified
   crawlers.
+- *Automatic* (`auto`, new sites' mode) is Standard until the shield detects a flood
+  (`shield/attack.go`), then Under attack until 15 minutes without one. Per site, in memory:
+  requests in 10-second buckets over a sliding minute, against a baseline (a running average kept
+  only while not under attack); a flood is at least 1,200 requests a minute and 5× the baseline, or
+  30 different addresses refused for rate limits, bans or attack evidence in a minute (a distributed
+  flood keeps each client near its limit; blocks for being in a country or on a blocklist don't
+  count). Starts and ends are in the security log and the site's activity, and are a monitoring
+  alert; the owner can end one early ("It's over").
+- Protection levels (`site/protection.go`) are named sets of the strictness settings (the two WAFs,
+  blocklists, rate limits, challenge difficulty) so owners pick Basic, Recommended (new sites'
+  defaults) or Strict instead of tuning each; settings matching none show as custom. Lists, country
+  rules, XML-RPC and AI crawlers are left alone by a level.
 - WAF (`shield/inspect.go`): request inspection on what `forward_auth` sees (method, URI, headers,
   never the body) for path traversal, SQL injection, XSS, PHP/shell/JNDI injection, scanner probes
   (`.env`, backups, `phpunit`, plugin `readme.txt` version sniffing) and anonymous user enumeration.
@@ -433,6 +445,39 @@ to agree on all of them):
   window (≥ 20 responses), from Caddy's access log (the analytics ingester keeps the last minutes in
   memory). Above the target, one replica is added at a time, and only when the site is busy (CPU or
   workers ≥ 50 %): a slow page on idle workers is slow code or a slow database, which replicas can't fix.
+
+**Burst.** What customers see of autoscaling. A site has a normal size (`min_replicas`) and a burst
+mode: *off*, *auto* (the autoscaler above, between the normal size and a ceiling) or *on* (at least one
+extra instance, more under load, optionally until a time, then back to auto). Nobody picks the ceiling:
+it is the plan's replicas per site and the server's `max_replicas`, lowered until the database
+connections fit (below); the host's free memory (above) and its overall CPU use are judged at each
+scale-up. While more than 85 % of the server's CPUs are busy (`/proc/stat`, per tick) no site gets
+extra instances: more containers on a saturated server only share out the same CPUs, and slow down
+every other site. Burst is only a narrower range for the autoscaler (`burstRange`): *on* raises the
+minimum by one, a pause lowers the maximum to the normal size, and the autoscaler moves the site into
+the range on its next tick, through the same blue/green reconcile. `PUT /sites/{id}/autoscale` still
+works and is automatic burst underneath.
+
+*Minutes.* A site is charged one burst minute for every minute it runs above its normal size,
+however many extra instances it has (flat, so customers can predict it). Minutes are counted where the
+site runs (`burst_usage`, per site and UTC month); every minute the panel copies other servers'
+counts (`burst_reports`, per server: a site that moved has minutes on each; a server that doesn't
+answer is counted from its own record next time) and charges each site's *new* minutes to the
+account owning it now, in `burst_charges`. For a month's first hour the previous month is charged
+too (its last minutes, a server unreachable at midnight). That ledger is never taken
+back: deleting a site or giving it to another account doesn't return its minutes, and a site given
+to an account later only brings its later minutes (staff sites are charged to account 0). A plan
+includes `burst_minutes` a month (0: unlimited; the `burst` feature lets tenants use burst at all);
+minutes beyond them come out of the account's `burst_credit` (bought, never expire;
+`POST /accounts/{id}/burst-credit`). Each month records how many minutes beyond the plan are
+settled (`burst_from_credit`) and how many of those the credit paid (`burst_credit_taken`), so
+settling a month again never takes credit twice, a bigger plan gives back only what was paid (plan
+changes can't make credit), and the minute or two a site bursts while its pause takes effect is
+forgiven, not taken from the next top-up. With nothing left, or a plan (or a reseller's) without
+burst, the account's sites are paused (`burst_paused`, sent to the server the site runs on, again at
+least hourly; pauses found on sites no account owns are lifted) and go back to their normal size;
+buying minutes or a new month resumes them within a minute. 80 % and 100 % of the month's minutes, and
+running out, are an account event and a `burst.threshold` webhook.
 
 **Database fairness.** Every busy worker holds a MariaDB connection and all sites share one server.
 Each site's DB user gets `MAX_USER_CONNECTIONS = replicas × workers + 5`, and a site may not be

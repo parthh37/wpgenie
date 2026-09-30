@@ -48,7 +48,8 @@ with one command.
 | ⏳ | Job queue: long operations run in the background with progress in the dashboard and CLI | ✅ |
 | ⚡ | Full-page cache served by Caddy (Brotli/gzip precompressed, mobile copies when a theme needs them, admin-bar purge), Redis object cache, system cron | ✅ |
 | 📈 | Scaling: per-site memory/CPU, replicas with zero-downtime rollouts, per-site DB connection limits | ✅ |
-| 🌡️ | **Autoscaling**: replicas follow CPU, busy PHP workers (queued requests included) and response times, between a min and max, capped by server memory | ✅ |
+| 🌡️ | **Burst**: off, automatic or on now (for a launch or a sale); a busy site gets extra instances by itself, as many as its plan, the database and the server's free memory and CPU allow, billed in burst minutes (plan allowance + bought top-ups; paused when they run out). Expert targets (CPU, busy PHP workers, response times) under Advanced | ✅ |
+| 🛡️ | **Simple security**: protection levels (Basic, Recommended, Strict) instead of firewall knobs; a browser check instead of a CAPTCHA, switched on for every visitor **automatically** while a flood is detected (and alerted), off again when it's over | ✅ |
 | 🖼️ | **Image optimisation**: AVIF/WebP copies of uploads, served at the same URL to browsers that accept them | ✅ |
 | 🔬 | **Performance insights**: response time percentiles, cache hit rate, slowest URLs, PHP errors by plugin/theme | ✅ |
 | ✉️ | **Mail**: mailboxes & aliases (docker-mailserver: Postfix, Dovecot, Rspamd), Roundcube webmail, automatic DKIM, DNS checks, WordPress mail via SMTP, outbound relay | ✅ |
@@ -85,8 +86,16 @@ wpgenie site cache <site-id> --page on --object on
 wpgenie site purge <site-id>
 ```
 
-Or let it scale itself: replicas are added when CPU use, busy PHP workers (waiting requests
-included) or response times pass their targets, and removed after five quiet minutes:
+Or let it scale itself with burst: extra instances while traffic needs them (automatic), or right
+away for a few hours (on); every minute above the normal size is a burst minute:
+
+```bash
+wpgenie site burst <site-id> auto
+wpgenie site burst <site-id> on --hours 3      # a launch: then back to automatic
+wpgenie site burst <site-id>                   # status and minutes used
+```
+
+Experts can still set the targets burst uses underneath (CPU, busy PHP workers, response time):
 
 ```bash
 wpgenie site autoscale <site-id> --on --min 1 --max 4 --target 70 --target-workers 80 --target-ms 800

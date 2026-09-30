@@ -53,7 +53,10 @@ var notForwarded = map[string]bool{
 	"POST /api/v1/sites/{id}/domains":     true,
 	"GET /api/v1/sites/{id}/dns-check":    true,
 	// Plan checks for tenants run here first (then forwardAfterChecks).
-	"PUT /api/v1/sites/{id}/autoscale":      true,
+	"PUT /api/v1/sites/{id}/autoscale": true,
+	"PUT /api/v1/sites/{id}/burst":     true,
+	// Burst minutes and accounts are the panel's.
+	"GET /api/v1/sites/{id}/burst":          true,
 	"PUT /api/v1/sites/{id}/resources":      true,
 	"PUT /api/v1/sites/{id}/backups/policy": true,
 	"POST /api/v1/sites/{id}/staging":       true,
