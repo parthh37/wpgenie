@@ -117,7 +117,11 @@ type WAFLog struct {
 	Path    string
 	MaxSize int64 // default 16 MB
 	Handle  func([]WAFEvent)
-	Log     *slog.Logger
+	// Tee, if set, gets every entry read too, whatever its host (log
+	// shipping: the file is truncated once read, so this is the only
+	// chance to keep it).
+	Tee func([]WAFEvent)
+	Log *slog.Logger
 
 	offset int64
 	inode  uint64
@@ -176,6 +180,9 @@ func (w *WAFLog) poll() error {
 		if json.Unmarshal(bytes.TrimSpace(line), &e) == nil {
 			events = append(events, e.Event())
 		}
+	}
+	if len(events) > 0 && w.Tee != nil {
+		w.Tee(events)
 	}
 	if len(events) > 0 && w.Handle != nil {
 		w.Handle(events)

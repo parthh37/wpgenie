@@ -34,6 +34,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/files"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
+	"github.com/parthh37/wpgenie/internal/logship"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/mailer"
 	"github.com/parthh37/wpgenie/internal/monitor"
@@ -255,7 +256,10 @@ func fatal(err error) {
 // (`wpgenie agent`): the same data plane for the sites placed on it, run
 // by the panel through the cluster listener instead of signed-in users.
 func serve(cfg *config.Config, node bool) error {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// The daemon's log goes to journald and, once log shipping is on, to
+	// the archive too (logTee is attached to its spool below).
+	logTee := logship.NewTee(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log := slog.New(logTee)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -569,6 +573,39 @@ func serve(cfg *config.Config, node bool) error {
 				sh.Record(shield.Event{Time: e.Time, Site: siteID, IP: e.IP, Verdict: verdict, Reason: e.Reason(), Path: e.Path})
 			}
 		}}
+
+	// Log shipping to S3-compatible storage (off until it's turned on in
+	// the panel): Vector ships what other programs write; the daemon
+	// spools what it reads and then truncates (PHP error logs, the WAF
+	// audit log), the shield's events, its own log and rows of its tables.
+	// Every server ships its own, named by its node ID.
+	ship := &logship.Service{Store: st, Docker: docker, Rclone: &offload.Rclone{Docker: docker, Image: cfg.RcloneImage},
+		Log: log, Panel: !node, Resync: svc.Sync,
+		Cfg: logship.Config{Dir: filepath.Join(cfg.DataDir, "logship"), Image: cfg.VectorImage, AccessLog: cfg.AccessLog},
+		Server: func() string {
+			if !node {
+				return "panel"
+			}
+			if id, _, ok := agent.Identity(); ok {
+				return id
+			}
+			return "unpaired"
+		}}
+	if !node {
+		ship.Cfg.MailLogDir = filepath.Join(cfg.DataDir, "mail", "logs")
+	}
+	if err := ship.Load(ctx); err != nil {
+		return fmt.Errorf("log shipping: %w", err)
+	}
+	logTee.Attach(ship.Spool())
+	sh.TeeEvents(ship.Security)
+	wafLog.Tee = ship.WAF
+	svc.PHPLogTee = ship.PHPErrors
+	if caddy, ok := svc.Proxy.(*proxy.Caddy); ok {
+		caddy.SetAccessLogKeep(ship.AccessLogKeep)
+	}
+	go ship.Run(ctx)
+
 	go wafLog.Run(ctx)
 
 	// Caddy may still be starting (both come up at boot); retry the first sync.
@@ -624,7 +661,7 @@ func serve(cfg *config.Config, node bool) error {
 	apiSrv := &api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
 		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, PHPMyAdmin: pmaSvc, WPLogin: wpLoginSvc,
 		Files: files.New(st, cfg.SiteRoot), Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
-		Billing: bill, PanelURL: panelURL, Mailer: mailr}
+		Billing: bill, PanelURL: panelURL, Mailer: mailr, Logship: ship}
 	apiHandler := apiSrv.Handler()
 	if node {
 		// Requests the panel forwards arrive over the cluster listener, and
@@ -650,7 +687,9 @@ func serve(cfg *config.Config, node bool) error {
 		}()
 	} else {
 		// The health loop starts once the controller is complete.
-		ctrl.Configure = apiSrv.ConfigureNode
+		ctrl.Configure = func(ctx context.Context, n *store.Node) error {
+			return errors.Join(apiSrv.ConfigureNode(ctx, n), apiSrv.ConfigureNodeLogs(ctx, n))
+		}
 		go ctrl.Run(ctx)
 	}
 	srv := &http.Server{

@@ -23,6 +23,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/files"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
+	"github.com/parthh37/wpgenie/internal/logship"
 	"github.com/parthh37/wpgenie/internal/mail"
 	"github.com/parthh37/wpgenie/internal/mailer"
 	"github.com/parthh37/wpgenie/internal/monitor"
@@ -75,6 +76,9 @@ type Server struct {
 
 	// Mailer sends e-mail to people: clients and staff (optional).
 	Mailer *mailer.Service
+
+	// Logship ships logs to S3-compatible storage (optional).
+	Logship *logship.Service
 
 	guard loginGuard
 	// routes is every route registered through route(), in order.

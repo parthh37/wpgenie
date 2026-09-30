@@ -193,8 +193,9 @@ func TestWAFLogFollower(t *testing.T) {
 			`{"error_message":"[id \"949110\"] [msg \"Inbound Anomaly Score Exceeded\"]"}]}` + "\n"
 	}
 	os.WriteFile(path, []byte(line("old.test", "/", true)), 0o600)
-	var got []WAFEvent
-	w := &WAFLog{Path: path, MaxSize: 1000, Handle: func(evs []WAFEvent) { got = append(got, evs...) }}
+	var got, teed []WAFEvent
+	w := &WAFLog{Path: path, MaxSize: 1000, Handle: func(evs []WAFEvent) { got = append(got, evs...) },
+		Tee: func(evs []WAFEvent) { teed = append(teed, evs...) }}
 	w.poll() // starts at the end: old entries aren't replayed
 	appendLine := func(s string) {
 		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
@@ -204,8 +205,8 @@ func TestWAFLogFollower(t *testing.T) {
 	appendLine(line("A.test:443", "/wp-admin/admin-ajax.php?action=x", true))
 	appendLine(`{"transaction":` /* a partial line, still being written */)
 	w.poll()
-	if len(got) != 1 {
-		t.Fatalf("%d events, want 1", len(got))
+	if len(got) != 1 || len(teed) != 1 || teed[0].Host != got[0].Host {
+		t.Fatalf("%d events (%d teed), want 1", len(got), len(teed))
 	}
 	ev := got[0]
 	if ev.Host != "a.test" || ev.Path != "/wp-admin/admin-ajax.php" || !ev.Blocked || ev.IP != "198.51.100.7" ||

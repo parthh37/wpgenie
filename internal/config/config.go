@@ -126,6 +126,9 @@ type Config struct {
 	// site use to reach that server's database (a static wpgenie binary
 	// mounted into it; see site/spread.go).
 	LinkImage string `json:"link_image"`
+	// VectorImage ships logs to object storage when that's turned on in
+	// the panel (see internal/logship).
+	VectorImage string `json:"vector_image"`
 }
 
 func Default() *Config {
@@ -165,6 +168,7 @@ func Default() *Config {
 		LinkImage:        "alpine:3.22",
 		ValkeyACLDir:     "/etc/wpgenie/valkey",
 		ValkeyKey:        "/etc/wpgenie/valkey.key",
+		VectorImage:      "timberio/vector:0.58.0-alpine",
 	}
 }
 

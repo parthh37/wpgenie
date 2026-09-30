@@ -407,6 +407,18 @@ func (s *Shield) Record(e Event) {
 	s.events.add(e)
 }
 
+// TeeEvents hands every event of the security log (blocks, bans,
+// attacks, recorded WAF matches) to fn as well, nil to stop: log shipping
+// keeps them after the in-memory ring forgets them. fn is called on the
+// request path and must not block.
+func (s *Shield) TeeEvents(fn func(Event)) {
+	if fn == nil {
+		s.events.tee.Store(nil)
+		return
+	}
+	s.events.tee.Store(&fn)
+}
+
 // Bans lists active bans, longest-lasting first.
 func (s *Shield) Bans() []Ban { return s.bans.list(s.now()) }
 

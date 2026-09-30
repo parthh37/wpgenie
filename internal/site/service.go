@@ -108,6 +108,10 @@ type Service struct {
 	// AccessChanged is told when SFTP logins changed other than through the
 	// SFTP service (a site moved here with its logins).
 	AccessChanged func(ctx context.Context)
+	// PHPLogTee, if set, gets the whole lines of a site's PHP error log as
+	// they are read (log shipping: the file is truncated once read, so
+	// this is the only chance to keep them). It must not block.
+	PHPLogTee func(siteID string, lines []byte)
 
 	// Cluster is the control plane's registry of other servers (nil on a
 	// node, and on the panel until one is added). ClusterClient dials other

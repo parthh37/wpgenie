@@ -1,0 +1,142 @@
+data_dir: "/var/lib/vector"
+enrichment_tables:
+  sites:
+    type: "file"
+    file:
+      path: "/etc/vector/tables/sites.csv"
+      encoding:
+        type: "csv"
+    schema:
+      host: "string"
+      site: "string"
+  containers:
+    type: "file"
+    file:
+      path: "/etc/vector/tables/containers.csv"
+      encoding:
+        type: "csv"
+    schema:
+      id: "string"
+      name: "string"
+sources:
+  in_access:
+    type: "file"
+    include: ["/logs/caddy/access.log"]
+    read_from: "end"
+  in_mail:
+    type: "file"
+    include: ["/logs/mail/*.log"]
+    read_from: "end"
+  in_containers:
+    type: "file"
+    include: ["/logs/containers/*/*-json.log"]
+    read_from: "end"
+    ignore_older_secs: 86400
+  in_spool:
+    type: "file"
+    include: ["/spool/*/*.jsonl"]
+    read_from: "beginning"
+    remove_after_secs: 10
+  in_internal:
+    type: "internal_metrics"
+    scrape_interval_secs: 15
+transforms:
+  t_access:
+    type: "remap"
+    inputs: ["in_access"]
+    drop_on_abort: true
+    drop_on_error: true
+    source: |
+      ts = .timestamp
+      line = string!(.message)
+      . = object(parse_json(line) ?? null) ?? {"message": line}
+      .timestamp = ts
+      .log_type = "access"
+      .server = "panel"
+      host = downcase(string(.request.host) ?? "")
+      host = replace(host, r':\d+$', "")
+      if host != "" {
+        row, err = get_enrichment_table_record("sites", {"host": host})
+        if err == null {
+          .site = row.site
+        }
+      }
+  t_mail:
+    type: "remap"
+    inputs: ["in_mail"]
+    drop_on_abort: true
+    drop_on_error: true
+    source: |
+      ts = .timestamp
+      file = replace(string(.file) ?? "", "/logs/mail/", "")
+      . = {"message": .message, "file": file, "timestamp": ts, "log_type": "mail", "server": "panel"}
+  t_containers:
+    type: "remap"
+    inputs: ["in_containers"]
+    drop_on_abort: true
+    drop_on_error: true
+    source: |
+      ts = .timestamp
+      m = parse_regex(string(.file) ?? "", r'/(?P<id>[0-9a-f]{64})-json\.log$') ?? {}
+      id = string(m.id) ?? ""
+      if id == "" {
+        abort
+      }
+      row, err = get_enrichment_table_record("containers", {"id": id})
+      if err != null {
+        abort
+      }
+      entry = object(parse_json(string!(.message)) ?? null) ?? {}
+      . = {"container": row.name, "stream": entry.stream, "time": entry.time, "message": replace(string(entry.log) ?? "", r'\n$', ""), "timestamp": ts, "log_type": "containers", "server": "panel"}
+  t_spool:
+    type: "remap"
+    inputs: ["in_spool"]
+    drop_on_abort: true
+    drop_on_error: true
+    source: |
+      ts = .timestamp
+      m = parse_regex(string(.file) ?? "", r'^/spool/(?P<kind>[a-z_]+)/') ?? {}
+      kind = string(m.kind) ?? ""
+      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon"], kind) {
+        abort
+      }
+      . = object(parse_json(string!(.message)) ?? null) ?? {}
+      if length(.) == 0 || exists(.wpgenie_spool) {
+        abort
+      }
+      .timestamp = ts
+      .log_type = kind
+      .server = "panel"
+sinks:
+  archive:
+    type: "aws_s3"
+    inputs: ["t_access", "t_mail", "t_containers", "t_spool"]
+    endpoint: "https://minio.example.com:9000"
+    region: "us-east-1"
+    bucket: "logs-bucket"
+    force_path_style: true
+    key_prefix: "wpgenie/panel/{{ log_type }}/%Y/%m/%d/"
+    filename_time_format: "%H"
+    filename_append_uuid: true
+    filename_extension: "log.gz"
+    timezone: "UTC"
+    compression: "gzip"
+    encoding:
+      codec: "json"
+    framing:
+      method: "newline_delimited"
+    batch:
+      max_bytes: 10000000
+      timeout_secs: 300
+    buffer:
+      type: "disk"
+      max_size: 268435488
+      when_full: "block"
+    acknowledgements:
+      enabled: true
+    healthcheck:
+      enabled: false
+  metrics:
+    type: "prometheus_exporter"
+    inputs: ["in_internal"]
+    address: "127.0.0.1:9598"
