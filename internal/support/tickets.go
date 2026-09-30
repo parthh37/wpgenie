@@ -122,6 +122,8 @@ type TicketView struct {
 	// Providers only.
 	Handler         string    `json:"handler,omitempty"` // "staff" or "reseller"
 	HandlerAccount  int64     `json:"handler_account_id,omitempty"`
+	Escalated       bool      `json:"escalated,omitempty"`
+	StaffOpened     bool      `json:"staff_opened,omitempty"`
 	EscalatedAt     time.Time `json:"escalated_at,omitzero"`
 	AssignedUserID  int64     `json:"assigned_user_id,omitempty"`
 	AssignedTo      string    `json:"assigned_to,omitempty"`
@@ -186,6 +188,7 @@ func view(t *store.Ticket, p Party, a Actor) *TicketView {
 			v.Handler = "reseller"
 		}
 		v.HandlerAccount, v.EscalatedAt, v.FirstResponseAt = t.HandlerAccountID, t.EscalatedAt, t.FirstResponseAt
+		v.Escalated, v.StaffOpened = t.Escalated, t.StaffOpened
 		v.AssignedUserID, v.AssignedTo = t.AssignedUserID, t.AssignedTo
 	}
 	return v
@@ -485,15 +488,12 @@ type OpenInput struct {
 // files: Open takes them over, stored or discarded).
 func (s *Service) Open(ctx context.Context, a Actor, in OpenInput, files []*Staged) (*Thread, error) {
 	defer s.Discard(files)
-	if a.ReadOnly {
-		return nil, fmt.Errorf("%w: your role can't open tickets", ErrForbidden)
+	if err := s.CheckOpen(ctx, a); err != nil {
+		return nil, err
 	}
 	st, err := s.Settings(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if !a.staff() && !st.Enabled {
-		return nil, ErrDisabled
 	}
 	if err := checkFileCount(st, len(files)); err != nil {
 		return nil, err
@@ -543,14 +543,12 @@ func (s *Service) Open(ctx context.Context, a Actor, in OpenInput, files []*Stag
 	now := s.now().UTC().Truncate(time.Second)
 	t := &store.Ticket{AccountID: acct.ID, AccountName: acct.Name, UserID: a.UserID, OpenedBy: a.Name, DepartmentID: dept.ID,
 		DepartmentName: dept.Name, SiteID: in.SiteID, Subject: subject, Status: store.TicketOpen, Priority: prio, CreatedAt: now}
-	// A reseller's customers are the reseller's to answer.
-	if acct.ParentID != 0 {
-		t.HandlerAccountID = acct.ParentID
-	}
+	// A reseller's customers are the reseller's to answer (the store
+	// derives who handles it), except what staff started: theirs.
 	side := store.SideCustomer
 	if a.staff() {
 		// Staff writing first: the customer's turn.
-		side, t.Status, t.FirstResponseAt = store.SideStaff, store.TicketAnswered, now
+		side, t.Status, t.FirstResponseAt, t.StaffOpened = store.SideStaff, store.TicketAnswered, now, true
 	}
 	m := &store.TicketMessage{UserID: a.UserID, Author: a.Name, Side: side, Body: body, CreatedAt: now}
 	m.Attachments = attachmentRows(files, now)
@@ -558,6 +556,10 @@ func (s *Service) Open(ctx context.Context, a Actor, in OpenInput, files []*Stag
 		return nil, err
 	}
 	warning := s.keep(ctx, t.ID, files, m.Attachments)
+	// As stored: who handles it.
+	if t, err = s.Store.GetTicket(ctx, t.ID); err != nil {
+		return nil, err
+	}
 	s.notifyOpened(ctx, t, dept, acct, m)
 	th, err := s.Get(ctx, a, t.ID)
 	if err != nil {
@@ -565,6 +567,37 @@ func (s *Service) Open(ctx context.Context, a Actor, in OpenInput, files []*Stag
 	}
 	th.Warning = warning
 	return th, nil
+}
+
+// CheckOpen says whether a may open a ticket at all, before anything it
+// uploads is read (Open checks again, with the rest).
+func (s *Service) CheckOpen(ctx context.Context, a Actor) error {
+	if a.ReadOnly {
+		return fmt.Errorf("%w: your role can't open tickets", ErrForbidden)
+	}
+	if a.staff() {
+		return nil
+	}
+	st, err := s.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	if !st.Enabled {
+		return ErrDisabled
+	}
+	return nil
+}
+
+// CheckReply says whether a may write on a ticket, before anything it
+// uploads is read (Reply checks again, with the rest).
+func (s *Service) CheckReply(ctx context.Context, a Actor, id int64) error {
+	if _, _, err := s.ticket(ctx, a, id); err != nil {
+		return err
+	}
+	if a.ReadOnly {
+		return fmt.Errorf("%w: your role can't reply", ErrForbidden)
+	}
+	return nil
 }
 
 func checkFileCount(st *Settings, n int) error {
@@ -721,8 +754,9 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 	if a.ReadOnly {
 		return nil, fmt.Errorf("%w: your role can't change tickets", ErrForbidden)
 	}
-	c := store.TicketChanges{Status: t.Status, Priority: t.Priority, DepartmentID: t.DepartmentID, AssignedUserID: t.AssignedUserID,
-		At: s.now().UTC().Truncate(time.Second)}
+	// Only what this change sets is written, and the status only if it's
+	// still the one read (see store.TicketChanges).
+	c := store.TicketChanges{FromStatus: t.Status, At: s.now().UTC().Truncate(time.Second)}
 	var public, private []string
 	if in.Status != nil && *in.Status != t.Status {
 		next := *in.Status
@@ -740,7 +774,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 		default:
 			private = append(private, fmt.Sprintf("%s set the status to %s.", a.Name, strings.ReplaceAll(next, "_", " ")))
 		}
-		c.Status = next
+		c.Status = &next
 	}
 	if !p.provider() && (in.Priority != nil || in.DepartmentID != nil || in.AssignedUserID != nil) {
 		return nil, fmt.Errorf("%w: only your provider changes the priority, department or assignee", ErrForbidden)
@@ -749,8 +783,8 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 		if !slices.Contains(Priorities, *in.Priority) {
 			return nil, fmt.Errorf("%w: priority is low, medium, high or urgent", ErrInvalid)
 		}
-		c.Priority = *in.Priority
-		private = append(private, fmt.Sprintf("%s set the priority to %s.", a.Name, c.Priority))
+		c.Priority = in.Priority
+		private = append(private, fmt.Sprintf("%s set the priority to %s.", a.Name, *in.Priority))
 	}
 	if in.DepartmentID != nil && *in.DepartmentID != t.DepartmentID {
 		if *in.DepartmentID == 0 {
@@ -760,7 +794,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 		if err != nil {
 			return nil, err
 		}
-		c.DepartmentID = d.ID
+		c.DepartmentID = &d.ID
 		private = append(private, fmt.Sprintf("%s moved the ticket to %s.", a.Name, d.Name))
 	}
 	if in.AssignedUserID != nil && *in.AssignedUserID != t.AssignedUserID {
@@ -775,7 +809,7 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 			}
 			who = u.Username
 		}
-		c.AssignedUserID = *in.AssignedUserID
+		c.AssignedUserID = in.AssignedUserID
 		private = append(private, fmt.Sprintf("%s assigned the ticket to %s.", a.Name, who))
 	}
 	if len(public)+len(private) == 0 {
@@ -790,13 +824,15 @@ func (s *Service) Update(ctx context.Context, a Actor, id int64, in UpdateInput)
 		notes = append(notes, &store.TicketMessage{Author: a.Name, UserID: a.UserID, Side: store.SideSystem, Internal: true, Body: strings.Join(private, " "), CreatedAt: c.At})
 	}
 	c.Notes = notes
-	if err := s.Store.UpdateTicket(ctx, id, c); err != nil {
+	if err := s.Store.UpdateTicket(ctx, id, c); errors.Is(err, store.ErrConflict) {
+		return nil, fmt.Errorf("%w: the ticket changed meanwhile (a reply came in?); look again and retry", ErrConflict)
+	} else if err != nil {
 		return nil, err
 	}
 	// The provider closing it tells the customer; the customer closing it
 	// needs no e-mail.
-	if c.Status == store.TicketClosed && t.Status != store.TicketClosed && p.provider() {
-		t.Status, t.ClosedAt = c.Status, c.At
+	if c.Status != nil && *c.Status == store.TicketClosed && p.provider() {
+		t.Status, t.ClosedAt = *c.Status, c.At
 		s.notifyClosed(ctx, t, false, 0)
 	}
 	return s.Get(ctx, a, id)
@@ -830,7 +866,7 @@ func (s *Service) Escalate(ctx context.Context, a Actor, id int64, reason string
 	} else if err != nil {
 		return nil, err
 	}
-	t.HandlerAccountID, t.EscalatedAt = 0, now
+	t.HandlerAccountID, t.Escalated, t.EscalatedAt = 0, true, now
 	s.notifyEscalated(ctx, t, a.Name, reason)
 	return s.Get(ctx, a, id)
 }

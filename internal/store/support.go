@@ -16,9 +16,12 @@ import (
 // replies. Who may see and do what is internal/support's; this file only
 // stores it.
 //
-// A ticket belongs to the account that opened it (account_id) and is
-// handled by the operator's staff (handler_account_id 0) or, for a
-// reseller's customer, by that reseller until it escalates it. Messages
+// A ticket belongs to the account that opened it (account_id). Who
+// handles it is derived when it's read, never stored: the account's
+// current reseller (see handlerExpr), or the operator's staff when the
+// account has none (any more), the ticket was escalated or staff opened
+// it. A customer moved to another reseller takes its tickets along; one
+// detached, or whose reseller is gone, is the staff's. Messages
 // are the customer's, the provider's (a handler's or staff's) or the
 // panel's own (system); internal ones are notes between providers.
 // Previews in lists only ever come from public messages.
@@ -37,8 +40,9 @@ const supportSchema = `CREATE TABLE support_departments (
 		account_id         INTEGER NOT NULL,
 		user_id            INTEGER NOT NULL DEFAULT 0,
 		opened_by          TEXT NOT NULL DEFAULT '',
-		handler_account_id INTEGER NOT NULL DEFAULT 0,
+		escalated          INTEGER NOT NULL DEFAULT 0,
 		escalated_at       INTEGER NOT NULL DEFAULT 0,
+		staff_opened       INTEGER NOT NULL DEFAULT 0,
 		department_id      INTEGER NOT NULL,
 		site_id            TEXT NOT NULL DEFAULT '',
 		subject            TEXT NOT NULL,
@@ -52,9 +56,10 @@ const supportSchema = `CREATE TABLE support_departments (
 		closed_at          INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX tickets_by_account ON tickets (account_id, updated_at);
-	CREATE INDEX tickets_by_handler ON tickets (handler_account_id, status);
 	CREATE INDEX tickets_by_status ON tickets (status, last_reply_at);
 	CREATE INDEX tickets_by_update ON tickets (updated_at, id);
+	CREATE INDEX tickets_by_department ON tickets (department_id, status);
+	CREATE INDEX tickets_by_assignee ON tickets (assigned_user_id, status);
 	CREATE TABLE ticket_messages (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		ticket_id  INTEGER NOT NULL,
@@ -126,27 +131,33 @@ type SupportDepartment struct {
 // Ticket is a support request and its state. AccountName, DepartmentName,
 // AssignedTo and Preview are read from other tables.
 type Ticket struct {
-	ID               int64
-	Mask             string
-	AccountID        int64
-	AccountName      string
-	UserID           int64
-	OpenedBy         string
+	ID          int64
+	Mask        string
+	AccountID   int64
+	AccountName string
+	UserID      int64
+	OpenedBy    string
+	// HandlerAccountID is who handles it now (derived: see handlerExpr):
+	// the account's reseller, or 0 for the operator's staff.
 	HandlerAccountID int64
-	EscalatedAt      time.Time
-	DepartmentID     int64
-	DepartmentName   string
-	SiteID           string
-	Subject          string
-	Status           string
-	Priority         string
-	AssignedUserID   int64
-	AssignedTo       string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	LastReplyAt      time.Time
-	FirstResponseAt  time.Time
-	ClosedAt         time.Time
+	// Escalated: its reseller handed it to staff; StaffOpened: staff
+	// opened it. Either keeps it with staff whatever the account's reseller.
+	Escalated       bool
+	StaffOpened     bool
+	EscalatedAt     time.Time
+	DepartmentID    int64
+	DepartmentName  string
+	SiteID          string
+	Subject         string
+	Status          string
+	Priority        string
+	AssignedUserID  int64
+	AssignedTo      string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LastReplyAt     time.Time
+	FirstResponseAt time.Time
+	ClosedAt        time.Time
 	// Preview is the start of the last public message.
 	Preview string
 }
@@ -267,19 +278,29 @@ func (s *Store) DeleteSupportDepartment(ctx context.Context, id int64) error {
 
 // ---- Tickets ----
 
-const ticketCols = `t.id, t.mask, t.account_id, COALESCE(a.name, ''), t.user_id, t.opened_by, t.handler_account_id,
-	t.escalated_at, t.department_id, COALESCE(d.name, ''), t.site_id, t.subject, t.status, t.priority, t.assigned_user_id,
+// handlerExpr is the account handling a ticket: its account's reseller
+// (pa, joined by ticketFrom) while that reseller exists and isn't
+// terminated, unless the ticket was escalated or opened by staff; else 0,
+// the operator's staff.
+const handlerExpr = `(CASE WHEN t.escalated = 1 OR t.staff_opened = 1 OR pa.id IS NULL OR pa.status = 'terminated'
+	THEN 0 ELSE pa.id END)`
+
+const ticketCols = `t.id, t.mask, t.account_id, COALESCE(a.name, ''), t.user_id, t.opened_by, ` + handlerExpr + `,
+	t.escalated, t.staff_opened, t.escalated_at, t.department_id, COALESCE(d.name, ''), t.site_id, t.subject, t.status, t.priority, t.assigned_user_id,
 	COALESCE(u.username, ''), t.created_at, t.updated_at, t.last_reply_at, t.first_response_at, t.closed_at,
 	COALESCE((SELECT SUBSTR(m.body, 1, 240) FROM ticket_messages m WHERE m.ticket_id = t.id AND m.internal = 0
 		AND m.side <> 'system' ORDER BY m.id DESC LIMIT 1), '')`
 
-const ticketFrom = ` FROM tickets t LEFT JOIN accounts a ON a.id = t.account_id
+const ticketJoins = ` LEFT JOIN accounts a ON a.id = t.account_id LEFT JOIN accounts pa ON pa.id = a.parent_id`
+
+const ticketFrom = ` FROM tickets t` + ticketJoins + `
 	LEFT JOIN support_departments d ON d.id = t.department_id LEFT JOIN users u ON u.id = t.assigned_user_id`
 
 func scanTicket(row interface{ Scan(...any) error }) (*Ticket, error) {
 	var t Ticket
 	var escalated, created, updated, lastReply, firstResponse, closed int64
-	err := row.Scan(&t.ID, &t.Mask, &t.AccountID, &t.AccountName, &t.UserID, &t.OpenedBy, &t.HandlerAccountID, &escalated,
+	err := row.Scan(&t.ID, &t.Mask, &t.AccountID, &t.AccountName, &t.UserID, &t.OpenedBy, &t.HandlerAccountID, &t.Escalated,
+		&t.StaffOpened, &escalated,
 		&t.DepartmentID, &t.DepartmentName, &t.SiteID, &t.Subject, &t.Status, &t.Priority, &t.AssignedUserID, &t.AssignedTo,
 		&created, &updated, &lastReply, &firstResponse, &closed, &t.Preview)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -313,10 +334,10 @@ func (s *Store) CreateTicket(ctx context.Context, t *Ticket, first *TicketMessag
 		}
 		err = s.db.inTx(ctx, func(tx *Tx) error {
 			at := t.CreatedAt.Unix()
-			if err := tx.QueryRowContext(ctx, `INSERT INTO tickets (mask, account_id, user_id, opened_by, handler_account_id,
+			if err := tx.QueryRowContext(ctx, `INSERT INTO tickets (mask, account_id, user_id, opened_by, staff_opened,
 				department_id, site_id, subject, status, priority, assigned_user_id, created_at, updated_at, last_reply_at,
 				first_response_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, mask, t.AccountID, t.UserID,
-				t.OpenedBy, t.HandlerAccountID, t.DepartmentID, t.SiteID, t.Subject, t.Status, t.Priority, t.AssignedUserID,
+				t.OpenedBy, t.StaffOpened, t.DepartmentID, t.SiteID, t.Subject, t.Status, t.Priority, t.AssignedUserID,
 				at, at, at, unixOrZero(t.FirstResponseAt)).Scan(&t.ID); err != nil {
 				return err
 			}
@@ -416,39 +437,58 @@ func (s *Store) GetTicket(ctx context.Context, id int64) (*Ticket, error) {
 	return scanTicket(s.db.QueryRowContext(ctx, `SELECT `+ticketCols+ticketFrom+` WHERE t.id = ?`, id))
 }
 
-// TicketChanges are a ticket's fields a change sets, with the messages
-// saying so.
+// TicketChanges are the fields a change sets (nil: unchanged), with the
+// messages saying so. Only what changed is written: a change never undoes
+// what happened to the ticket since it was read.
 type TicketChanges struct {
-	Status         string
-	Priority       string
-	DepartmentID   int64
-	AssignedUserID int64
+	// Status moves the ticket from FromStatus (the status the change was
+	// decided on) to Status; the ticket having moved on meanwhile is
+	// ErrConflict, and nothing is written. Closing sets closed_at; any
+	// other status clears it.
+	Status         *string
+	FromStatus     string
+	Priority       *string
+	DepartmentID   *int64
+	AssignedUserID *int64
 	At             time.Time
 	Notes          []*TicketMessage
 }
 
-// UpdateTicket stores a ticket's status, priority, department and
-// assignee. Closing sets closed_at; any other status clears it.
+// UpdateTicket applies a change to a ticket, in one transaction.
 func (s *Store) UpdateTicket(ctx context.Context, id int64, c TicketChanges) error {
 	return s.db.inTx(ctx, func(tx *Tx) error {
-		var closed int64
-		if c.Status == TicketClosed {
-			// Already closed: keep when.
-			if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN status = 'closed' THEN closed_at ELSE ? END FROM tickets
-				WHERE id = ?`, c.At.Unix(), id).Scan(&closed); errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			} else if err != nil {
+		at := c.At.Unix()
+		if err := touchTicket(ctx, tx, id, at); err != nil {
+			return err
+		}
+		if c.Status != nil {
+			var closed int64
+			if *c.Status == TicketClosed {
+				closed = at
+			}
+			res, err := tx.ExecContext(ctx, `UPDATE tickets SET status = ?, closed_at = ? WHERE id = ? AND status = ?`,
+				*c.Status, closed, id, c.FromStatus)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return ErrConflict
+			}
+		}
+		if c.Priority != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE tickets SET priority = ? WHERE id = ?`, *c.Priority, id); err != nil {
 				return err
 			}
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE tickets SET status = ?, priority = ?, department_id = ?, assigned_user_id = ?,
-			closed_at = ?, updated_at = ? WHERE id = ?`, c.Status, c.Priority, c.DepartmentID, c.AssignedUserID, closed,
-			c.At.Unix(), id)
-		if err != nil {
-			return err
+		if c.DepartmentID != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE tickets SET department_id = ? WHERE id = ?`, *c.DepartmentID, id); err != nil {
+				return err
+			}
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrNotFound
+		if c.AssignedUserID != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE tickets SET assigned_user_id = ? WHERE id = ?`, *c.AssignedUserID, id); err != nil {
+				return err
+			}
 		}
 		for _, m := range c.Notes {
 			m.TicketID = id
@@ -460,11 +500,12 @@ func (s *Store) UpdateTicket(ctx context.Context, id int64, c TicketChanges) err
 	})
 }
 
-// EscalateTicket hands a ticket to the operator's staff, with a note.
+// EscalateTicket hands a ticket to the operator's staff for good, with a
+// note (ErrConflict: it already is theirs, escalated or opened by staff).
 func (s *Store) EscalateTicket(ctx context.Context, id int64, at time.Time, note *TicketMessage) error {
 	return s.db.inTx(ctx, func(tx *Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE tickets SET handler_account_id = 0, escalated_at = ?, updated_at = ?
-			WHERE id = ? AND handler_account_id <> 0`, at.Unix(), at.Unix(), id)
+		res, err := tx.ExecContext(ctx, `UPDATE tickets SET escalated = 1, escalated_at = ?, updated_at = ?
+			WHERE id = ? AND escalated = 0 AND staff_opened = 0`, at.Unix(), at.Unix(), id)
 		if err != nil {
 			return err
 		}
@@ -565,7 +606,7 @@ func (f TicketFilter) where() (string, []any) {
 	}
 	var awaiting []string
 	if f.AwaitingHandler != nil {
-		awaiting = append(awaiting, `(t.handler_account_id = ? AND t.status IN (?, ?))`)
+		awaiting = append(awaiting, `(`+handlerExpr+` = ? AND t.status IN (?, ?))`)
 		args = append(args, *f.AwaitingHandler, TicketOpen, TicketCustomerReply)
 	}
 	if f.AwaitingCustomer != 0 {
@@ -623,7 +664,7 @@ func (s *Store) CountTickets(ctx context.Context, f TicketFilter) (int, error) {
 	f.Before = 0
 	where, args := f.where()
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets t LEFT JOIN accounts a ON a.id = t.account_id`+where,
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets t`+ticketJoins+where,
 		args...).Scan(&n)
 	return n, err
 }

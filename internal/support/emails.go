@@ -104,16 +104,21 @@ func (s *Service) ticketData(ctx context.Context, t *store.Ticket) map[string]an
 		"URL": strings.TrimSuffix(s.Mailer.PanelURL, "/") + "/#/support/" + strconv.FormatInt(t.ID, 10)}
 }
 
-// send queues one message; failures are logged, never the caller's: the
-// ticket is saved whether or not its e-mail goes.
+// send queues a message for each recipient (one address a server
+// refuses doesn't hold up the others, and each has its own line in the
+// e-mail log); failures are logged, never the caller's: the ticket is
+// saved whether or not its e-mail goes.
 func (s *Service) send(ctx context.Context, st *Settings, to []string, acctID int64, tpl, key string, data map[string]any) {
-	if len(to) == 0 {
-		return
-	}
-	_, err := s.Mailer.Queue(context.WithoutCancel(ctx), mailer.Message{To: to, Template: tpl, Data: data,
-		AccountID: acctID, ReplyTo: st.ReplyTo, DedupeKey: key})
-	if err != nil {
-		s.Log.Warn("support: queueing an e-mail", "template", tpl, "err", err)
+	for _, addr := range to {
+		k := key
+		if len(to) > 1 {
+			k += ":" + addr
+		}
+		_, err := s.Mailer.Queue(context.WithoutCancel(ctx), mailer.Message{To: []string{addr}, Template: tpl, Data: data,
+			AccountID: acctID, ReplyTo: st.ReplyTo, DedupeKey: k})
+		if err != nil {
+			s.Log.Warn("support: queueing an e-mail", "template", tpl, "to", addr, "err", err)
+		}
 	}
 }
 
@@ -129,9 +134,11 @@ func (s *Service) customer(ctx context.Context, t *store.Ticket) (*store.Account
 	return acct, []string{acct.Email}
 }
 
-// providers are who handle the ticket: the reseller's address (filed
-// under its account), or the staff recipients and the department's
-// (filed under no account: a customer's e-mail log never lists them).
+// providers are who handle the ticket now (t.HandlerAccountID is
+// derived when read: the account's current reseller, unless escalated or
+// opened by staff): the reseller's address (filed under its account), or
+// the staff recipients and the department's (filed under no account: a
+// customer's e-mail log never lists them).
 func (s *Service) providers(ctx context.Context, st *Settings, t *store.Ticket) ([]string, int64) {
 	if t.HandlerAccountID != 0 {
 		r, err := s.Store.GetAccount(ctx, t.HandlerAccountID)
