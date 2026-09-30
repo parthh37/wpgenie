@@ -511,7 +511,9 @@ var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@+-]{1,63}$`)
 // reservedNames are actors the audit log shows for things no user did: a
 // user by one of these names could pass their actions off as the API
 // token's or a billing system's.
-var reservedNames = []string{"api-token", "system", "scheduler", "sso", "stripe"}
+var reservedNames = []string{"api-token", "system", "scheduler", "sso", "stripe",
+	// Built-in billing's actors (ledgers, payments, the order form's audit).
+	"razorpay", "store", "auto-pay", "automation", "billing"}
 
 func validUsername(u string) error {
 	if !usernameRe.MatchString(u) {

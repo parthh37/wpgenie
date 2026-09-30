@@ -274,9 +274,15 @@ func (s *Service) stripeInvoiceEvent(ctx context.Context, cfg *StripeSettings, e
 		if pay, err = s.Store.GetPayment(ctx, pay.ID); err != nil {
 			return true, err
 		}
-		if d := ch.AmountRefunded - pay.Refunded; d > 0 {
-			_, _, err := s.Store.RecordRefund(ctx, store.RefundInput{PaymentID: pay.ID, Amount: d, Reference: ch.ID, By: "stripe",
-				At: s.now(), Dedupe: fmt.Sprintf("stripe:%s:refunded:%d", ch.ID, ch.AmountRefunded)})
+		// Only refunds that went back through Stripe count: one made to the
+		// account's credit is no part of the charge's refunded total.
+		viaStripe, err := s.Store.GatewayRefunded(ctx, pay.ID)
+		if err != nil {
+			return true, err
+		}
+		if d := ch.AmountRefunded - viaStripe; d > 0 {
+			r, _, err := s.Store.RecordRefund(ctx, store.RefundInput{PaymentID: pay.ID, Amount: d, Reference: ch.ID, By: "stripe",
+				At: s.now(), Dedupe: fmt.Sprintf("stripe:%s:refunded:%d", ch.ID, ch.AmountRefunded), Made: true})
 			if errors.Is(err, store.ErrOverRefund) {
 				s.Log.Warn("Stripe reports a refund beyond the payment", "payment", pay.ID, "charge", ch.ID)
 				return true, nil
@@ -285,10 +291,22 @@ func (s *Service) stripeInvoiceEvent(ctx context.Context, cfg *StripeSettings, e
 				return true, err
 			}
 			s.event(ctx, pay.AccountID, "billing", fmt.Sprintf("Refund made in Stripe recorded on invoice %s", pay.InvoiceNumber))
+			s.refundShortfall(ctx, r, pay.AccountID)
 		}
 		return true, nil
 	}
 	return false, nil
+}
+
+// refundShortfall notes a refund made at a gateway that should have taken
+// back credit the account had already spent.
+func (s *Service) refundShortfall(ctx context.Context, r *store.Refund, accountID int64) {
+	if r == nil || r.Shortfall <= 0 {
+		return
+	}
+	s.Log.Warn("a gateway refund of credited money that was spent", "account", accountID, "refund", r.ID, "shortfall", r.Shortfall)
+	s.event(ctx, accountID, "billing", fmt.Sprintf("A refund made at the gateway included %d (minor units) that had become "+
+		"credit and was spent since: the account received it twice", r.Shortfall))
 }
 
 // stripePaid records a Stripe payment of an invoice (once per

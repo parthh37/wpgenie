@@ -221,8 +221,8 @@ func TestOverview(t *testing.T) {
 	}
 }
 
-// A due date is a whole day: nothing is overdue on it, and "0 days after
-// the due date" means as soon as it is overdue (the next day), never on it.
+// A due date is a whole day: nothing is overdue on it, and "1 day after
+// the due date" is the first day it is overdue, never the due date itself.
 func TestDueDateIsAWholeDay(t *testing.T) {
 	if PastDue(day(2026, 10, 1), day(2026, 10, 1).Add(23*time.Hour+59*time.Minute)) || !PastDue(day(2026, 10, 1), day(2026, 10, 2)) ||
 		PastDue(time.Time{}, day(2030, 1, 1)) {
@@ -230,7 +230,7 @@ func TestDueDateIsAWholeDay(t *testing.T) {
 	}
 	e := newInvEnv(t)
 	ctx := context.Background()
-	e.setting(func(c *InvoicingSettings) { c.Automation.SuspendAfterDays = 0 })
+	e.setting(func(c *InvoicingSettings) { c.Automation.SuspendAfterDays = 1 }) // the first overdue day
 	a := e.billed("Acme", "basic", "monthly", day(2026, 10, 1))
 	e.run(day(2026, 9, 24)) // the renewal
 	inv := e.invoices(a.ID)[0]

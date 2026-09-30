@@ -84,7 +84,7 @@ func (s *Service) BuyBurstPack(ctx context.Context, accountID int64, packID, met
 	p, err := s.profile(ctx, accountID)
 	var inv *store.Invoice
 	if err == nil {
-		inv, err = s.buildInvoice(ctx, cfg, newInvoice{Account: a, Profile: p, Kind: KindBurstTopup, Due: Day(s.now()),
+		inv, err = s.buildInvoice(ctx, cfg, newInvoice{Account: a, Profile: p, Kind: KindBurstTopup, Due: days(Day(s.now()), 7),
 			Items: []store.InvoiceItem{{Kind: ItemBurst, Description: fmt.Sprintf("%d burst minutes", pack.Minutes), Quantity: 1,
 				UnitPrice: pack.Price, Amount: pack.Price, Taxable: true}}})
 	}

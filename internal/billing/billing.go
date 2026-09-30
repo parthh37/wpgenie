@@ -622,6 +622,9 @@ func (s *Service) Unsuspend(ctx context.Context, id int64, by string) (*store.Ac
 	if err := s.Store.SetAccountStatus(ctx, id, store.AccountActive, "", s.now()); err != nil {
 		return nil, err
 	}
+	if a.Status == store.AccountTerminated {
+		s.clearCancellation(ctx, id) // reactivated: a new start
+	}
 	s.event(ctx, id, "unsuspend", "Unsuspended ("+by+")")
 	s.emit(ctx, EventAccountUnsuspended, map[string]any{"account_id": id, "by": by})
 	s.Log.Info("account unsuspended", "account", id, "by", by)
@@ -666,6 +669,7 @@ func (s *Service) Terminate(ctx context.Context, id int64, deleteSites bool) (*T
 			return nil, err
 		}
 		s.event(ctx, id, "terminate", "Terminated")
+		s.clearCancellation(ctx, id) // done, whichever way it ended
 		s.emit(ctx, EventAccountTerminated, map[string]any{"account_id": id, "delete_sites": deleteSites})
 		// Signed-in users go now, not at their next request.
 		if users, err := s.Store.AccountUsers(ctx, id); err == nil {

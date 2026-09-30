@@ -91,22 +91,25 @@ type Upcoming struct {
 
 // ProfileView is an account's billing as the API shows it.
 type ProfileView struct {
-	Mode            string               `json:"mode"`
-	Cycle           string               `json:"cycle"`
-	PriceOverride   *int64               `json:"price_override"`
-	NextDueAt       *time.Time           `json:"next_due_at"`
-	AnchorDay       int                  `json:"anchor_day"`
-	AutoPay         bool                 `json:"auto_pay"`
-	Card            *Card                `json:"card"`
-	Credit          int64                `json:"credit"`
-	TaxExempt       bool                 `json:"tax_exempt"`
-	CancelAt        *time.Time           `json:"cancel_at"`
-	CancelReason    string               `json:"cancel_reason"`
-	Contact         store.BillingContact `json:"contact"`
-	BalanceDue      int64                `json:"balance_due"`
-	Overdue         bool                 `json:"overdue"`
-	RecurringAmount int64                `json:"recurring_amount"`
-	Upcoming        *Upcoming            `json:"upcoming"`
+	Mode          string     `json:"mode"`
+	Cycle         string     `json:"cycle"`
+	PriceOverride *int64     `json:"price_override"`
+	NextDueAt     *time.Time `json:"next_due_at"`
+	AnchorDay     int        `json:"anchor_day"`
+	AutoPay       bool       `json:"auto_pay"`
+	Card          *Card      `json:"card"`
+	Credit        int64      `json:"credit"`
+	TaxExempt     bool       `json:"tax_exempt"`
+	// TaxExemptByTaxID: no tax because the client gave a tax ID (the
+	// setting exempt_with_tax_id), whatever TaxExempt says.
+	TaxExemptByTaxID bool                 `json:"tax_exempt_by_tax_id"`
+	CancelAt         *time.Time           `json:"cancel_at"`
+	CancelReason     string               `json:"cancel_reason"`
+	Contact          store.BillingContact `json:"contact"`
+	BalanceDue       int64                `json:"balance_due"`
+	Overdue          bool                 `json:"overdue"`
+	RecurringAmount  int64                `json:"recurring_amount"`
+	Upcoming         *Upcoming            `json:"upcoming"`
 }
 
 // Profile returns an account's billing.
@@ -129,6 +132,11 @@ func (s *Service) Profile(ctx context.Context, accountID int64) (*ProfileView, e
 	if p.CardPM != "" {
 		v.Card = &Card{Brand: p.CardBrand, Last4: p.CardLast4, ExpMonth: p.CardExpMonth, ExpYear: p.CardExpYear}
 	}
+	cfg, err := s.Invoicing(ctx)
+	if err != nil {
+		return nil, err
+	}
+	v.TaxExemptByTaxID = ExemptByTaxID(cfg, p.Contact)
 	if price, ok := recurringPrice(plan, p); ok {
 		v.RecurringAmount = price
 	}
@@ -139,7 +147,7 @@ func (s *Service) Profile(ctx context.Context, accountID int64) (*ProfileView, e
 	now := s.now()
 	for _, inv := range unpaid {
 		v.BalanceDue += max(inv.Balance(), 0)
-		if PastDue(inv.DueAt, now) {
+		if PastDue(inv.DueAt, now) && Chased(inv.Kind) {
 			v.Overdue = true
 		}
 	}
@@ -507,7 +515,7 @@ func (s *Service) invoiceView(cfg *InvoicingSettings, inv *store.Invoice, now ti
 	}
 	if inv.Status == store.InvoiceUnpaid {
 		v.Balance = max(inv.Balance(), 0)
-		v.Overdue = PastDue(inv.DueAt, now)
+		v.Overdue = PastDue(inv.DueAt, now) && Chased(inv.Kind)
 		if v.Balance > 0 {
 			v.PayMethods = cfg.methodIDs()
 		}
@@ -846,14 +854,43 @@ func (s *Service) IssueInvoice(ctx context.Context, id int64, sendMail bool) (*I
 
 // CancelInvoice cancels a draft or unpaid invoice (what was paid on it
 // goes to credit).
+//
+// Cancelling a renewal waives its period: the account isn't billed for it,
+// and its next due date moves past it (never back), so billing goes on
+// with the next period.
 func (s *Service) CancelInvoice(ctx context.Context, id int64, by string) (*InvoiceDetail, error) {
 	s.payMu.Lock()
 	err := s.cancelInvoiceLocked(ctx, id, by, false)
+	if err == nil {
+		err = s.waivePeriodLocked(ctx, id, by)
+	}
 	s.payMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	return s.Invoice(ctx, id)
+}
+
+// waivePeriodLocked moves the next due date of a cancelled renewal's
+// account past its period.
+func (s *Service) waivePeriodLocked(ctx context.Context, id int64, by string) error {
+	inv, err := s.Store.GetInvoice(ctx, id)
+	if err != nil || inv.Kind != KindRenewal || inv.PeriodEnd.IsZero() {
+		return err
+	}
+	p, err := s.profile(ctx, inv.AccountID)
+	if err != nil {
+		return err
+	}
+	if inv.PeriodEnd.After(p.NextDueAt) {
+		p.NextDueAt = inv.PeriodEnd
+		if err := s.Store.SaveBillingProfile(ctx, p); err != nil {
+			return err
+		}
+	}
+	s.event(ctx, inv.AccountID, "billing", fmt.Sprintf("Period %s waived: invoice %s cancelled (%s); next due %s",
+		periodText(inv.PeriodStart, inv.PeriodEnd), displayNumber(inv), by, shortDate(p.NextDueAt)))
+	return nil
 }
 
 func (s *Service) cancelInvoiceLocked(ctx context.Context, id int64, by string, release bool) error {
@@ -897,7 +934,10 @@ func (s *Service) Remind(ctx context.Context, id int64) error {
 // suspendDate is when an overdue invoice suspends the account ("" when it
 // doesn't: not billed by invoice, or already past).
 func (s *Service) suspendDate(cfg *InvoicingSettings, inv *store.Invoice) string {
-	at := inv.DueAt.AddDate(0, 0, max(cfg.Automation.SuspendAfterDays, 1))
+	if cfg.Automation.SuspendAfterDays <= 0 || !Chased(inv.Kind) {
+		return "" // never suspended for it
+	}
+	at := inv.DueAt.AddDate(0, 0, cfg.Automation.SuspendAfterDays)
 	if inv.DueAt.IsZero() || !at.After(s.now()) {
 		return ""
 	}
@@ -1024,7 +1064,7 @@ func (s *Service) paidLocked(ctx context.Context, cfg *InvoicingSettings, inv *s
 	case KindRenewal:
 		err = s.renewalPaid(ctx, inv)
 	case KindPlanChange:
-		err = s.applyPlanChangeLocked(ctx, inv.AccountID, inv.PlanID, inv.Cycle, inv.PeriodStart, inv.PeriodEnd, inv.ID)
+		err = s.applyPlanChangeLocked(ctx, inv.AccountID, inv.PlanID, inv.Cycle, inv.PeriodStart, inv.PeriodEnd, inv.CreditThrough, inv.ID)
 	case KindBurstTopup:
 		err = s.burstPaid(ctx, inv)
 	}
@@ -1092,8 +1132,8 @@ func (s *Service) liftBillingSuspension(ctx context.Context, accountID int64) er
 	if ModeOf(a, p) != ModeInvoice {
 		return nil // a Stripe subscription's suspension is Stripe's to lift
 	}
-	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: OverdueCutoff(s.now()), Limit: 1})
-	if err != nil || len(overdue) > 0 {
+	overdue, err := s.overdueInvoice(ctx, accountID, s.now())
+	if err != nil || overdue != nil {
 		return err
 	}
 	if _, err := s.Unsuspend(ctx, accountID, ReasonBilling); err != nil {
@@ -1138,6 +1178,20 @@ func (s *Service) Refund(ctx context.Context, invoiceID int64, in RefundInput, b
 	}
 	rin := store.RefundInput{PaymentID: pay.ID, Amount: amount, ToCredit: in.To == "credit", By: by, At: s.now()}
 	if in.To == "gateway" {
+		// The part of the payment sitting in credit (paid beyond the
+		// balance, or returned by a cancellation) leaves the credit: check it
+		// is still there before any money moves at the gateway.
+		if fromCredit := min(amount, pay.Credited); fromCredit > 0 {
+			p, err := s.profile(ctx, pay.AccountID)
+			if err != nil {
+				return nil, err
+			}
+			if p.Credit < fromCredit {
+				// That part is refunded first, so at most the credit left can be.
+				return nil, fmt.Errorf("%w: %s of this payment went to the account's credit, which has been used since: "+
+					"refund at most %s", ErrConflict, FormatMoney(pay.Credited, cfg.Currency), FormatMoney(p.Credit, cfg.Currency))
+			}
+		}
 		switch pay.Gateway {
 		case MethodStripe:
 			sc, err := s.StripeSettings(ctx)
@@ -1166,10 +1220,12 @@ func (s *Service) Refund(ctx context.Context, invoiceID int64, in RefundInput, b
 		}
 	}
 	r, _, err := s.Store.RecordRefund(ctx, rin)
-	if errors.Is(err, store.ErrOverRefund) {
+	switch {
+	case errors.Is(err, store.ErrOverRefund):
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if err != nil {
+	case errors.Is(err, store.ErrCreditSpent):
+		return nil, fmt.Errorf("%w: %v", ErrConflict, err)
+	case err != nil:
 		return nil, err
 	}
 	if r != nil {
@@ -1200,6 +1256,42 @@ type PlanChangeQuote struct {
 	periodStart time.Time
 	account     *store.Account
 	profile     *store.BillingProfile
+	// creditThrough: the paid-through date whose unused part is credited
+	// (zero: none was).
+	creditThrough time.Time
+}
+
+// periodPaid is what was actually paid for the period running until
+// paidThrough, before tax: the plan's lines (plan, pro rata charge,
+// discounts; not setup fees, credits for earlier periods or late fees) of
+// the paid renewal, order or plan change covering it, less what was
+// refunded of it; and when that period started. Nothing paid (a free
+// plan, a period waived or billed by hand): 0.
+func (s *Service) periodPaid(ctx context.Context, accountID int64, paidThrough time.Time) (int64, time.Time, error) {
+	list, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID,
+		Statuses: []string{store.InvoicePaid, store.InvoicePartiallyRefunded}})
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	for _, inv := range list {
+		if (inv.Kind != KindRenewal && inv.Kind != KindOrder && inv.Kind != KindPlanChange) || !inv.PeriodEnd.Equal(paidThrough) ||
+			!inv.PeriodStart.Before(paidThrough) {
+			continue
+		}
+		full, err := s.Store.GetInvoice(ctx, inv.ID)
+		if err != nil {
+			return 0, time.Time{}, err
+		}
+		var v int64
+		for _, it := range full.Items {
+			switch it.Kind {
+			case ItemPlan, ItemProration, ItemDiscount:
+				v += it.Amount
+			}
+		}
+		return max(v-full.AmountRefunded, 0), full.PeriodStart, nil
+	}
+	return 0, time.Time{}, nil
 }
 
 // QuotePlanChange prices a change to plan and cycle ("" keeps the
@@ -1250,12 +1342,22 @@ func (s *Service) quotePlanChange(ctx context.Context, cfg *InvoicingSettings, a
 		return nil, fmt.Errorf("%w: the account is already on %s, %s", ErrInvalid, plan.Name, cycle)
 	}
 	now := s.now()
-	overdue, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: OverdueCutoff(now), Limit: 1})
+	overdue, err := s.overdueInvoice(ctx, accountID, now)
 	if err != nil {
 		return nil, err
 	}
-	if len(overdue) > 0 {
-		return nil, fmt.Errorf("%w: pay the overdue invoice %s first", ErrConflict, displayNumber(overdue[0]))
+	if overdue != nil {
+		return nil, fmt.Errorf("%w: pay the overdue invoice %s first", ErrConflict, displayNumber(overdue))
+	}
+	// A renewal waiting to be paid is for the current plan: its period
+	// would be paid twice (or the next due date moved under it).
+	renewal, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, Status: store.InvoiceUnpaid,
+		Kind: KindRenewal, Limit: 1})
+	if err != nil {
+		return nil, err
+	}
+	if len(renewal) > 0 {
+		return nil, fmt.Errorf("%w: pay invoice %s (the renewal) first, then change plan", ErrConflict, displayNumber(renewal[0]))
 	}
 	curPlan, err := s.Store.GetPlan(ctx, a.PlanID)
 	if err != nil {
@@ -1264,14 +1366,20 @@ func (s *Service) quotePlanChange(ctx context.Context, cfg *InvoicingSettings, a
 	q := &PlanChangeQuote{Effective: "now", plan: plan, cycle: cycle, account: a, profile: p}
 	var items []store.InvoiceItem
 	today := Day(now)
-	// What was paid for runs until NextDueAt: its unused part comes back.
+	// What was paid for runs until NextDueAt: the unused part of what was
+	// actually paid for that period comes back.
 	paidThrough := p.NextDueAt
 	var periodSecs int64
 	if !paidThrough.IsZero() && paidThrough.After(now) {
 		start := AddMonths(paidThrough, -CycleMonths(p.Cycle), p.AnchorDay)
 		periodSecs = int64(paidThrough.Sub(start).Seconds())
-		if old, ok := recurringPrice(curPlan, p); ok && old > 0 && periodSecs > 0 {
-			q.Credit = MulDiv(old, int64(paidThrough.Sub(now).Seconds()), periodSecs)
+		paid, from, err := s.periodPaid(ctx, accountID, paidThrough)
+		if err != nil {
+			return nil, err
+		}
+		if secs := int64(paidThrough.Sub(from).Seconds()); paid > 0 && secs > 0 {
+			q.Credit = MulDiv(paid, int64(paidThrough.Sub(now).Seconds()), secs)
+			q.creditThrough = paidThrough
 		}
 	}
 	if cycle == p.Cycle && periodSecs > 0 {
@@ -1330,7 +1438,7 @@ func (s *Service) ChangePlan(ctx context.Context, accountID int64, planID, cycle
 		}
 	}
 	if q.Total <= 0 {
-		if err := s.applyPlanChangeLocked(ctx, accountID, q.plan.ID, q.cycle, q.periodStart, q.NewNextDueAt, 0); err != nil {
+		if err := s.applyPlanChangeLocked(ctx, accountID, q.plan.ID, q.cycle, q.periodStart, q.NewNextDueAt, q.creditThrough, 0); err != nil {
 			return nil, err
 		}
 		if q.Total < 0 {
@@ -1342,10 +1450,11 @@ func (s *Service) ChangePlan(ctx context.Context, accountID int64, planID, cycle
 		return &PlanChangeResult{Applied: true}, nil
 	}
 	inv, err := s.buildInvoice(ctx, cfg, newInvoice{Account: q.account, Profile: q.profile, Kind: KindPlanChange, Items: q.Items,
-		Due: s.now(), PeriodStart: q.periodStart, PeriodEnd: q.NewNextDueAt, PlanID: q.plan.ID, Cycle: q.cycle})
+		Due: days(Day(s.now()), 7), PeriodStart: q.periodStart, PeriodEnd: q.NewNextDueAt, PlanID: q.plan.ID, Cycle: q.cycle})
 	if err != nil {
 		return nil, err
 	}
+	inv.CreditThrough = q.creditThrough
 	if inv, err = s.createInvoiceLocked(ctx, cfg, inv, true); err != nil {
 		return nil, err
 	}
@@ -1354,9 +1463,12 @@ func (s *Service) ChangePlan(ctx context.Context, accountID int64, planID, cycle
 }
 
 // applyPlanChangeLocked switches an account's plan and cycle, with its
-// next due date at the end of the period now paid. Renewals not paid yet
+// next due date at the end of the period now paid. The due date never
+// moves back, except to where the change credited the unused time from
+// (creditThrough, while it is still the account's next due date): paid
+// for, and not credited, time is never billed again. Renewals not paid yet
 // were for the old plan: they are cancelled (and made again).
-func (s *Service) applyPlanChangeLocked(ctx context.Context, accountID int64, planID, cycle string, start, end time.Time, invoiceID int64) error {
+func (s *Service) applyPlanChangeLocked(ctx context.Context, accountID int64, planID, cycle string, start, end, creditThrough time.Time, invoiceID int64) error {
 	a, err := s.Store.GetAccount(ctx, accountID)
 	if err != nil {
 		return err
@@ -1372,10 +1484,15 @@ func (s *Service) applyPlanChangeLocked(ctx context.Context, accountID int64, pl
 	if err != nil {
 		return err
 	}
-	if p.Cycle != cycle {
-		p.AnchorDay = start.Day()
+	next := end
+	if end.Before(p.NextDueAt) && (creditThrough.IsZero() || !creditThrough.Equal(p.NextDueAt)) {
+		next = p.NextDueAt
+		s.event(ctx, accountID, "billing", "Plan change: the next due date stays "+shortDate(next)+" (paid until then)")
 	}
-	p.Cycle, p.NextDueAt, p.PriceOverride = cycle, end, nil
+	if p.Cycle != cycle && next.Equal(end) {
+		p.AnchorDay = start.Day() // a new cycle from start
+	}
+	p.Cycle, p.NextDueAt, p.PriceOverride = cycle, next, nil
 	if err := s.Store.SaveBillingProfile(ctx, p); err != nil {
 		return err
 	}
@@ -1413,6 +1530,11 @@ func (s *Service) RequestCancel(ctx context.Context, accountID int64, when, reas
 	if a.Status == store.AccountTerminated {
 		return nil, fmt.Errorf("%w: the account is terminated", ErrConflict)
 	}
+	if n, err := s.liveCustomers(ctx, a); err != nil {
+		return nil, err
+	} else if n > 0 {
+		return nil, fmt.Errorf("%w: cancel your customers' accounts first (%d left)", ErrConflict, n)
+	}
 	switch when {
 	case "immediately":
 		s.payMu.Lock()
@@ -1436,10 +1558,64 @@ func (s *Service) RequestCancel(ctx context.Context, accountID int64, when, reas
 			return nil, err
 		}
 		s.event(ctx, accountID, "billing", "Cancellation requested for "+shortDate(p.CancelAt))
+		// A renewal made already is for a period that won't come: not to
+		// be charged or chased (released: withdrawing the cancellation
+		// invoices it again).
+		if err := s.dropRenewalsFromLocked(ctx, accountID, p.CancelAt); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("%w: when is end_of_period or immediately", ErrInvalid)
 	}
 	return s.Profile(ctx, accountID)
+}
+
+// dropRenewalsFromLocked cancels (and releases) the unpaid renewals of
+// periods starting at or after from.
+func (s *Service) dropRenewalsFromLocked(ctx context.Context, accountID int64, from time.Time) error {
+	open, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, Status: store.InvoiceUnpaid, Kind: KindRenewal})
+	if err != nil {
+		return err
+	}
+	for _, inv := range open {
+		if !inv.PeriodStart.Before(from) {
+			if err := s.cancelInvoiceLocked(ctx, inv.ID, "cancellation requested", true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// liveCustomers counts a reseller's customer accounts not terminated.
+func (s *Service) liveCustomers(ctx context.Context, a *store.Account) (int, error) {
+	if a.Kind != store.AccountReseller {
+		return 0, nil
+	}
+	kids, err := s.Store.ListAccounts(ctx, store.AccountFilter{ParentID: a.ID})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, k := range kids {
+		if k.Status != store.AccountTerminated {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// clearCancellation forgets an account's pending cancellation (it was
+// terminated, or brought back).
+func (s *Service) clearCancellation(ctx context.Context, accountID int64) {
+	p, err := s.Store.GetBillingProfile(ctx, accountID)
+	if err != nil || (p.CancelAt.IsZero() && p.CancelReason == "") {
+		return
+	}
+	p.CancelAt, p.CancelReason = time.Time{}, ""
+	if err := s.Store.SaveBillingProfile(ctx, p); err != nil {
+		s.Log.Warn("clearing a cancellation", "account", accountID, "err", err)
+	}
 }
 
 // WithdrawCancel withdraws a cancellation not yet done.

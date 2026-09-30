@@ -177,9 +177,18 @@ func TestTaxes(t *testing.T) {
 	if tc, _ := e.svc.taxContext(ctx, cfg, in, true); len(tc.Rules) != 0 {
 		t.Fatal("an exempt account taxed")
 	}
-	in.TaxID = "GSTIN123"
-	if tc, _ := e.svc.taxContext(ctx, cfg, in, false); len(tc.Rules) != 0 {
-		t.Fatal("a tax ID doesn't exempt")
+	// Only something that looks like a tax ID exempts.
+	for _, id := range []string{"none", "n/a", "GST123", "x", "27AAPFU0939F1ZV 27AAPFU0939F1ZV 27AAPFU"} {
+		in.TaxID = id
+		if tc, _ := e.svc.taxContext(ctx, cfg, in, false); len(tc.Rules) != 1 || ExemptByTaxID(cfg, in) {
+			t.Errorf("tax ID %q exempts", id)
+		}
+	}
+	for _, id := range []string{"27AAPFU0939F1ZV", "DE 123 456 789", "GB-1234"} {
+		in.TaxID = id
+		if tc, _ := e.svc.taxContext(ctx, cfg, in, false); len(tc.Rules) != 0 || !ExemptByTaxID(cfg, in) {
+			t.Errorf("tax ID %q doesn't exempt", id)
+		}
 	}
 	for _, bad := range []store.TaxRule{{Name: "", Rate: 100}, {Name: "X", Country: "IND"}, {Name: "X", State: "MH"},
 		{Name: "X", Rate: 10001}, {Name: "X", Level: 3}, {Name: "X", Compound: true}} {

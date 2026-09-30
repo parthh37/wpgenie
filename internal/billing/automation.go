@@ -65,6 +65,9 @@ const (
 	CountCancelled        = "cancelled"
 	CountOverage          = "overage_invoices"
 	CountOrdersCancelled  = "orders_cancelled"
+	CountOffersCancelled  = "offers_cancelled" // top-ups and plan changes left unpaid
+	CountPlanChangesStale = "plan_changes_replaced"
+	CountCancelBlocked    = "cancellations_blocked" // a reseller with customers left: suspended instead
 	CountEffects          = "effects_applied"
 )
 
@@ -218,7 +221,16 @@ func (s *Service) renewals(ctx context.Context, r *run) error {
 		if err == nil {
 			_, err = s.createInvoiceLocked(ctx, r.cfg, inv, true)
 		}
+		var dropped int
+		if err == nil {
+			// A plan change not paid yet was priced on the period this
+			// renewal bills: its quote is stale.
+			dropped, err = s.dropPlanChangesLocked(ctx, a.ID)
+		}
 		s.payMu.Unlock()
+		if dropped > 0 {
+			r.Counts[CountPlanChangesStale] += dropped
+		}
 		switch {
 		case errors.Is(err, store.ErrExists):
 		case err != nil:
@@ -228,6 +240,22 @@ func (s *Service) renewals(ctx context.Context, r *run) error {
 		}
 	}
 	return nil
+}
+
+// dropPlanChangesLocked cancels an account's unpaid plan change invoices.
+func (s *Service) dropPlanChangesLocked(ctx context.Context, accountID int64) (int, error) {
+	open, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, Status: store.InvoiceUnpaid, Kind: KindPlanChange})
+	if err != nil {
+		return 0, err
+	}
+	for _, inv := range open {
+		if err := s.cancelInvoiceLocked(ctx, inv.ID, "renewal issued", true); err != nil {
+			return 0, err
+		}
+		s.event(ctx, accountID, "billing", "Plan change invoice "+displayNumber(inv)+
+			" withdrawn: the renewal was issued; ask for the change again once it is paid")
+	}
+	return len(open), nil
 }
 
 func days(t time.Time, n int) time.Time { return t.AddDate(0, 0, n) }
@@ -259,6 +287,32 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 		}
 		if p == nil {
 			p = &store.BillingProfile{AccountID: acct.ID}
+		}
+		// Top-ups and plan changes are offers, not debts: never chased,
+		// and withdrawn when left unpaid.
+		if !Chased(inv.Kind) {
+			issued := inv.IssuedAt
+			if issued.IsZero() {
+				issued = inv.CreatedAt
+			}
+			if r.now.Sub(issued) >= staleOfferAge {
+				s.payMu.Lock()
+				err := s.cancelInvoiceLocked(ctx, inv.ID, "automation: unpaid for 7 days", true)
+				s.payMu.Unlock()
+				switch {
+				case errors.Is(err, ErrConflict): // paid or cancelled meanwhile
+				case err != nil:
+					r.fail(fmt.Sprintf("invoice %d", inv.ID), err)
+				default:
+					r.Counts[CountOffersCancelled]++
+				}
+			}
+			continue
+		}
+		// A renewal for a period after the account's cancellation isn't
+		// owed (normally cancelled when the cancellation was asked for).
+		if inv.Kind == KindRenewal && !p.CancelAt.IsZero() && !inv.PeriodStart.Before(p.CancelAt) {
+			continue
 		}
 		due := inv.DueAt
 		// 2. Auto-pay.
@@ -324,23 +378,48 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 		if _, _, ok := r.invoiced(acct.ID); !ok {
 			continue // the rest is for accounts billed here
 		}
-		// 5. Suspension.
-		if acct.Status == store.AccountActive && !r.now.Before(days(due, max(a.SuspendAfterDays, 1))) {
-			if _, err := s.Suspend(ctx, acct.ID, ReasonBilling); err != nil {
+		// 5. Suspension (0 days: never). Decided on the invoice as it is
+		// now, under payMu: a payment may have landed since the list was
+		// read.
+		if a.SuspendAfterDays > 0 && acct.Status == store.AccountActive && !r.now.Before(days(due, a.SuspendAfterDays)) {
+			s.payMu.Lock()
+			still, err := s.stillOwed(ctx, inv.ID, a.SuspendAfterDays, r.now)
+			if still {
+				_, err = s.Suspend(ctx, acct.ID, ReasonBilling)
+			}
+			s.payMu.Unlock()
+			switch {
+			case err != nil:
 				r.fail(fmt.Sprintf("suspending account %d", acct.ID), err)
-			} else {
+			case still:
 				r.Counts[CountSuspended]++
 				s.event(ctx, acct.ID, "billing", "Suspended: invoice "+displayNumber(inv)+" is overdue")
 				s.mailInvoice(ctx, r.cfg, inv, "account.suspended", fmt.Sprintf("account.suspended:%d:%d", acct.ID, inv.ID), nil)
-				if cur, err := s.Store.GetAccount(ctx, acct.ID); err == nil {
-					r.accounts[acct.ID] = cur
-				}
+			}
+			if cur, err := s.Store.GetAccount(ctx, acct.ID); err == nil {
+				r.accounts[acct.ID] = cur
 			}
 		}
-		// 6. Termination.
+		// 6. Termination (0 days: never). A reseller whose customers are
+		// still there stays suspended instead: they go first.
 		if a.TerminateAfterDays > 0 && !r.now.Before(days(due, a.TerminateAfterDays)) {
-			if _, err := s.Terminate(ctx, acct.ID, a.TerminateDeletesSites); err != nil {
+			if n, err := s.liveCustomers(ctx, acct); err != nil || n > 0 {
+				if err != nil {
+					r.fail(fmt.Sprintf("account %d", acct.ID), err)
+				}
+				continue
+			}
+			s.payMu.Lock()
+			still, err := s.stillOwed(ctx, inv.ID, a.TerminateAfterDays, r.now)
+			if still {
+				_, err = s.Terminate(ctx, acct.ID, a.TerminateDeletesSites)
+			}
+			s.payMu.Unlock()
+			if err != nil {
 				r.fail(fmt.Sprintf("terminating account %d", acct.ID), err)
+				continue
+			}
+			if !still {
 				continue
 			}
 			r.Counts[CountTerminated]++
@@ -353,6 +432,41 @@ func (s *Service) dunning(ctx context.Context, r *run) error {
 		}
 	}
 	return nil
+}
+
+// staleOfferAge: a top-up or plan change invoice left unpaid this long is
+// withdrawn.
+const staleOfferAge = 7 * 24 * time.Hour
+
+// Chased reports whether an unpaid invoice of a kind is a debt the
+// dunning chases (reminders, late fees, suspension): not burst top-ups or
+// plan changes, which are offers the client may leave.
+func Chased(kind string) bool { return kind != KindBurstTopup && kind != KindPlanChange }
+
+// stillOwed re-reads an invoice: still unpaid, with a balance, at least
+// n days past its (possibly moved) due date. Caller holds payMu.
+func (s *Service) stillOwed(ctx context.Context, id int64, n int, now time.Time) (bool, error) {
+	inv, err := s.Store.GetInvoice(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return inv.Status == store.InvoiceUnpaid && inv.Balance() > 0 && PastDue(inv.DueAt, now) &&
+		!now.Before(days(inv.DueAt, n)), nil
+}
+
+// overdueInvoice is an account's first overdue invoice that is chased
+// (nil: none).
+func (s *Service) overdueInvoice(ctx context.Context, accountID int64, now time.Time) (*store.Invoice, error) {
+	list, err := s.Store.ListInvoices(ctx, store.InvoiceFilter{AccountID: accountID, OverdueAt: OverdueCutoff(now)})
+	if err != nil {
+		return nil, err
+	}
+	for i := len(list) - 1; i >= 0; i-- {
+		if Chased(list[i].Kind) {
+			return list[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // liftSuspensions brings back accounts suspended for billing once nothing
@@ -378,6 +492,25 @@ func (s *Service) dueCancellations(ctx context.Context, r *run) error {
 	for id, p := range r.profiles {
 		a := r.accounts[id]
 		if a == nil || p.CancelAt.IsZero() || r.now.Before(p.CancelAt) || a.Status == store.AccountTerminated {
+			continue
+		}
+		// A reseller's customers (added since the request) go first: until
+		// then the reseller is suspended (once: an administrator's
+		// suspension, which billing never lifts by itself).
+		if n, err := s.liveCustomers(ctx, a); err != nil {
+			r.fail(fmt.Sprintf("account %d", id), err)
+			continue
+		} else if n > 0 {
+			if a.Status == store.AccountSuspended && a.SuspendReason == ReasonAdmin {
+				continue
+			}
+			if _, err := s.Suspend(ctx, id, ReasonAdmin); err != nil {
+				r.fail(fmt.Sprintf("suspending account %d", id), err)
+				continue
+			}
+			s.event(ctx, id, "billing", fmt.Sprintf("Cancellation due, but %d customer account(s) are still open: "+
+				"suspended until they are terminated", n))
+			r.Counts[CountCancelBlocked]++
 			continue
 		}
 		s.payMu.Lock()
