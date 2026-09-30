@@ -6,6 +6,7 @@
 <title>WPGenie</title>
 <meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/support.css">
 <script src="/theme.js"></script>
 <script src="/app.js" defer></script>
 <script src="/ux.js" defer></script>
@@ -20,6 +21,7 @@
 <script src="/wordpress.js" defer></script>
 <script src="/files.js" defer></script>
 <script src="/simple.js" defer></script>
+<script src="/support.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -54,6 +56,12 @@
   <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
   <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-life-buoy" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24M14.83 9.17l4.24-4.24M14.83 14.83l4.24 4.24M9.17 14.83l-4.24 4.24"/><circle cx="12" cy="12" r="4"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
 </svg>
 
@@ -66,8 +74,10 @@
     <div class="nav-group">
       <button class="tab active" data-tab="sites"><svg class="i"><use href="#i-globe"/></svg>Sites</button>
     </div>
-    <div class="nav-group staff-only">
-      <p class="nav-label">Operate</p>
+    <div class="nav-group">
+      <p class="nav-label staff-only">Operate</p>
+      <p class="nav-label tenant-only">Help</p>
+      <button class="tab" data-tab="support"><svg class="i"><use href="#i-life-buoy"/></svg>Support <span id="support-badge" class="nav-count" hidden></span></button>
       <button class="tab staff-only" data-tab="backups"><svg class="i"><use href="#i-archive"/></svg>Backups</button>
       <button class="tab staff-only" data-tab="mail"><svg class="i"><use href="#i-mail"/></svg>Mail</button>
       <button class="tab staff-only" data-tab="security"><svg class="i"><use href="#i-shield"/></svg>Security</button>
@@ -416,6 +426,10 @@
       <h2>Deliveries</h2>
       <div id="deliveries"></div>
     </div>
+  </section>
+
+  <section class="panel" data-panel="support" hidden>
+    <div id="support" class="support"></div>
   </section>
 
   <section class="panel" data-panel="users" hidden>
