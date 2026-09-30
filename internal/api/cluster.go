@@ -282,8 +282,9 @@ func (s *Server) broadcast(r *http.Request, method, path string, body any) (appl
 // accounts and the mail server on the panel.
 func panelOnly(pattern string) bool {
 	path := pattern[strings.IndexByte(pattern, ' ')+1:]
+	// Support tickets and e-mail to people live on the panel, like accounts.
 	for _, p := range []string{"/api/v1/account", "/api/v1/users", "/api/v1/sessions", "/api/v1/settings/auth",
-		"/api/v1/mail", "/api/v1/nodes"} {
+		"/api/v1/mail", "/api/v1/nodes", "/api/v1/tickets", "/api/v1/support", "/api/v1/email", "/api/v1/settings/email"} {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return true
 		}

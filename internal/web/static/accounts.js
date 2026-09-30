@@ -1,16 +1,14 @@
 'use strict';
-// Accounts, plans, billing settings and API tokens. Shares api(), h(),
-// table(), status(), showError(), showSecret(), fmtBytes() and fmtTime()
-// with app.js and panels.js. Everything shown here is also enforced by the
-// server; hiding a button is only a convenience.
+// Accounts, plans and API tokens (billing, its settings and webhooks are in
+// billing.js and billing-admin.js). Shares api(), h(), table(), status(),
+// showError(), showSecret(), fmtBytes() and fmtTime() with app.js and
+// panels.js. Everything shown here is also enforced by the server; hiding a
+// button is only a convenience.
 
 const FEATURES = ['staging', 'backups', 'sftp', 'files', 'phpmyadmin', 'certificates', 'cdn', 'smtp', 'burst'];
-const EVENTS = ['account.created', 'account.suspended', 'account.unsuspended', 'account.terminated',
-  'account.payment_failed', 'plan.changed', 'usage.threshold', 'burst.threshold', 'site.created', 'site.deleted'];
 
 loaders.accounts = loadAccounts;
 loaders.plans = loadPlans;
-loaders.billing = loadBilling;
 
 const limitText = (n, unit) => (n ? `${n}${unit}` : 'unlimited');
 
@@ -85,7 +83,11 @@ async function loadAccountPlan() {
     a.effectively_suspended ? h('p', { class: 'suspended small' }, 'This account is suspended: its sites show a "temporarily unavailable" page ' +
       'and nothing can be changed. Contact your provider.') : null,
     h('p', { class: 'muted small' }, planSummary(a.limits)),
-    usageBars(u, b), h('div', { class: 'actions' }, measure)));
+    usageBars(u, b),
+    // Out of burst minutes: buy more (clientarea.js), when this account may.
+    b && b.allowed && !b.unlimited && b.remaining <= 0 && typeof burstBuyButton === 'function'
+      ? h('p', { class: 'small st-warning' }, 'Out of burst minutes: sites stay at their normal size. ', burstBuyButton()) : null,
+    h('div', { class: 'actions' }, measure)));
 }
 
 // Deferred scripts run once the document is parsed, before app.js's init.
@@ -111,10 +113,7 @@ async function loadAccountPlan() {
   $('#new-account').addEventListener('submit', createAccount);
   $('#plan-form').addEventListener('submit', savePlan);
   $('#plan-features').replaceChildren(...FEATURES.map((f) => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'feature', value: f }), f)));
-  $('#webhook-events').replaceChildren(h('span', { class: 'small muted' }, 'Events (none checked: all):'),
-    ...EVENTS.map((ev) => h('label', { class: 'check small' }, h('input', { type: 'checkbox', name: 'event', value: ev }), ev)));
-  $('#stripe-form').addEventListener('submit', saveStripe);
-  $('#webhook-form').addEventListener('submit', addWebhook);
+  $('#plan-cancel').addEventListener('click', resetPlanForm);
 }
 
 // ---- Accounts ----
@@ -253,6 +252,8 @@ async function showAccountDetail(id) {
     usageBars(u, burst),
     planPicker,
     h('div', { class: 'actions' }, ...actions),
+    // Staff bill accounts here; resellers bill their customers elsewhere.
+    !isTenant() && typeof accountBilling === 'function' ? accountBilling(a) : null,
     users.length || canManage ? h('h2', {}, 'Users') : null,
     users.length ? table(['User', 'Role', '2FA', 'State', ''], userRows) : null,
     canManage && a.status !== 'terminated' ? addUser : null,
@@ -264,8 +265,15 @@ async function showAccountDetail(id) {
 // ---- Plans ----
 
 async function loadPlans() {
-  const plans = await api('GET', '/plans');
-  $('#plans').replaceChildren(table(['ID', 'Name', 'Limits', 'Overage', 'Resellable', ''], plans.map((p) => {
+  const [plans] = await Promise.all([api('GET', '/plans'), typeof billingConfig === 'function' ? billingConfig().catch(() => null) : null]);
+  // Prices per billing period, when the server has them (billing.js).
+  const pricing = typeof renderPriceEditor === 'function' && plans.some((p) => 'prices' in p);
+  if (pricing) PLAN_PRICING = true;
+  $('#plan-pricing').hidden = !PLAN_PRICING;
+  const form = $('#plan-form');
+  if (PLAN_PRICING && !form.dataset.editing) renderPriceEditor($('#plan-prices'), {});
+  const heads = PLAN_PRICING ? ['ID', 'Name', 'Price', 'Limits', 'Overage', 'Resellable', ''] : ['ID', 'Name', 'Limits', 'Overage', 'Resellable', ''];
+  $('#plans').replaceChildren(table(heads, plans.map((p) => {
     const edit = h('button', { class: 'ghost admin-only' }, 'Edit');
     edit.addEventListener('click', () => fillPlanForm(p));
     const del = h('button', { class: 'ghost danger admin-only' }, 'Delete');
@@ -273,7 +281,10 @@ async function loadPlans() {
       if (!await ask(`Delete plan ${p.id}?`)) return;
       try { await api('DELETE', `/plans/${encodeURIComponent(p.id)}`); await loadPlans(); } catch (e) { showError(e); }
     });
-    return [p.id, p.name, h('td', { class: 'small' }, planSummary(p)), p.overage, p.resellable ? 'yes' : 'no', h('td', {}, edit, del)];
+    const name = h('td', {}, p.name, p.public ? [' ', h('span', { class: 'badge' }, 'on the order page')] : null,
+      p.description ? h('div', { class: 'muted small' }, p.description) : null);
+    return [p.id, name, PLAN_PRICING ? h('td', {}, planPriceText(p)) : null, h('td', { class: 'small' }, planSummary(p)), p.overage,
+      p.resellable ? 'yes' : 'no', h('td', {}, edit, del)].filter((c) => c !== null);
   })));
 }
 
@@ -286,6 +297,14 @@ function fillPlanForm(p) {
   f.backup_repos.value = p.backup_repos.join(', ');
   f.resellable.checked = p.resellable;
   f.querySelectorAll('input[name=feature]').forEach((c) => { c.checked = p.features.includes(c.value); });
+  if (PLAN_PRICING) {
+    f.description.value = p.description || '';
+    f.public.checked = !!p.public;
+    f.account_kind.value = p.account_kind || 'customer';
+    f.sort.value = p.sort || 0;
+    f.overage_gb_price.value = fromMinor(p.overage_gb_price || 0);
+    renderPriceEditor($('#plan-prices'), p);
+  }
   f.dataset.editing = p.id;
   f.scrollIntoView({ behavior: 'smooth' });
 }
@@ -303,81 +322,24 @@ async function savePlan(e) {
     backup_repos: splitList(f.backup_repos.value),
   };
   try {
+    if (PLAN_PRICING) {
+      const overage = toMinor(f.overage_gb_price.value);
+      if (Number.isNaN(overage) || overage < 0) throw new Error('The price per extra GB isn\'t an amount.');
+      Object.assign(body, { description: f.description.value.trim(), public: f.public.checked, account_kind: f.account_kind.value,
+        sort: Number(f.sort.value || 0), overage_gb_price: overage || 0, prices: readPriceEditor(f) });
+    }
     if (f.dataset.editing === body.id) await api('PUT', `/plans/${encodeURIComponent(body.id)}`, body);
     else await api('POST', '/plans', body);
-    delete f.dataset.editing;
-    f.reset();
+    resetPlanForm();
     await loadPlans();
   } catch (err) { showError(err); }
 }
 
-// ---- Billing ----
-
-async function loadBilling() {
-  const [settings, hooks, deliveries] = await Promise.all([api('GET', '/billing/settings'), api('GET', '/billing/webhooks'),
-    api('GET', '/billing/deliveries?limit=50')]);
-  $('#stripe-url').textContent = settings.stripe_webhook_url;
-  const f = $('#stripe-form');
-  f.webhook_secret.placeholder = settings.stripe_webhook_secret_set ? 'set (unchanged if empty)' : 'whsec_…';
-  f.secret_key.placeholder = settings.stripe_secret_key_set ? 'set (unchanged if empty)' : 'sk_… or rk_…';
-  f.meter_event.value = settings.stripe_meter_event || '';
-  f.prices.value = Object.entries(settings.stripe_prices || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
-  $('#webhooks').replaceChildren(table(['URL', 'Events', 'State', ''], hooks.map((ep) => {
-    const act = (label, fn, cls = 'ghost') => {
-      const b = h('button', { class: cls }, label);
-      b.addEventListener('click', async () => { try { await fn(); await loadBilling(); } catch (e) { showError(e); } });
-      return b;
-    };
-    return [h('td', { class: 'wrap' }, ep.url), ep.events.length ? ep.events.join(', ') : 'all', ep.enabled ? 'enabled' : 'disabled',
-      h('td', {},
-        act('Test', () => api('POST', `/billing/webhooks/${ep.id}/test`)),
-        act(ep.enabled ? 'Disable' : 'Enable', () => api('PUT', `/billing/webhooks/${ep.id}`, { enabled: !ep.enabled })),
-        act('New secret', async () => {
-          if (!await ask('Issue a new signing secret? The old one stops working at once.')) return;
-          const r = await api('PUT', `/billing/webhooks/${ep.id}`, { rotate_secret: true });
-          showSecret('Webhook signing secret', [r.secret]);
-        }),
-        act('Delete', async () => { if (await ask(`Delete ${ep.url}?`)) await api('DELETE', `/billing/webhooks/${ep.id}`); }, 'ghost danger'))];
-  })));
-  $('#deliveries').replaceChildren(table(['Time', 'Event', 'Endpoint', 'State', 'Attempts', 'Last answer', ''], deliveries.map((d) => {
-    const retry = h('button', { class: 'ghost' }, 'Retry');
-    retry.addEventListener('click', async () => { try { await api('POST', `/billing/deliveries/${d.id}/retry`); await loadBilling(); } catch (e) { showError(e); } });
-    return [fmtTime(d.created_at), d.event, String(d.endpoint_id), h('td', {}, status(d.status)), String(d.attempts),
-      h('td', { class: 'wrap small' }, d.last_error || (d.last_status ? String(d.last_status) : '')),
-      h('td', {}, d.status === 'delivered' ? null : retry)];
-  })));
-}
-
-async function saveStripe(e) {
-  e.preventDefault();
-  const f = e.target;
-  const prices = {};
-  for (const line of f.prices.value.split('\n')) {
-    const [k, v] = line.split('=').map((x) => (x || '').trim());
-    if (k && v) prices[k] = v;
-  }
-  const body = { meter_event: f.meter_event.value.trim(), prices };
-  if (f.webhook_secret.value) body.webhook_secret = f.webhook_secret.value.trim();
-  if (f.secret_key.value) body.secret_key = f.secret_key.value.trim();
-  try {
-    await api('PUT', '/billing/settings', body);
-    f.webhook_secret.value = '';
-    f.secret_key.value = '';
-    await loadBilling();
-  } catch (err) { showError(err); }
-}
-
-async function addWebhook(e) {
-  e.preventDefault();
-  const f = e.target;
-  const events = [...document.querySelectorAll('#webhook-events input:checked')].map((c) => c.value);
-  try {
-    const r = await api('POST', '/billing/webhooks', { url: f.url.value.trim(), events });
-    f.reset();
-    document.querySelectorAll('#webhook-events input').forEach((c) => { c.checked = false; });
-    showSecret('Webhook signing secret', [r.secret, '', 'Verify X-WPGenie-Signature with it on every delivery.']);
-    await loadBilling();
-  } catch (err) { showError(err); }
+function resetPlanForm() {
+  const f = $('#plan-form');
+  delete f.dataset.editing;
+  f.reset();
+  if (PLAN_PRICING) renderPriceEditor($('#plan-prices'), {});
 }
 
 // ---- Single sign-on links (#sso=<token>) ----

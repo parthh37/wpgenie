@@ -1,0 +1,110 @@
+/* Logs tab (logs.js): log shipping to object storage. Uses style.css's
+   tokens, so both themes follow. */
+
+/* ---- Status ---- */
+.logs-hero { position: relative; overflow: hidden; }
+.logs-hero::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--line-2); }
+.logs-hero.ok::before { background: var(--ok); }
+.logs-hero.warning::before { background: var(--warn); }
+.logs-hero.error::before { background: var(--bad); }
+.logs-hero-head { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.logs-hero-text { flex: 1 1 320px; min-width: 0; }
+.logs-hero-text h2 { margin: 0 0 .2rem; font-size: 1.1rem; overflow-wrap: anywhere; }
+.logs-hero-text p { margin: .15rem 0; max-width: 72ch; }
+.logs-hero .actions { align-self: center; }
+.logs-hero .actions button { margin-top: 0; }
+.logs-hero-icon { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 12px;
+  background: var(--well); color: var(--muted); border: 1px solid var(--line); }
+.logs-hero-icon .i { width: 22px; height: 22px; }
+.logs-hero.ok .logs-hero-icon { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.logs-hero.warning .logs-hero-icon { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.logs-hero.error .logs-hero-icon { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+
+.logs-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: .75rem; margin-top: 1.1rem; }
+.logs-fact { display: flex; flex-direction: column; gap: .15rem; min-width: 0; padding: .75rem .9rem;
+  background: var(--well); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.logs-fact-v { font-size: 1.2rem; font-weight: 700; letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-fact meter { height: .5rem; margin: .2rem 0; }
+
+.logs-servers { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .9rem; }
+.logs-chip::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: .35rem; border-radius: 50%;
+  background: var(--muted); vertical-align: middle; }
+.logs-chip.ok::before { background: var(--ok); }
+.logs-chip.warning::before { background: var(--warn); }
+.logs-chip.error::before { background: var(--bad); }
+
+/* ---- What's collected ---- */
+.logs-types { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: .75rem; margin-top: .5rem; }
+.logs-type { display: flex; flex-direction: column; gap: .35rem; padding: .9rem 1rem; border: 1px solid var(--line);
+  border-radius: var(--r-sm); background: var(--well); transition: border-color .15s var(--ease), background .15s var(--ease); }
+.logs-type.on { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: linear-gradient(180deg, var(--accent-soft), transparent 70%), var(--well); }
+.logs-type.unavailable { opacity: .75; }
+.logs-type p { margin: 0; }
+.logs-type-head { display: flex; align-items: center; gap: .6rem; }
+.logs-type-head h3 { flex: 1; margin: 0; font-size: .92rem; }
+.logs-type-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 9px;
+  background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
+.logs-type.on .logs-type-icon { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.logs-type-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: .75rem; margin-top: auto; padding-top: .35rem; }
+.logs-type-foot > div { display: flex; flex-direction: column; min-width: 0; }
+.logs-type-v { font-size: .85rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.logs-note { color: var(--warn); }
+.logs-type .badge.on { color: var(--accent); border-color: var(--accent); }
+
+.logs-bars { width: 112px; height: 28px; flex: none; }
+.logs-bars rect { fill: color-mix(in srgb, var(--accent) 45%, transparent); }
+.logs-bars rect.today { fill: var(--accent); }
+.logs-bars rect.empty { fill: var(--line-2); }
+
+/* An on/off switch: a checkbox (role="switch") drawn as a track and knob. */
+input.logs-switch { appearance: none; -webkit-appearance: none; position: relative; width: 38px; height: 22px; min-height: 0; padding: 0; flex: none; margin: 0;
+  border-radius: 999px; background: var(--line-2); border: 0; cursor: pointer; transition: background .15s var(--ease); }
+input.logs-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: transform .15s var(--ease); }
+input.logs-switch:checked { background: var(--accent-btn); }
+input.logs-switch:checked::after { transform: translateX(16px); }
+input.logs-switch:disabled { opacity: .45; cursor: not-allowed; }
+input.logs-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+
+/* ---- Destination ---- */
+#logs-dest h2 .i { color: var(--accent); }
+.logs-providers { grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); }
+.logs-providers .choice { align-items: center; padding: .6rem .75rem; }
+.logs-provider-help { margin: -.25rem 0 .75rem; max-width: 78ch; }
+.logs-test-result:empty { display: none; }
+.logs-ok, .logs-bad { display: flex; gap: .6rem; align-items: flex-start; padding: .7rem .85rem; border-radius: var(--r-sm); margin: .5rem 0; }
+.logs-ok { background: var(--ok-soft); color: var(--ok); }
+.logs-bad { background: var(--bad-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent); }
+.logs-bad > .i { color: var(--bad); margin-top: .1rem; }
+.logs-bad p { margin: .2rem 0 0; overflow-wrap: anywhere; }
+
+/* ---- Retention ---- */
+.logs-keep { display: grid; gap: .6rem; }
+.logs-keep-row { display: grid; grid-template-columns: auto minmax(220px, 340px) 1fr; gap: .4rem 1rem; align-items: center;
+  padding: .7rem .85rem; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
+.logs-keep-row p { margin: 0; }
+
+/* ---- Archive ---- */
+.logs-archive .controls { margin-bottom: .75rem; }
+.logs-archive .controls button { margin-top: 0; }
+.logs-archive td .button, .logs-archive td button { min-height: 30px; padding: .25rem .6rem; font-size: .8rem; }
+.logs-empty { padding: 2rem 1rem; }
+.logs-viewer-box:empty { display: none; }
+.logs-viewer-box { margin-top: 1rem; }
+.logs-viewer-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.logs-viewer-head strong { overflow-wrap: anywhere; }
+.logs-viewer-head button { margin-left: auto; min-height: 30px; padding: .25rem .6rem; }
+pre.logs-viewer { max-height: 32rem; overflow: auto; margin: .5rem 0 0; padding: .8rem 1rem; background: var(--well);
+  border: 1px solid var(--line); border-radius: var(--r-sm); font-size: .78rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+
+.logs-line { display: block; padding: .15rem 0; border-bottom: 1px solid var(--line); }
+.logs-line:last-child { border-bottom: 0; }
+.logs-gist { display: block; color: var(--text); font-weight: 600; }
+.logs-raw { display: block; color: var(--muted); }
+
+@media (max-width: 640px) {
+  .logs-keep-row { grid-template-columns: auto 1fr; }
+  .logs-keep-row p { grid-column: 1 / -1; }
+  .logs-type-foot { flex-direction: column; align-items: flex-start; }
+}

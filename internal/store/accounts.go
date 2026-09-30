@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -51,20 +52,38 @@ type Plan struct {
 	// Overage is what happens past 100% of the bandwidth: notify or suspend.
 	Overage string `json:"overage"`
 	// Resellable plans may be assigned by resellers to their customers.
-	Resellable bool      `json:"resellable"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Resellable bool `json:"resellable"`
+	// The built-in store (see invoicing.go): what the order form shows and
+	// what an order creates, the price per billing cycle ("monthly": …; a
+	// plan without prices is free and not orderable), and the price per
+	// started GB of bandwidth beyond the plan (0: none), in minor units.
+	Description    string               `json:"description"`
+	Public         bool                 `json:"public"`
+	Sort           int                  `json:"sort"`
+	AccountKind    string               `json:"account_kind"`
+	Prices         map[string]PlanPrice `json:"prices"`
+	OverageGBPrice int64                `json:"overage_gb_price"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+}
+
+// PlanPrice is a plan's price for one billing cycle, in minor units.
+type PlanPrice struct {
+	Price    int64 `json:"price"`
+	SetupFee int64 `json:"setup_fee"`
 }
 
 const planCols = `id, name, max_sites, disk_mb, bandwidth_gb, max_replicas, max_memory_mb, max_cpus, max_domains,
-	features, backup_repos, overage, resellable, burst_minutes, created_at, updated_at`
+	features, backup_repos, overage, resellable, burst_minutes, description, is_public, sort_order, account_kind, prices,
+	overage_gb_price, created_at, updated_at`
 
 func scanPlan(row interface{ Scan(...any) error }) (*Plan, error) {
 	var p Plan
-	var features, repos string
+	var features, repos, prices string
 	var created, updated int64
 	err := row.Scan(&p.ID, &p.Name, &p.MaxSites, &p.DiskMB, &p.BandwidthGB, &p.MaxReplicas, &p.MaxMemoryMB,
-		&p.MaxCPUs, &p.MaxDomains, &features, &repos, &p.Overage, &p.Resellable, &p.BurstMinutes, &created, &updated)
+		&p.MaxCPUs, &p.MaxDomains, &features, &repos, &p.Overage, &p.Resellable, &p.BurstMinutes, &p.Description,
+		&p.Public, &p.Sort, &p.AccountKind, &prices, &p.OverageGBPrice, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -72,15 +91,40 @@ func scanPlan(row interface{ Scan(...any) error }) (*Plan, error) {
 		return nil, err
 	}
 	p.Features, p.BackupRepos = splitList(features), splitList(repos)
+	p.Prices = map[string]PlanPrice{}
+	if prices != "" {
+		if err := json.Unmarshal([]byte(prices), &p.Prices); err != nil {
+			return nil, err
+		}
+	}
 	p.CreatedAt, p.UpdatedAt = time.Unix(created, 0).UTC(), time.Unix(updated, 0).UTC()
 	return &p, nil
 }
 
+// planStore is what a plan's store columns hold that the struct doesn't
+// have as is: its kind (customer unless set) and prices (JSON).
+func planStore(p *Plan) (kind, prices string, err error) {
+	kind = p.AccountKind
+	if kind == "" {
+		kind = AccountCustomer
+	}
+	if p.Prices == nil {
+		return kind, "{}", nil
+	}
+	b, err := json.Marshal(p.Prices)
+	return kind, string(b), err
+}
+
 func (s *Store) CreatePlan(ctx context.Context, p *Plan) error {
+	kind, prices, err := planStore(p)
+	if err != nil {
+		return err
+	}
 	now := time.Now().Unix()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans (`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plans (`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas, p.MaxMemoryMB, p.MaxCPUs, p.MaxDomains,
-		strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage, p.Resellable, p.BurstMinutes, now, now)
+		strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage, p.Resellable, p.BurstMinutes,
+		p.Description, p.Public, p.Sort, kind, prices, p.OverageGBPrice, now, now)
 	if isUnique(err) {
 		return ErrExists
 	}
@@ -88,11 +132,16 @@ func (s *Store) CreatePlan(ctx context.Context, p *Plan) error {
 }
 
 func (s *Store) UpdatePlan(ctx context.Context, p *Plan) error {
+	kind, prices, err := planStore(p)
+	if err != nil {
+		return err
+	}
 	return s.exec1(ctx, `UPDATE plans SET name = ?, max_sites = ?, disk_mb = ?, bandwidth_gb = ?, max_replicas = ?,
 		max_memory_mb = ?, max_cpus = ?, max_domains = ?, features = ?, backup_repos = ?, overage = ?, resellable = ?,
-		burst_minutes = ?, updated_at = ? WHERE id = ?`, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas,
+		burst_minutes = ?, description = ?, is_public = ?, sort_order = ?, account_kind = ?, prices = ?,
+		overage_gb_price = ?, updated_at = ? WHERE id = ?`, p.Name, p.MaxSites, p.DiskMB, p.BandwidthGB, p.MaxReplicas,
 		p.MaxMemoryMB, p.MaxCPUs, p.MaxDomains, strings.Join(p.Features, ","), strings.Join(p.BackupRepos, ","), p.Overage,
-		p.Resellable, p.BurstMinutes, time.Now().Unix(), p.ID)
+		p.Resellable, p.BurstMinutes, p.Description, p.Public, p.Sort, kind, prices, p.OverageGBPrice, time.Now().Unix(), p.ID)
 }
 
 func (s *Store) GetPlan(ctx context.Context, id string) (*Plan, error) {
@@ -148,6 +197,10 @@ const (
 	AccountActive     = "active"
 	AccountSuspended  = "suspended"
 	AccountTerminated = "terminated"
+	// AccountPending: ordered from the store, awaiting its first payment
+	// (or an administrator's approval). Treated as suspended (no sites),
+	// but its users can sign in, pay and ask for help.
+	AccountPending = "pending"
 )
 
 // Account is a tenant: an organisation whose users manage its sites. A
@@ -359,6 +412,9 @@ func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return err
 		}
+	}
+	if err := deleteAccountTickets(ctx, tx, id); err != nil {
+		return err
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
 	if err != nil {

@@ -14,8 +14,15 @@ import (
 var t0 = time.Unix(60*20_000_000, 0) // on a minute boundary
 
 func newTestDetector() (*attackDetector, *[]attackChange) {
+	// Sites report from several goroutines at once (as the shield's own
+	// callback allows): collect under a lock.
+	var mu sync.Mutex
 	var got []attackChange
-	return newAttackDetector(func(c attackChange) { got = append(got, c) }), &got
+	return newAttackDetector(func(c attackChange) {
+		mu.Lock()
+		got = append(got, c)
+		mu.Unlock()
+	}), &got
 }
 
 // traffic sends perMinute requests a minute, spread evenly over the

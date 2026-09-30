@@ -339,9 +339,19 @@ func clientIP(r *http.Request) string {
 // addresses; it can lock the account's owner out for a while too, which is
 // why it is looser and the CLI can always get in with the API token.
 type loginGuard struct {
+	// Window is how long attempts count (0: guardWindow). The order form
+	// uses a guard of its own with an hour.
+	Window    time.Duration
 	mu        sync.Mutex
 	failures  map[string]*failures
 	lastPrune time.Time
+}
+
+func (g *loginGuard) window() time.Duration {
+	if g.Window > 0 {
+		return g.Window
+	}
+	return guardWindow
 }
 
 type failures struct {
@@ -387,10 +397,11 @@ func (g *loginGuard) attempt(now time.Time, keys ...limitKey) (time.Duration, bo
 	if g.failures == nil {
 		g.failures = map[string]*failures{}
 	}
+	window := g.window()
 	if now.Sub(g.lastPrune) > time.Minute { // bounded memory: forget old windows
 		g.lastPrune = now
 		for k, f := range g.failures {
-			if now.Sub(f.first) > guardWindow {
+			if now.Sub(f.first) > window {
 				delete(g.failures, k)
 			}
 		}
@@ -399,12 +410,12 @@ func (g *loginGuard) attempt(now time.Time, keys ...limitKey) (time.Duration, bo
 	first := false
 	for _, k := range keys {
 		f := g.failures[k.key]
-		if f != nil && now.Sub(f.first) > guardWindow {
+		if f != nil && now.Sub(f.first) > window {
 			delete(g.failures, k.key)
 			f = nil
 		}
 		if f != nil && f.n >= k.limit {
-			wait = max(wait, guardWindow-now.Sub(f.first))
+			wait = max(wait, window-now.Sub(f.first))
 			first = first || !f.reported
 			f.reported = true
 		}
@@ -500,7 +511,9 @@ var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@+-]{1,63}$`)
 // reservedNames are actors the audit log shows for things no user did: a
 // user by one of these names could pass their actions off as the API
 // token's or a billing system's.
-var reservedNames = []string{"api-token", "system", "scheduler", "sso", "stripe"}
+var reservedNames = []string{"api-token", "system", "scheduler", "sso", "stripe",
+	// Built-in billing's actors (ledgers, payments, the order form's audit).
+	"razorpay", "store", "auto-pay", "automation", "billing"}
 
 func validUsername(u string) error {
 	if !usernameRe.MatchString(u) {
@@ -644,6 +657,22 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *store.User) error {
+	if err := s.signIn(w, r, u); err != nil {
+		return err
+	}
+	u, err := s.Store.GetUser(r.Context(), u.ID)
+	if err != nil {
+		return err
+	}
+	if p, err := s.principalFor(r.Context(), u); err == nil {
+		u.Role = p.Role // a tenant's role follows their account
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+// signIn creates a session for u and sets its cookie (sign-in, setup, and
+// a new client's order).
+func (s *Server) signIn(w http.ResponseWriter, r *http.Request, u *store.User) error {
 	token := auth.RandomToken(32)
 	now := s.now()
 	sess := &store.Session{ID: auth.RandomToken(9), UserID: u.ID, CreatedAt: now, LastSeenAt: now,
@@ -657,14 +686,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *store.U
 		// Behind Caddy with TLS; a local SSH tunnel is plain HTTP on loopback.
 		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 	})
-	u, err := s.Store.GetUser(r.Context(), u.ID)
-	if err != nil {
-		return err
-	}
-	if p, err := s.principalFor(r.Context(), u); err == nil {
-		u.Role = p.Role // a tenant's role follows their account
-	}
-	return writeJSON(w, http.StatusOK, map[string]any{"user": u})
+	return nil
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) error {

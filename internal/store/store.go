@@ -660,6 +660,15 @@ var migrations = []string{
 	ALTER TABLE account_usage ADD COLUMN burst_from_credit INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE account_usage ADD COLUMN burst_credit_taken INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE account_usage ADD COLUMN burst_notified INTEGER NOT NULL DEFAULT 0;`,
+	// Outgoing e-mail: see mailer.go.
+	mailerSchema,
+	// Built-in billing (products' prices, invoices, payments, credit,
+	// promotions, taxes): see invoicing.go.
+	invoicingSchema,
+	// Support tickets: see support.go.
+	supportSchema,
+	// Log shipping to object storage: see logship.go.
+	logshipSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

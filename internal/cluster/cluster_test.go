@@ -386,3 +386,18 @@ func TestPinnedKeys(t *testing.T) {
 		t.Fatalf("panel to n2: %v", err)
 	}
 }
+
+// Log shipping names the panel's and an unpaired server's logs "panel"
+// and "unpaired": a new server can't take either ID.
+func TestReservedNodeIDs(t *testing.T) {
+	c := &Controller{}
+	for _, in := range []AddNodeInput{{Name: "Panel"}, {Name: "web", ID: "unpaired"}} {
+		in.Address, in.PairingCode = "203.0.113.5", "x"
+		if _, err := c.AddNode(context.Background(), in); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("%+v: %v", in, err)
+		}
+	}
+	if !ValidNodeID("panel") {
+		t.Error("an existing node called panel must stay valid")
+	}
+}
