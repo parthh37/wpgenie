@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -397,5 +399,41 @@ func TestSupportAdminRoutes(t *testing.T) {
 	}
 	if opened != 4 {
 		t.Errorf("%d ticket.opened e-mails", opened)
+	}
+}
+
+// Uploads are refused before they're read when the caller can't open or
+// reply at all: nothing reaches the staging folder.
+func TestRefusedUploadsAreNotStaged(t *testing.T) {
+	e := newSupportEnv(t)
+	ctx := context.Background()
+	staging := filepath.Join(e.api.Support.Dir, ".staging")
+	e.api.Support.SetSettings(ctx, support.Settings{Enabled: false, MaxFiles: 2, MaxFileMB: 1, Extensions: support.DefaultExtensions})
+	if c, body := e.upload("alice", "/api/v1/tickets", `{"subject":"x","body":"x"}`, [2]string{"a.txt", "hello"}); c != 403 {
+		t.Errorf("open while support is off: %d %s", c, body)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Errorf("an upload was staged before the refusal: %v", err)
+	}
+	// A reader's reply is refused the same way (its own route role first,
+	// and the service's check behind it).
+	vic, err := e.st.CreateUser(ctx, "vic", "x", "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.user["vic"] = vic
+	e.tokens["vic"] = e.token("vic")
+	if c, _ := e.upload("vic", e.path("alice", "/replies"), `{"body":"x"}`, [2]string{"a.txt", "hello"}); c != 403 {
+		t.Errorf("viewer reply: %d", c)
+	}
+	if err := e.api.Support.CheckReply(ctx, support.Actor{Name: "vic", ReadOnly: true}, e.ticket["alice"]); err == nil {
+		t.Error("CheckReply let a viewer write")
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Errorf("an upload was staged before the refusal: %v", err)
+	}
+	// Replies go on while opening is off, attachments included.
+	if c, body := e.upload("alice", e.path("alice", "/replies"), `{"body":"x"}`, [2]string{"a.txt", "hello"}); c != 201 {
+		t.Errorf("reply while support is off: %d %s", c, body)
 	}
 }

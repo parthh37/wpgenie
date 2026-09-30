@@ -451,8 +451,11 @@ func TestEmails(t *testing.T) {
 		opened[0].ReplyTo != "support@op.test" || !strings.Contains(opened[0].Subject, "Alice's site") {
 		t.Fatalf("opened: %+v", opened)
 	}
+	// One message per staff recipient: a refused address doesn't hold up
+	// the others, and each has its own line in the log.
 	staffMail := e.mails("ticket.new_staff")
-	if len(staffMail) != 1 || !slices.Equal(staffMail[0].To, []string{"help@op.test", "general@op.test"}) || staffMail[0].AccountID != 0 {
+	if len(staffMail) != 2 || !slices.Equal(staffMail[0].To, []string{"help@op.test"}) ||
+		!slices.Equal(staffMail[1].To, []string{"general@op.test"}) || staffMail[0].AccountID != 0 || staffMail[1].AccountID != 0 {
 		t.Fatalf("new_staff: %+v", staffMail)
 	}
 	// Notes are never e-mailed; replies go to the customer.
@@ -468,7 +471,8 @@ func TestEmails(t *testing.T) {
 		t.Error("a message's line became a button")
 	}
 	e.svc.Reply(ctx, alice(e), id, ReplyInput{Body: "Thanks!"}, nil)
-	if cr := e.mails("ticket.customer_reply"); len(cr) != 1 || !strings.Contains(cr[0].Text, "Thanks!") || cr[0].To[0] != "help@op.test" {
+	if cr := e.mails("ticket.customer_reply"); len(cr) != 2 || !strings.Contains(cr[0].Text, "Thanks!") || cr[0].To[0] != "help@op.test" ||
+		cr[1].To[0] != "general@op.test" {
 		t.Fatalf("customer_reply: %+v", cr)
 	}
 	for _, m := range e.mails("") {
@@ -502,8 +506,11 @@ func TestEmails(t *testing.T) {
 	}
 	e.svc.Escalate(ctx, rita(e), cid, "Needs root")
 	ns = e.mails("ticket.new_staff")
-	if last := ns[len(ns)-1]; last.To[0] != "help@op.test" || !strings.Contains(last.Subject, "Escalated") || !strings.Contains(last.Text, "Needs root") {
-		t.Errorf("escalation e-mail: %+v", last)
+	for i, want := range []string{"help@op.test", "general@op.test"} {
+		m := ns[len(ns)-2+i]
+		if m.To[0] != want || len(m.To) != 1 || !strings.Contains(m.Subject, "Escalated") || !strings.Contains(m.Text, "Needs root") {
+			t.Errorf("escalation e-mail to %s: %s %v", want, m.Subject, m.To)
+		}
 	}
 	// No address, no e-mail (and no error).
 	a := e.acct["A"]
@@ -682,5 +689,138 @@ func TestSettingsAndDepartments(t *testing.T) {
 	}
 	if _, err := e.svc.UpdateCanned(ctx, c.ID+1, CannedInput{Title: "x", Body: "y"}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("update a missing canned reply: %v", err)
+	}
+}
+
+// The handler follows the account: moved to another reseller, the new
+// one handles its tickets (and hears about them); detached, staff do.
+func TestHandlerFollowsTheAccount(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	r2, _, _, err := e.st.CreateAccount(ctx, &store.Account{Name: "R2", Kind: store.AccountReseller, PlanID: "p",
+		Email: "r2@example.test"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruth := Actor{UserID: 9, Name: "ruth", AccountID: r2.ID, Reseller: true}
+	id := e.open(carl(e), "Carl's").Ticket.ID
+	c := e.acct["C"]
+	c.ParentID = r2.ID
+	if err := e.st.UpdateAccount(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	e.svc.Reply(ctx, carl(e), id, ReplyInput{Body: "Hello new reseller"}, nil)
+	cr := e.mails("ticket.customer_reply")
+	if len(cr) != 1 || cr[0].To[0] != "r2@example.test" || cr[0].AccountID != r2.ID {
+		t.Fatalf("customer reply went to %+v", cr)
+	}
+	if _, err := e.svc.Get(ctx, rita(e), id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the old reseller still reaches it: %v", err)
+	}
+	th, err := e.svc.Get(ctx, ruth, id)
+	if err != nil || th.Ticket.You != PartyHandler || !th.CanEscalate || !th.Ticket.Awaiting {
+		t.Fatalf("the new reseller: %+v %v", th, err)
+	}
+	if sum, _ := e.svc.Summary(ctx, rita(e)); sum.Awaiting != 0 {
+		t.Errorf("the old reseller is awaited on %d", sum.Awaiting)
+	}
+	if sum, _ := e.svc.Summary(ctx, ruth); sum.Awaiting != 1 {
+		t.Errorf("the new reseller is awaited on %d", sum.Awaiting)
+	}
+	if sum, _ := e.svc.Summary(ctx, staff); sum.Awaiting != 0 {
+		t.Errorf("staff awaited on a reseller's ticket: %d", sum.Awaiting)
+	}
+	// Detached: the staff's.
+	c.ParentID = 0
+	e.st.UpdateAccount(ctx, c)
+	e.svc.Reply(ctx, carl(e), id, ReplyInput{Body: "Anyone?"}, nil)
+	if cr := e.mails("ticket.customer_reply"); len(cr) != 2 || cr[1].To[0] != "help@op.test" || cr[1].AccountID != 0 {
+		t.Fatalf("after detaching: %+v", cr[len(cr)-1])
+	}
+	if sum, _ := e.svc.Summary(ctx, staff); sum.Awaiting != 1 {
+		t.Errorf("staff not awaited on a detached customer's ticket: %d", sum.Awaiting)
+	}
+	if th, _ := e.svc.Get(ctx, staff, id); th.Ticket.Handler != "staff" {
+		t.Errorf("handler %q", th.Ticket.Handler)
+	}
+	if _, err := e.svc.Escalate(ctx, ruth, id, ""); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a former reseller escalated: %v", err)
+	}
+	// Escalated tickets stay with staff when the customer moves.
+	c.ParentID = r2.ID
+	e.st.UpdateAccount(ctx, c)
+	if _, err := e.svc.Escalate(ctx, ruth, id, "yours"); err != nil {
+		t.Fatal(err)
+	}
+	c.ParentID = e.acct["R"].ID
+	e.st.UpdateAccount(ctx, c)
+	if th, _ := e.svc.Get(ctx, rita(e), id); th.Ticket.Handler != "staff" || th.CanEscalate {
+		t.Errorf("escalated ticket after a move: %+v", th.Ticket)
+	}
+}
+
+// What staff open for a reseller's customer stays with staff.
+func TestStaffOpenedTicketsStayWithStaff(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	th, err := e.svc.Open(ctx, staff, OpenInput{AccountID: e.acct["C"].ID, Subject: "About your site", Body: "We noticed…"}, nil)
+	if err != nil || th.Ticket.Handler != "staff" {
+		t.Fatalf("open: %+v %v", th, err)
+	}
+	id := th.Ticket.ID
+	if th, _ := e.svc.Get(ctx, rita(e), id); th.CanEscalate || th.Ticket.Awaiting || !th.Ticket.StaffOpened || th.Ticket.Escalated {
+		t.Errorf("the reseller handles a staff ticket: %+v", th)
+	}
+	if _, err := e.svc.Escalate(ctx, rita(e), id, ""); !errors.Is(err, ErrConflict) {
+		t.Errorf("escalated a staff ticket: %v", err)
+	}
+	e.svc.Reply(ctx, carl(e), id, ReplyInput{Body: "Thanks, what should I do?"}, nil)
+	cr := e.mails("ticket.customer_reply")
+	if len(cr) != 1 || cr[0].To[0] != "help@op.test" {
+		t.Fatalf("customer reply went to %+v", cr)
+	}
+	if n := len(e.mails("ticket.new_staff")); n != 0 {
+		t.Errorf("%d new-ticket e-mails for a ticket staff opened", n)
+	}
+	if sum, _ := e.svc.Summary(ctx, staff); sum.Awaiting != 1 {
+		t.Errorf("staff awaited on %d", sum.Awaiting)
+	}
+	if sum, _ := e.svc.Summary(ctx, rita(e)); sum.Awaiting != 0 {
+		t.Errorf("the reseller awaited on %d", sum.Awaiting)
+	}
+}
+
+// A status change decided on a status that has since changed is refused
+// (409), and writes nothing.
+func TestUpdateRefusesStaleStatus(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	id := e.open(alice(e), "x").Ticket.ID
+	e.svc.Reply(ctx, staff, id, ReplyInput{Body: "Answer"}, nil)
+	// Staff read the ticket answered; the customer replies meanwhile, and
+	// the close is decided on what was read.
+	t0, _, err := e.svc.ticket(ctx, staff, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.Reply(ctx, alice(e), id, ReplyInput{Body: "Still broken"}, nil)
+	closed := store.TicketClosed
+	err = e.st.UpdateTicket(ctx, id, store.TicketChanges{Status: &closed, FromStatus: t0.Status, At: e.now})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale close: %v", err)
+	}
+	if th, _ := e.svc.Get(ctx, staff, id); th.Ticket.Status != store.TicketCustomerReply {
+		t.Errorf("status %s", th.Ticket.Status)
+	}
+	// Changing the priority alone keeps the reply's status.
+	th, err := e.svc.Update(ctx, staff, id, UpdateInput{Priority: ptr("high")})
+	if err != nil || th.Ticket.Status != store.TicketCustomerReply || th.Ticket.Priority != "high" {
+		t.Errorf("priority change: %+v %v", th, err)
+	}
+	// Closing twice sends one e-mail.
+	e.svc.Update(ctx, staff, id, UpdateInput{Status: &closed})
+	e.svc.Update(ctx, staff, id, UpdateInput{Status: &closed})
+	if n := len(e.mails("ticket.closed")); n != 1 {
+		t.Errorf("%d closed e-mails", n)
 	}
 }

@@ -65,7 +65,7 @@ func testSupport(t *testing.T, s *Store) {
 		t.Fatalf("CreateTicket: %+v %+v", tk, first)
 	}
 	other := &Ticket{AccountID: b.ID, OpenedBy: "bob", DepartmentID: billing.ID, Subject: "Invoice question",
-		Status: TicketOpen, Priority: "low", HandlerAccountID: 99, CreatedAt: at.Add(time.Minute)}
+		Status: TicketOpen, Priority: "low", CreatedAt: at.Add(time.Minute)}
 	if err := s.CreateTicket(ctx, other, &TicketMessage{Author: "bob", Side: SideCustomer, Body: "Hi", CreatedAt: other.CreatedAt}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +133,9 @@ func testSupport(t *testing.T, s *Store) {
 	}
 
 	// Changes, with notes.
-	if err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Status: TicketInProgress, Priority: "urgent", DepartmentID: billing.ID,
-		AssignedUserID: staff.ID, At: at.Add(5 * time.Minute), Notes: []*TicketMessage{
+	inProgress, urgent := TicketInProgress, "urgent"
+	if err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Status: &inProgress, FromStatus: TicketClosed, Priority: &urgent,
+		DepartmentID: &billing.ID, AssignedUserID: &staff.ID, At: at.Add(5 * time.Minute), Notes: []*TicketMessage{
 			{Author: "sam", Side: SideSystem, Body: "sam reopened the ticket.", CreatedAt: at.Add(5 * time.Minute)},
 			{Author: "sam", Side: SideSystem, Internal: true, Body: "sam set the priority to urgent.", CreatedAt: at.Add(5 * time.Minute)},
 		}}); err != nil {
@@ -148,7 +149,8 @@ func testSupport(t *testing.T, s *Store) {
 	if msgs, _ = s.TicketMessages(ctx, tk.ID); len(msgs) != 6 {
 		t.Errorf("notes: %d messages", len(msgs))
 	}
-	if err := s.UpdateTicket(ctx, 999, TicketChanges{Status: TicketClosed, At: at}); !errors.Is(err, ErrNotFound) {
+	closedStatus := TicketClosed
+	if err := s.UpdateTicket(ctx, 999, TicketChanges{Status: &closedStatus, At: at}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update missing ticket: %v", err)
 	}
 
@@ -279,5 +281,166 @@ func testSupport(t *testing.T, s *Store) {
 	}
 	if err := s.DeleteCannedReply(ctx, c.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete twice: %v", err)
+	}
+}
+
+// Who handles a ticket is derived when it's read: the account's current
+// reseller, unless the ticket was escalated or opened by staff, or the
+// reseller is gone. Nothing goes stale when accounts move.
+func TestStoreTicketHandlers(t *testing.T) { forEachBackend(t, testTicketHandlers) }
+
+func testTicketHandlers(t *testing.T, s *Store) {
+	ctx := context.Background()
+	if err := s.CreatePlan(ctx, &Plan{ID: "p", Name: "P", Overage: "notify"}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name, kind string, parent int64) *Account {
+		a, _, _, err := s.CreateAccount(ctx, &Account{Name: name, Kind: kind, PlanID: "p", ParentID: parent}, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	r1, r2 := mk("R1", AccountReseller, 0), mk("R2", AccountReseller, 0)
+	c := mk("C", AccountCustomer, r1.ID)
+	dept := &SupportDepartment{Name: "General"}
+	s.CreateSupportDepartment(ctx, dept)
+	at := time.Unix(1_800_000_000, 0).UTC()
+	open := func(staffOpened bool) *Ticket {
+		tk := &Ticket{AccountID: c.ID, OpenedBy: "carl", DepartmentID: dept.ID, Subject: "x", Status: TicketOpen,
+			Priority: "medium", StaffOpened: staffOpened, CreatedAt: at}
+		if err := s.CreateTicket(ctx, tk, &TicketMessage{Author: "carl", Side: SideCustomer, Body: "x", CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		return tk
+	}
+	plain, byStaff, escalated := open(false), open(true), open(false)
+	if err := s.EscalateTicket(ctx, escalated.ID, at, &TicketMessage{Author: "r", Side: SideSystem, Internal: true, Body: "x", CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EscalateTicket(ctx, byStaff.ID, at, &TicketMessage{Author: "r", Side: SideSystem, Body: "x", CreatedAt: at}); !errors.Is(err, ErrConflict) {
+		t.Errorf("escalated a staff-opened ticket: %v", err)
+	}
+	handlers := func() (int64, int64, int64) {
+		t.Helper()
+		var out []int64
+		for _, tk := range []*Ticket{plain, byStaff, escalated} {
+			got, err := s.GetTicket(ctx, tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, got.HandlerAccountID)
+		}
+		return out[0], out[1], out[2]
+	}
+	awaiting := func(handler int64) int {
+		t.Helper()
+		n, err := s.CountTickets(ctx, TicketFilter{AwaitingHandler: &handler})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	check := func(name string, want int64, staffAwaits, r1Awaits, r2Awaits int) {
+		t.Helper()
+		p, b, e := handlers()
+		if p != want || b != 0 || e != 0 {
+			t.Errorf("%s: handlers %d %d %d, want %d 0 0", name, p, b, e, want)
+		}
+		if a0, a1, a2 := awaiting(0), awaiting(r1.ID), awaiting(r2.ID); a0 != staffAwaits || a1 != r1Awaits || a2 != r2Awaits {
+			t.Errorf("%s: awaiting staff %d, R1 %d, R2 %d; want %d %d %d", name, a0, a1, a2, staffAwaits, r1Awaits, r2Awaits)
+		}
+	}
+	if got, _ := s.GetTicket(ctx, byStaff.ID); !got.StaffOpened || got.Escalated {
+		t.Errorf("flags: %+v", got)
+	}
+	check("under R1", r1.ID, 2, 1, 0)
+	c.ParentID = r2.ID
+	s.UpdateAccount(ctx, c)
+	check("moved to R2", r2.ID, 2, 0, 1)
+	s.SetAccountStatus(ctx, r2.ID, AccountTerminated, "terminated", at)
+	check("reseller terminated", 0, 3, 0, 0)
+	c.ParentID = r1.ID
+	s.UpdateAccount(ctx, c)
+	check("back to R1", r1.ID, 2, 1, 0)
+	c.ParentID = 0
+	s.UpdateAccount(ctx, c)
+	check("detached", 0, 3, 0, 0)
+	// A ticket list shows the same.
+	list, _ := s.ListTickets(ctx, TicketFilter{})
+	for _, tk := range list {
+		if tk.HandlerAccountID != 0 {
+			t.Errorf("listed with handler %d", tk.HandlerAccountID)
+		}
+	}
+}
+
+// A change writes only what it changes, and a status change only applies
+// to the status it was decided on.
+func TestStoreTicketChanges(t *testing.T) { forEachBackend(t, testTicketChanges) }
+
+func testTicketChanges(t *testing.T, s *Store) {
+	ctx := context.Background()
+	s.CreatePlan(ctx, &Plan{ID: "p", Name: "P", Overage: "notify"})
+	a, _, _, _ := s.CreateAccount(ctx, &Account{Name: "A", Kind: AccountCustomer, PlanID: "p"}, "", nil)
+	dept := &SupportDepartment{Name: "General"}
+	s.CreateSupportDepartment(ctx, dept)
+	at := time.Unix(1_800_000_000, 0).UTC()
+	tk := &Ticket{AccountID: a.ID, OpenedBy: "a", DepartmentID: dept.ID, Subject: "x", Status: TicketAnswered, Priority: "low", CreatedAt: at}
+	if err := s.CreateTicket(ctx, tk, &TicketMessage{Author: "a", Side: SideCustomer, Body: "x", CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	// Staff read "answered"; the customer replies meanwhile.
+	s.AddTicketMessage(ctx, &TicketMessage{TicketID: tk.ID, Author: "a", Side: SideCustomer, Body: "again", CreatedAt: at.Add(time.Minute)},
+		TicketActivity{Status: TicketCustomerReply, Reply: true})
+	// A priority change leaves the status the reply set.
+	high := "high"
+	if err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Priority: &high, At: at.Add(2 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetTicket(ctx, tk.ID); got.Status != TicketCustomerReply || got.Priority != "high" {
+		t.Errorf("after a priority change: %+v", got)
+	}
+	// Closing from the stale "answered": refused, nothing written.
+	closed, urgent := TicketClosed, "urgent"
+	err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Status: &closed, FromStatus: TicketAnswered, Priority: &urgent, At: at.Add(3 * time.Minute),
+		Notes: []*TicketMessage{{Author: "s", Side: SideSystem, Body: "closed", CreatedAt: at.Add(3 * time.Minute)}}})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale status change: %v", err)
+	}
+	got, _ := s.GetTicket(ctx, tk.ID)
+	if got.Status != TicketCustomerReply || got.Priority != "high" || !got.ClosedAt.IsZero() || !got.UpdatedAt.Equal(at.Add(2*time.Minute)) {
+		t.Errorf("a refused change wrote: %+v", got)
+	}
+	if msgs, _ := s.TicketMessages(ctx, tk.ID); len(msgs) != 2 {
+		t.Errorf("a refused change's note was kept: %d messages", len(msgs))
+	}
+	// From the right status it applies; closing twice from open is refused.
+	if err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Status: &closed, FromStatus: TicketCustomerReply, At: at.Add(4 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTicket(ctx, tk.ID, TicketChanges{Status: &closed, FromStatus: TicketCustomerReply, At: at.Add(5 * time.Minute)}); !errors.Is(err, ErrConflict) {
+		t.Errorf("closed twice: %v", err)
+	}
+	if got, _ := s.GetTicket(ctx, tk.ID); !got.ClosedAt.Equal(at.Add(4 * time.Minute)) {
+		t.Errorf("closed_at %v", got.ClosedAt)
+	}
+}
+
+// The list and count queries' filters have indexes.
+func TestStoreTicketIndexes(t *testing.T) { forEachBackend(t, testTicketIndexes) }
+
+func testTicketIndexes(t *testing.T, s *Store) {
+	// Each backend's catalog, straight to the driver.
+	q := `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`
+	if s.Postgres() {
+		q = `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`
+	}
+	for _, name := range []string{"tickets_by_account", "tickets_by_status", "tickets_by_update", "tickets_by_department",
+		"tickets_by_assignee", "ticket_messages_by_ticket", "ticket_attachments_by_ticket"} {
+		var n int
+		if err := s.db.sql.QueryRowContext(context.Background(), q, name).Scan(&n); err != nil || n != 1 {
+			t.Errorf("index %s: %d, %v", name, n, err)
+		}
 	}
 }

@@ -226,6 +226,10 @@ func (s *Server) openTicket(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// Refused before any upload is read (support turned off, a viewer).
+	if err := sv.CheckOpen(r.Context(), supportActor(r)); err != nil {
+		return err
+	}
 	var in support.OpenInput
 	files, err := s.readTicketForm(w, r, sv, &in)
 	if err != nil {
@@ -277,6 +281,9 @@ func (s *Server) replyTicket(w http.ResponseWriter, r *http.Request) error {
 	}
 	id, err := pathID(r, "id")
 	if err != nil {
+		return err
+	}
+	if err := sv.CheckReply(r.Context(), supportActor(r), id); err != nil {
 		return err
 	}
 	var in support.ReplyInput

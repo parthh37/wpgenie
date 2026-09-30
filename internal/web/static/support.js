@@ -258,7 +258,7 @@ function ticketRow(t, provider) {
     h('div', { class: 'tk-row-main' },
       h('div', { class: 'tk-row-top' }, h('span', { class: 'tk-subject' }, t.subject),
         t.awaiting ? h('span', { class: 'tk-await' }, 'Needs your reply') : null,
-        t.you === 'handler' && t.handler === 'staff' ? h('span', { class: 'badge' }, 'Escalated') : null,
+        t.you === 'handler' && t.escalated ? h('span', { class: 'badge' }, 'Escalated') : null,
         t.you === 'staff' && t.handler === 'reseller' ? h('span', { class: 'badge', title: 'The customer\'s reseller answers it unless they escalate it' }, 'Reseller') : null),
       t.preview ? h('p', { class: 'tk-preview' }, t.preview) : null,
       h('p', { class: 'tk-meta' }, meta)),
@@ -434,10 +434,11 @@ function renderSide(el, view, update) {
   let handling = null;
   if (t.you === 'handler') {
     handling = t.handler === 'reseller' ? 'Your customer\'s ticket: you answer it. Escalate it if your provider needs to step in.'
-      : 'You escalated this ticket: your provider\'s staff handle it now. You can still follow it and reply.';
+      : t.escalated ? 'You escalated this ticket: your provider\'s staff handle it now. You can still follow it and reply.'
+        : 'Your provider\'s staff opened this ticket and handle it. You can follow it and reply.';
   } else if (t.you === 'staff' && t.handler === 'reseller') {
     handling = `A reseller's customer: the reseller (account #${t.handler_account_id}) answers it unless they escalate it.`;
-  } else if (t.you === 'staff' && t.escalated_at) {
+  } else if (t.you === 'staff' && t.escalated) {
     handling = 'Escalated to you by the customer\'s reseller.';
   }
 
