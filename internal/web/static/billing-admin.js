@@ -650,7 +650,7 @@ function stripeKeysForm(st, builtIn) {
     field('Webhook URL', copyText(st.stripe_webhook_url || '')),
     providerHint('Setting up Stripe', [
       'In Stripe open Developers → API keys and create a secret (or restricted) key; paste it above.',
-      'Open Developers → Webhooks → Add endpoint with the URL above' + (builtIn ? ', and the events checkout.session.completed, payment_intent.succeeded, payment_intent.payment_failed and charge.refunded' : '') +
+      'Open Developers → Webhooks → Add endpoint with the URL above' + (builtIn ? ', and the events checkout.session.completed, payment_intent.succeeded and charge.refunded' : '') +
         '. For subscriptions made in Stripe add customer.subscription.created, .updated and .deleted, invoice.paid and invoice.payment_failed too.',
       'Paste the endpoint\'s signing secret (whsec_…) above.']),
     h('details', { class: 'advanced' }, h('summary', {}, 'Stripe subscriptions (the older setup)'),

@@ -4,6 +4,11 @@ A WHMCS server (provisioning) module: every WHMCS service is a WPGenie account o
 creates, suspends, unsuspends and terminates the account, changes its plan, sets its user's password,
 imports disk and bandwidth usage, and signs the client in to the WPGenie dashboard with one click.
 
+WPGenie can also invoice clients itself ([built-in billing](../../docs/BILLING.md)). An account is billed by
+one or the other: accounts this module creates are billed by WHMCS and get no invoices from WPGenie. A
+reseller billed by the panel's built-in billing can use this module in its own WHMCS to bill its customers,
+whom WPGenie never invoices.
+
 ## What you need
 
 - WPGenie reachable over HTTPS on its panel domain (`PANEL_DOMAIN` at install), from the WHMCS server.

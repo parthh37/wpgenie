@@ -57,7 +57,11 @@ with one command.
 | 🚨 | **Monitoring**: Prometheus metrics, alerts for sites down, certificates expiring or invalid, disks filling up and failing backups, by e-mail or signed webhooks (Slack, Discord, Mattermost) | ✅ |
 | 🪣 | **Uploads offload**: the media library copied to S3-compatible storage (S3, R2, B2, MinIO), served from there when missing locally; optional removal of old local copies | ✅ |
 | 🌐 | **Several servers**: `install.sh --agent` on another VPS, pair it with a one-time code; new sites placed by free memory and disk, moved between servers with seconds of downtime (visitors forwarded until DNS follows), servers drained, a busy site's replicas spread over servers; mutual TLS between servers, nothing else exposed | ✅ |
-| 🏢 | **Accounts & billing**: customer and reseller accounts on plans (sites, disk, monthly bandwidth, per-site resources, features), usage metering, suspension (static 503, PHP stopped, nothing deleted), per-user API tokens, provisioning API with single sign-on, **WHMCS** module, **Stripe** subscriptions and metered bandwidth, signed outgoing webhooks | ✅ |
+| 🏢 | **Accounts & billing**: customer and reseller accounts on plans (sites, disk, monthly bandwidth, per-site resources, features), usage metering, suspension (static 503, PHP stopped, nothing deleted), per-user API tokens, provisioning API with single sign-on, **WHMCS** module (also for resellers billing their own customers), **Stripe** subscriptions and metered bandwidth, signed outgoing webhooks | ✅ |
+| 🧾 | **Built-in billing** (WHMCS-style): prices per billing cycle and setup fees, a public order page, invoices (gapless numbers, printable), cards with **Stripe** (saved cards charged automatically), UPI and more with **Razorpay**, bank transfer; taxes by country and state (two levels: GST, VAT…), promo codes, credit, prorated plan changes, cancellation, reminders → late fee → suspension → optional closing, bandwidth overage and burst minute invoices, client area, CSV exports. Resellers are billed; their customers are theirs to bill ([guide](docs/BILLING.md)) | ✅ |
+| 🛟 | **Support tickets**: departments, priorities, internal notes, attachments, canned replies, auto-close, e-mail notifications; resellers answer their customers' tickets and can escalate | ✅ |
+| 📨 | **E-mail to clients**: your SMTP (TLS required with a password), editable templates with previews, an outbox with retries and a log of everything sent | ✅ |
+| 🗄️ | **Log shipping**: access, PHP, WAF, security, audit and other logs to S3-compatible storage with [Vector](https://vector.dev) (hardened container, disk spool), bucket retention, smaller local logs, archive browser | ✅ |
 
 ## Install
 
@@ -143,7 +147,9 @@ wpgenie audit                                       # who changed what, from whe
 ```
 
 Host other people's sites: plans, customer and reseller accounts (each sees only its own sites), usage,
-and billing through WHMCS ([integrations/whmcs](integrations/whmcs)) or Stripe (dashboard → Billing):
+and billing built in (prices, order page, invoices, Stripe, Razorpay, bank transfer, taxes, reminders and
+suspension: set it up with [docs/BILLING.md](docs/BILLING.md), which also covers support tickets and log
+shipping), or through WHMCS ([integrations/whmcs](integrations/whmcs)) or Stripe subscriptions:
 
 ```bash
 wpgenie plan create starter --name Starter --sites 3 --disk 10240 --bandwidth 100 --replicas 2 --memory 1024 \
@@ -250,7 +256,11 @@ internal/phpmyadmin/ phpMyAdmin sessions: one-time tokens, temporary DB accounts
 internal/mail/      mail server + webmail containers, domains, mailboxes, DKIM
 internal/updater/   WPGenie self-update (signed releases, applier with rollback)
 internal/monitor/   Prometheus metrics, alerts (uptime, certificates, disk, backups), e-mail and webhooks
-internal/billing/   accounts, plans, quotas, usage, suspension, Stripe, outgoing webhooks
+internal/billing/   accounts, plans, quotas, usage, suspension, invoicing (orders, taxes, promotions, Stripe,
+                    Razorpay, dunning automation), outgoing webhooks
+internal/support/   support tickets: departments, attachments, auto-close, notifications
+internal/mailer/    e-mail to people: SMTP settings, templates, the outbox
+internal/logship/   log shipping to S3-compatible storage (Vector, spool, exporters, archive)
 internal/proxy/     Caddyfile rendering + live reload, Coraza WAF rules and audit log
 internal/runtime/   container runtime (the seam for multi-node)
 internal/store/     panel state (SQLite, or PostgreSQL)

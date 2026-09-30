@@ -217,6 +217,7 @@ func (s *Store) RecordMail(ctx context.Context, m *MailMessage) error {
 // RetryMail queues a message again, now (a failed one, or a sent one to
 // resend it).
 func (s *Store) RetryMail(ctx context.Context, id int64, now time.Time) error {
-	return s.exec1(ctx, `UPDATE mail_outbox SET status = ?, next_attempt_at = ?, last_error = '' WHERE id = ?`,
+	// A fresh start: the full schedule of retries again.
+	return s.exec1(ctx, `UPDATE mail_outbox SET status = ?, attempts = 0, next_attempt_at = ?, last_error = '' WHERE id = ?`,
 		MailPending, now.Unix(), id)
 }
