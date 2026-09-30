@@ -23,13 +23,16 @@ import (
 	"github.com/parthh37/wpgenie/internal/files"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
+	"github.com/parthh37/wpgenie/internal/logship"
 	"github.com/parthh37/wpgenie/internal/mail"
+	"github.com/parthh37/wpgenie/internal/mailer"
 	"github.com/parthh37/wpgenie/internal/monitor"
 	"github.com/parthh37/wpgenie/internal/phpmyadmin"
 	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/shield"
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
+	"github.com/parthh37/wpgenie/internal/support"
 	"github.com/parthh37/wpgenie/internal/updater"
 	"github.com/parthh37/wpgenie/internal/web"
 	"github.com/parthh37/wpgenie/internal/wplogin"
@@ -72,7 +75,17 @@ type Server struct {
 	// Monitor serves /metrics and the alert settings (optional).
 	Monitor *monitor.Service
 
+	// Mailer sends e-mail to people: clients and staff (optional).
+	Mailer *mailer.Service
+
+	// Support is the help desk: tickets (optional; panel only).
+	Support *support.Service
+	// Logship ships logs to S3-compatible storage (optional).
+	Logship *logship.Service
+
 	guard loginGuard
+	// storeGuard limits the public order form per client (invoicing.go).
+	storeGuard loginGuard
 	// routes is every route registered through route(), in order.
 	routes []routeInfo
 	// measured: account ID -> last on-demand disk measurement.
@@ -138,6 +151,12 @@ func (s *Server) Handler() http.Handler {
 		s.clusterRoutes(r)
 	}
 	s.monitoringRoutes(mux, r)
+	s.mailerRoutes(r)
+	// Built-in billing, support tickets and log shipping (each in its own
+	// file; mux for their public endpoints).
+	s.invoicingRoutes(mux, r)
+	s.supportRoutes(mux, r)
+	s.logshipRoutes(mux, r)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.
@@ -363,6 +382,13 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, errTooMany), errors.Is(err, wplogin.ErrTooMany):
 		status = http.StatusTooManyRequests
+	default:
+		for _, e := range errorStatuses {
+			if errors.Is(err, e.err) {
+				status = e.status
+				break
+			}
+		}
 	}
 	if status == http.StatusInternalServerError {
 		s.Log.Error("api", "method", r.Method, "path", r.URL.Path, "err", err)
@@ -371,6 +397,22 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 var errBadRequest = errors.New("bad request")
+
+// errorStatuses maps more packages' errors to statuses (see
+// registerErrorStatus).
+var errorStatuses []struct {
+	err    error
+	status int
+}
+
+// registerErrorStatus answers err (and errors wrapping it) with status;
+// features in their own files call it from init().
+func registerErrorStatus(err error, status int) {
+	errorStatuses = append(errorStatuses, struct {
+		err    error
+		status int
+	}{err, status})
+}
 
 // listSites lists every site for staff, and only their own (their
 // customers' too, for a reseller) for tenants, with the owning account.

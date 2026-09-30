@@ -81,6 +81,8 @@ async function loadBurst(el, site) {
     now = h('p', { class: 'muted small' }, `Normal size now (${copies(b.base)}); up to ${copies(b.max)} when traffic needs them.`);
   }
   const lines = [now];
+  // Out of minutes: tenants billed here can buy more (clientarea.js).
+  if (b.paused && isTenant() && typeof burstBuyButton === 'function') lines.push(burstBuyButton());
   if (b.mode === 'on' && b.until) lines.push(h('p', { class: 'muted small' }, `On until ${fmtTime(b.until)}, then automatic.`));
   lines.push(h('p', { class: 'muted small' }, `This site used ${plural(b.minutes, 'burst minute')} this month.`));
   const a = b.account;

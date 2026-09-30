@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,5 +237,20 @@ func TestRcloneAgainstMinIO(t *testing.T) {
 	err = r.Put(ctx, bad, "probe.txt", []byte("x"))
 	if err == nil || !strings.Contains(err.Error(), "SignatureDoesNotMatch") {
 		t.Errorf("wrong key: %v", err)
+	}
+}
+
+// Addressing is rclone's per-provider default unless the target says.
+func TestForcePathStyle(t *testing.T) {
+	tg := Target{Endpoint: "https://s3.eu-central-1.amazonaws.com", Bucket: "b", AccessKeyID: "AKIAX", SecretKey: "s"}
+	has := func(f string) bool { return slices.Contains(tg.Flags(), f) }
+	if has("--s3-force-path-style=true") || has("--s3-force-path-style=false") {
+		t.Error("a flag without ForcePathStyle")
+	}
+	for _, v := range []bool{true, false} {
+		tg.ForcePathStyle = &v
+		if !has("--s3-force-path-style=" + strconv.FormatBool(v)) {
+			t.Errorf("ForcePathStyle %v: %q", v, tg.Flags())
+		}
 	}
 }

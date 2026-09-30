@@ -1,0 +1,77 @@
+data_dir: "/var/lib/vector"
+enrichment_tables:
+  sites:
+    type: "file"
+    file:
+      path: "/etc/vector/tables/sites.csv"
+      encoding:
+        type: "csv"
+    schema:
+      host: "string"
+      site: "string"
+sources:
+  in_spool:
+    type: "file"
+    include: ["/spool/*/*.jsonl"]
+    read_from: "beginning"
+    remove_after_secs: 10
+    max_line_bytes: 1048576
+  in_internal:
+    type: "internal_metrics"
+    scrape_interval_secs: 15
+transforms:
+  t_spool:
+    type: "remap"
+    inputs: ["in_spool"]
+    drop_on_abort: true
+    drop_on_error: true
+    source: |
+      ts = .timestamp
+      m = parse_regex(string(.file) ?? "", r'^/spool/(?P<kind>[a-z_]+)/') ?? {}
+      kind = string(m.kind) ?? ""
+      if !includes(["php_errors", "waf", "security", "audit", "jobs", "account_events", "email", "daemon", "containers"], kind) {
+        abort
+      }
+      . = object(parse_json(string!(.message)) ?? null) ?? {}
+      if length(.) == 0 || exists(.wpgenie_spool) {
+        abort
+      }
+      .timestamp = ts
+      .log_type = kind
+      .server = "web-2"
+sinks:
+  archive:
+    type: "aws_s3"
+    inputs: ["t_spool"]
+    endpoint: "https://0123456789abcdef.r2.cloudflarestorage.com"
+    auth:
+      credentials_file: "/etc/vector/secrets/credentials"
+      profile: "wpgenie"
+    region: "auto"
+    bucket: "archive"
+    force_path_style: false
+    key_prefix: "web-2/{{ log_type }}/%Y/%m/%d/"
+    filename_time_format: "%H"
+    filename_append_uuid: true
+    filename_extension: "log.zst"
+    timezone: "UTC"
+    compression: "zstd"
+    encoding:
+      codec: "json"
+    framing:
+      method: "newline_delimited"
+    batch:
+      max_bytes: 50000000
+      timeout_secs: 900
+    buffer:
+      type: "disk"
+      max_size: 268435488
+      when_full: "block"
+    acknowledgements:
+      enabled: true
+    healthcheck:
+      enabled: false
+  metrics:
+    type: "prometheus_exporter"
+    inputs: ["in_internal"]
+    address: "127.0.0.1:9598"

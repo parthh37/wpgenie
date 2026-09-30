@@ -169,7 +169,10 @@
 	log {
 		output file {{.Cfg.AccessLog}} {
 			roll_size 100MiB
-			roll_keep 10
+			roll_keep {{.Cfg.AccessLogKeep}}
+			# Group-readable from the start (rotated files too): the log
+			# shipper reads it without capabilities (see internal/logship).
+			mode 0640
 		}
 		# JSON, with the daemon's health-check token replaced by a short
 		# hash: the ingester recognises its probes by it, and the log never

@@ -1,0 +1,100 @@
+/* The printable invoice (GET /api/v1/invoices/{id}/print): a sheet of
+   paper on screen, and just the sheet when printed or saved as a PDF (A4
+   and Letter both fit). Standalone: no other stylesheet on that page. */
+
+:root {
+  --ink: #11151d; --ink-2: #4b5363; --rule: #e3e6ed; --rule-2: #cfd5df; --tint: #f6f7fa;
+  --paid: #047857; --overdue: #c2410c; --accent: #4452d9;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: #e9ecf2; color: var(--ink); font: 14px/1.5 "Inter var", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; }
+
+/* The toolbar above the sheet (the print button lives in it or anywhere). */
+.print-btn { position: fixed; top: 1rem; right: 1rem; z-index: 2; display: inline-flex; align-items: center; gap: .45rem; padding: .6rem 1rem;
+  border: 0; border-radius: 8px; background: #4f5de6; color: #fff; font: 600 .9rem/1.2 inherit; cursor: pointer; text-decoration: none;
+  box-shadow: 0 4px 14px rgba(16, 24, 40, .18); }
+.print-btn:hover { background: #5f6cf1; }
+.print-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.invoice { position: relative; width: min(210mm, 100% - 2rem); min-height: 297mm; margin: 2rem auto; padding: 18mm 16mm 22mm;
+  background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 12px 40px rgba(16, 24, 40, .12); overflow: hidden; }
+
+.invoice-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 1.5rem;
+  padding-bottom: 1.25rem; margin-bottom: 1.5rem; border-bottom: 2px solid var(--ink); }
+.invoice-head h1 { margin: 0; font-size: 1.9rem; font-weight: 750; letter-spacing: -.02em; text-transform: uppercase; }
+.invoice-head .number { font-size: 1rem; font-weight: 600; color: var(--ink-2); }
+.invoice img, .company img { max-height: 56px; max-width: 220px; display: block; margin-bottom: .6rem; }
+
+.company { white-space: pre-line; color: var(--ink-2); font-size: .88rem; }
+.company strong, .company .name { display: block; color: var(--ink); font-size: 1.05rem; font-weight: 700; }
+
+.bill-to, .meta { font-size: .9rem; }
+.bill-to { white-space: pre-line; }
+.bill-to h2, .meta h2, .payments h2, .notes h2 { margin: 0 0 .35rem; font-size: .72rem; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-2); }
+.bill-to strong { font-size: 1rem; }
+.meta dl, dl.meta { display: grid; grid-template-columns: max-content auto; gap: .2rem 1.25rem; margin: 0; }
+.meta dt { color: var(--ink-2); }
+.meta dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+/* Addresses and dates side by side when both follow the header. */
+.invoice-head + .bill-to { float: left; width: 55%; }
+.bill-to + .meta { float: right; width: 40%; }
+.items { clear: both; }
+
+table.items, .items table { width: 100%; margin: 1.75rem 0 1rem; border-collapse: collapse; font-size: .9rem; }
+.items th { padding: .55rem .5rem; border-bottom: 1.5px solid var(--ink); text-align: left; font-size: .72rem; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.items td { padding: .6rem .5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.items th:not(:first-child), .items td:not(:first-child) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.items tr { break-inside: avoid; }
+
+.totals { width: min(320px, 100%); margin: 0 0 1.75rem auto; font-size: .92rem; font-variant-numeric: tabular-nums; }
+.totals table { width: 100%; border-collapse: collapse; }
+.totals div, .totals tr { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem .5rem; }
+.totals dt, .totals th { font-weight: 400; color: var(--ink-2); text-align: left; }
+.totals dd, .totals td { margin: 0; text-align: right; }
+.totals .total, .totals .grand, .totals tr:last-child { margin-top: .35rem; padding-top: .6rem; border-top: 1.5px solid var(--ink);
+  font-size: 1.05rem; font-weight: 750; color: var(--ink); }
+.totals .total dt, .totals .grand dt, .totals tr:last-child th { color: var(--ink); font-weight: 750; }
+
+.payments { margin: 1.25rem 0; font-size: .86rem; break-inside: avoid; }
+.payments table { width: 100%; border-collapse: collapse; }
+.payments th, .payments td { padding: .4rem .5rem; border-bottom: 1px solid var(--rule); text-align: left; }
+.payments th { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.payments td:last-child, .payments th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+.notes { margin: 1.25rem 0; padding: .8rem 1rem; background: var(--tint); border-left: 3px solid var(--rule-2); border-radius: 4px;
+  white-space: pre-line; font-size: .88rem; break-inside: avoid; }
+
+.footer { position: absolute; left: 16mm; right: 16mm; bottom: 10mm; padding-top: .6rem; border-top: 1px solid var(--rule);
+  color: var(--ink-2); font-size: .76rem; text-align: center; white-space: pre-line; }
+
+/* PAID / OVERDUE: a rubber stamp across the corner. */
+.stamp { position: absolute; top: 44mm; right: 14mm; padding: .3rem 1rem; border: 3px solid currentColor; border-radius: 8px;
+  font-size: 1.6rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; transform: rotate(-14deg); opacity: .8;
+  pointer-events: none; color: var(--ink-2); }
+.stamp.paid { color: var(--paid); }
+.stamp.overdue { color: var(--overdue); }
+
+@media (max-width: 700px) {
+  .invoice { width: 100%; min-height: 0; margin: 0; padding: 1.5rem 1.1rem 5rem; box-shadow: none; }
+  .invoice-head + .bill-to, .bill-to + .meta { float: none; width: auto; margin-bottom: 1rem; }
+  .stamp { top: 5.5rem; right: 1rem; font-size: 1.2rem; }
+  .footer { left: 1.1rem; right: 1.1rem; bottom: 1rem; }
+  .print-btn { top: auto; bottom: 1rem; }
+}
+
+@page { size: auto; margin: 12mm; }
+@media print {
+  body { background: #fff; font-size: 11pt; }
+  .print-btn { display: none !important; }
+  .invoice { width: auto; min-height: 0; margin: 0; padding: 0 0 18mm; box-shadow: none; overflow: visible; }
+  .footer { position: fixed; left: 0; right: 0; bottom: 0; }
+  .stamp { top: 30mm; right: 0; }
+  a { color: inherit; text-decoration: none; }
+  /* Colours are part of the document: keep them when printing. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

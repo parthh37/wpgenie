@@ -676,6 +676,7 @@ function signedIn(user, require2fa) {
   document.body.classList.toggle('is-reseller', user.role === 'reseller');
   document.body.classList.toggle('is-staff', !tenant);
   if (require2fa && !user.totp_enabled) { openTab('account'); return; }
+  if (typeof billingSignedIn === 'function') billingSignedIn(); // clientarea.js: tenants' Billing tab
   applyRoute();
   if (!tenant && typeof checkSystem === 'function') checkSystem();
   if (typeof pollJobs === 'function') pollJobs();

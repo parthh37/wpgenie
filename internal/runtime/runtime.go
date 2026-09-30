@@ -164,6 +164,7 @@ func (d *Docker) Stream(ctx context.Context, stdin io.Reader, w io.Writer, args 
 // stream runs docker with stdout going to w; stderr (bounded) goes into
 // the error. For large outputs (snapshots) that must not sit in memory.
 func (d *Docker) stream(ctx context.Context, stdin io.Reader, w io.Writer, args ...string) error {
+	args = withLogOpts(args) // see logopts.go
 	cmd := exec.CommandContext(ctx, d.bin(), args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = w
@@ -189,6 +190,7 @@ func (c *capped) Write(p []byte) (int, error) {
 }
 
 func (d *Docker) run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
+	args = withLogOpts(args) // see logopts.go
 	cmd := exec.CommandContext(ctx, d.bin(), args...)
 	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()

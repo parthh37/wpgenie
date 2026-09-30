@@ -50,6 +50,12 @@ function toast(message, kind = 'ok') {
 
 const notify = (message) => toast(message, 'ok');
 
+// pageTitle is a page's header: its icon on a lit tile, then the title and
+// the line under it (children of the text column).
+function pageTitle(iconName, ...children) {
+  return h('div', { class: 'page-title' }, h('span', { class: 'page-icon', 'aria-hidden': 'true' }, icon(iconName)), h('div', {}, ...children));
+}
+
 // statusHero is a page's verdict at a glance ("All systems normal"): kind
 // "ok" or "bad", a title and one line under it.
 function statusHero(kind, title, sub) {
@@ -221,7 +227,7 @@ function shieldChip(el, mode) {
 const RAIL_GROUPS = ['', 'Speed', 'Protection', 'Data', 'Settings'];
 const RAIL = {
   overview: ['', 'dashboard'], health: ['', 'pulse'], wordpress: ['', 'key'],
-  performance: ['Speed', 'gauge'], cdn: ['Speed', 'cloud'], insights: ['Speed', 'chart'], uploads: ['Speed', 'upload'],
+  performance: ['Speed', 'gauge'], cdn: ['Speed', 'cloud-plain'], insights: ['Speed', 'chart'], uploads: ['Speed', 'upload'],
   security: ['Protection', 'shield'], plugins: ['Protection', 'plug'], updates: ['Protection', 'refresh'],
   backups: ['Data', 'archive'], staging: ['Data', 'branch'], files: ['Data', 'folder'], sftp: ['Data', 'database'],
   domains: ['Settings', 'link'], php: ['Settings', 'code'], server: ['Settings', 'server'], activity: ['Settings', 'history'],

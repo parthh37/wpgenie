@@ -2,6 +2,7 @@ package shield
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,9 @@ type eventLog struct {
 	buf  []Event
 	next int
 	full bool
+	// tee, if set, also gets every event (log shipping). It runs on the
+	// request path: it must not block.
+	tee atomic.Pointer[func(Event)]
 }
 
 func newEventLog(n int) *eventLog { return &eventLog{buf: make([]Event, n)} }
@@ -32,10 +36,13 @@ func (l *eventLog) add(e Event) {
 		e.Path = e.Path[:200] + "…"
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.buf[l.next] = e
 	l.next = (l.next + 1) % len(l.buf)
 	l.full = l.full || l.next == 0
+	l.mu.Unlock()
+	if f := l.tee.Load(); f != nil {
+		(*f)(e)
+	}
 }
 
 // recent returns events newest first, optionally only one site's.

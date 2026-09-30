@@ -84,6 +84,28 @@ func TestRender(t *testing.T) {
 	}
 }
 
+// Caddy keeps 10 rotated access logs unless log shipping says fewer.
+func TestRenderAccessLogKeep(t *testing.T) {
+	c := testCaddy()
+	for _, tc := range []struct {
+		keep func() int
+		want string
+	}{
+		{nil, "roll_keep 10\n"},
+		{func() int { return 2 }, "roll_keep 2\n"},
+		{func() int { return 0 }, "roll_keep 10\n"},
+	} {
+		c.SetAccessLogKeep(tc.keep)
+		out, err := c.Render(testSites)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), tc.want) {
+			t.Errorf("want %q in the Caddyfile", tc.want)
+		}
+	}
+}
+
 // Behind Cloudflare every connection comes from its edge. The shield must
 // see the visitor (CF-Connecting-IP), but only when the peer really is
 // Cloudflare, or anyone could pick the address that gets banned.
