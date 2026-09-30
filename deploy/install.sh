@@ -141,7 +141,10 @@ install_binary() {
 
 write_config() {
   install -d -m 0700 "$ETC"
-  install -d -m 0755 "${ETC}/caddy" "$DATA" "${DATA}/sites" "${DATA}/sites.nosymfollow" "${DATA}/caddy" "$LOGS"
+  install -d -m 0755 "${ETC}/caddy" "$DATA" "${DATA}/sites" "${DATA}/caddy" "$LOGS"
+  # On a re-run this is the read-only bind mount (setup_caddy_sites_mount):
+  # uutils install (Ubuntu 26.04) chmods existing directories and fails there.
+  mountpoint -q "${DATA}/sites.nosymfollow" || install -d -m 0755 "${DATA}/sites.nosymfollow"
   install -d -m 0700 "${DATA}/mariadb"
   if [[ -f ${ETC}/config.json ]]; then
     log "Keeping existing configuration and secrets"
