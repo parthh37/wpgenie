@@ -11,12 +11,13 @@ async function loadMonitoring() {
   const o = await api('GET', '/monitoring/alerts?limit=200');
   $('#alert-dot').hidden = !o.active.length;
   const checked = o.evaluated_at ? `last checked ${fmtTime(o.evaluated_at)}` : 'not checked yet since the panel started';
-  $('#mon-active').replaceChildren(
+  const watched = `${o.watched} target(s) watched, ${checked}.`;
+  fill($('#mon-active'),
     o.active.length
-      ? table(['Severity', 'Since', 'Kind', 'Target', 'Message'], o.active.map((a) =>
-        [h('td', {}, sev(a.severity)), fmtTime(a.since), KIND_LABELS[a.kind] || a.kind, h('td', { class: 'wrap' }, a.target), a.message]))
-      : h('p', {}, h('span', { class: 'st-ok' }, 'All clear.'), ` ${o.watched} target(s) watched, ${checked}.`),
-    o.active.length ? h('p', { class: 'muted small' }, `${o.watched} target(s) watched, ${checked}.`) : null);
+      ? statusHero('bad', `${o.active.length} alert${o.active.length === 1 ? '' : 's'} firing`, watched)
+      : statusHero('ok', 'All systems normal', watched),
+    o.active.length ? table(['Severity', 'Since', 'Kind', 'Target', 'Message'], o.active.map((a) =>
+      [h('td', {}, sev(a.severity)), fmtTime(a.since), KIND_LABELS[a.kind] || a.kind, h('td', { class: 'wrap' }, a.target), a.message])) : null);
   $('#mon-history').replaceChildren(table(['Time', 'State', 'Severity', 'Target', 'Message'], o.history.map((e) =>
     [fmtTime(e.time), h('td', { class: e.state === 'resolved' ? 'st-ok' : 'st-failed' }, e.state), h('td', {}, sev(e.severity)),
       h('td', { class: 'wrap' }, e.target), e.message])));

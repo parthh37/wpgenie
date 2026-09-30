@@ -163,9 +163,11 @@ function renderProtection(el, site) {
 async function loadAttack(el, site) {
   let a;
   try { a = await api('GET', `/sites/${site.id}/attack`); } catch (e) { return; }
+  const was = el.dataset.attack;
   el.dataset.attack = a.active ? '1' : '';
   if (a.active) $('.shield-chip', el).textContent = 'Under attack';
   else if (typeof shieldChip === 'function') shieldChip(el, $('.mode', el).value);
+  if (was !== el.dataset.attack && typeof renderAttention === 'function') renderAttention();
   el.querySelectorAll('.attack-banner').forEach((b) => {
     b.hidden = !a.active;
     if (!a.active) { b.replaceChildren(); return; }

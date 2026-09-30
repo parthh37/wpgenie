@@ -57,7 +57,7 @@ function h(tag, attrs = {}, ...children) {
 }
 
 function table(headers, rows) {
-  if (!rows.length) return h('p', { class: 'muted small' }, 'Nothing here yet.');
+  if (!rows.length) return h('p', { class: 'muted small none' }, 'Nothing here yet.');
   return h('table', {}, h('tr', {}, headers.map((x) => h('th', {}, x))), rows.map((r) => h('tr', {}, r.map((c) => (c instanceof Node && c.tagName === 'TD' ? c : h('td', {}, c))))));
 }
 
@@ -486,7 +486,7 @@ function showPlugins(el, rep) {
     h('td', {}, p.flags.map((f) => h('div', { class: SECURITY_FLAG.test(f) ? 'st-failed small' : 'small' }, f)),
       (p.signatures || []).map((sig) => h('div', { class: 'wrap small' }, sig))),
   ]);
-  box.replaceChildren(
+  fill(box,
     h('p', { class: 'small' }, `Analysed ${fmtTime(rep.analysed_at)}`,
       prof ? `: front page rendered in ${prof.total_ms.toFixed(0)} ms with ${prof.queries} database queries and ${(prof.peak_memory_kb / 1024).toFixed(0)} MB of memory` : '',
       prof && prof.status >= 400 ? h('span', { class: 'st-failed' }, ` (HTTP ${prof.status}: the page is broken)`) : ''),
@@ -516,7 +516,7 @@ function showScan(box, rep) {
     ...integ.plugins_modified.map((f) => ['Modified plugin file', f]),
     ...integ.uploads_php.map((f) => ['PHP file in uploads', f]),
   ];
-  box.replaceChildren(
+  fill(box,
     h('p', { class: 'small' }, `Scanned ${fmtTime(rep.scanned_at)}: `,
       vulnerable.length ? h('span', { class: 'st-failed' }, `${vulnerable.length} vulnerable component(s)`) : h('span', { class: 'st-ok' }, 'no known vulnerabilities'),
       ', ', issues.length ? h('span', { class: 'st-failed' }, `${issues.length} integrity issue(s)`) : h('span', { class: 'st-ok' }, 'files intact')),
