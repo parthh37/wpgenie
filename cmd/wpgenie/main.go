@@ -32,6 +32,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/cluster"
 	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/dbprov"
+	"github.com/parthh37/wpgenie/internal/files"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
@@ -587,7 +588,7 @@ func serve(cfg *config.Config, node bool) error {
 
 	apiSrv := &api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
 		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, Adminer: adminerSvc, WPLogin: wpLoginSvc,
-		Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
+		Files: files.New(st, cfg.SiteRoot), Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
 		Billing: bill, PanelURL: panelURL}
 	apiHandler := apiSrv.Handler()
 	if node {

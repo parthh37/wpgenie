@@ -188,7 +188,7 @@ and creates the first one atomically). After that people sign in with their own 
 
 - **Roles**: staff are *viewer* (read everything), *operator* (run sites: shield, scaling, caches, updates, scans,
   plugin analysis, CDN, mailboxes, bans, backups and restores, staging and pushes, domains and
-  certificates, PHP, SFTP logins, Adminer, wp-admin sign-in and WordPress administrators' passwords, WordPress
+  certificates, PHP, SFTP logins, the file manager, Adminer, wp-admin sign-in and WordPress administrators' passwords, WordPress
   tweaks and the analyser's fixes), *admin* (also creates and deletes sites, users, backup
   destinations and backups, server-wide security lists and mail settings, accounts, plans and billing,
   self-update). Every route declares the staff role it needs. Tenants are *customer* and *reseller*
@@ -251,7 +251,8 @@ centrally, before any handler runs:
   ownership stops the server at startup;
 - routes marked reseller-only, and "customers only" ones (suspend, terminate, change the plan of a
   customer, never the reseller's own account);
-- the site's plan features (staging, backups, SFTP, Adminer, own certificates, CDN, SMTP);
+- the site's plan features (staging, backups, SFTP, the file manager, Adminer, own certificates, CDN, SMTP;
+  a migration gave plans that included SFTP the file manager too);
 - a suspended account (or one whose reseller is suspended) can sign in and read, and look after its own
   user, but change nothing; a suspended customer's sites are frozen for their reseller too.
 
@@ -263,7 +264,7 @@ are reserved.
 Lists (sites, jobs, security events, accounts, usage, plans) are filtered to the tenant's scope. Tenants
 get their sites' day-to-day operations: shield settings, caches, updates, scans and plugin analysis,
 backups and restores of their own sites to the plan's destinations, staging, domains, certificates, PHP
-version and settings, SFTP logins, Adminer, CDN, images, insights, SMTP, signing in to wp-admin and resetting
+version and settings, SFTP logins, the file manager, Adminer, CDN, images, insights, SMTP, signing in to wp-admin and resetting
 WordPress administrators' passwords, WordPress tweaks, the site analyser and its fixes. Resource changes (replicas,
 memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
 infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
@@ -822,6 +823,40 @@ options (`command=`, `from=` …). The daemon renders `passwd`/`group`/`shadow` 
 container installs them atomically; deleting a login or changing its password ends its open sessions.
 Host keys persist. OpenSSH's own `PerSourcePenalties` slows down addresses that keep failing. Docker
 publishes the port past `ufw` (as it does for every published port).
+
+**File manager** (`internal/files`, `static/files.js`): the dashboard browses a site's `public/`, uploads
+(drag and drop, up to 1 GB a file, streamed to disk), edits text files, downloads files and folders (zip,
+streamed), renames and moves, copies, changes permissions, extracts zip archives and deletes. The daemon
+does it as root, into a directory the site can write to and plant symlinks in, so:
+
+- Every operation goes through an `os.Root` opened on `public/`: a path that resolves outside it fails,
+  `..`, absolute paths and the site's links included, so `wp-config.php` (above `public/`), other sites
+  and the host are out of reach. Paths are cleaned as absolute ones first (`/../x` is `/x`).
+- It does what the site user could, and a little less: entries are added, renamed and removed only in
+  directories uid 82 owns and may write; files are changed and re-moded only if uid 82 owns them (and
+  written only with the owner's write bit), and whatever it creates is chowned to 82 through its open
+  handle. WPGenie's root-owned drop-ins (`object-cache.php`, the page-cache and SMTP must-use plugins) are
+  read-only here, as they are to PHP. No setuid/setgid/sticky bits; folders keep `7xx` for the site.
+- Files are replaced by writing a dotfile next to them (Caddy never serves dotfiles) and renaming it over
+  the old one: PHP and Caddy see the old or the new version, never half, and a hard link planted in the
+  docroot can't turn a save into a write to what it links to. Chmod goes through a handle checked
+  (`os.SameFile`) to be the entry that was looked at.
+- The editor gets UTF-8 text only (≤ 5 MB): a browser's text box would silently replace other bytes and
+  the save would corrupt the file. Saves carry the version read (inode, mtime, size); a file changed
+  meanwhile (WordPress, SFTP, another tab) is a conflict the editor asks about. CRLF files keep CRLF.
+- Archives are checked whole before anything is written: relative, clean, forward-slash paths only (no
+  zip slip, drive letters or backslashes), links and special entries skipped, at most 2 GB (declared, and
+  counted while writing, so an archive understating its sizes stops too) and 50 000 entries. Existing
+  files are only replaced when asked. Copies have the same limits and don't copy links.
+- Downloads come from the panel's origin, and a site's files are anyone's who could upload to it: an
+  HTML or SVG file shown as a page would run its script as the signed-in user (staff looking at a
+  tenant's site). Files are attachments of type `application/octet-stream` with `nosniff` and
+  `Content-Security-Policy: default-src 'none'; sandbox`; only raster images are shown inline, as images.
+- Changes are refused while the site's logins are off (suspended, or frozen for the last copy of a move,
+  like SFTP); a site mid-move can't be browsed. Paths travel in the query string, so the audit log records
+  which files every change touched. For a site on another server the requests (uploads and downloads
+  streamed) are forwarded like every site route. Viewers browse and download; changes need an operator,
+  tenants the plan's `files` feature.
 
 **Adminer** (`internal/adminer`, `images/adminer`) opens on the **site's own domain**
 (`https://<site>/_wpgenie/adminer/`), not the panel's: Adminer renders whatever the database holds, a

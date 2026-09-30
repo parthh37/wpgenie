@@ -21,6 +21,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/backup"
 	"github.com/parthh37/wpgenie/internal/billing"
 	"github.com/parthh37/wpgenie/internal/cluster"
+	"github.com/parthh37/wpgenie/internal/files"
 	"github.com/parthh37/wpgenie/internal/iprep"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/mail"
@@ -47,6 +48,8 @@ type Server struct {
 	Adminer *adminer.Service
 	// WPLogin signs panel users in to sites' wp-admin (optional).
 	WPLogin *wplogin.Service
+	// Files is the dashboard's file manager (optional).
+	Files *files.Service
 	// IP reputation data, for the status view (optional).
 	Lists     *iprep.Lists
 	Countries *iprep.Countries
@@ -243,6 +246,7 @@ func (s *Server) Handler() http.Handler {
 	r("PUT /api/v1/sites/{id}/sftp/{user}/password", operator, s.setSFTPPassword)
 	r("DELETE /api/v1/sites/{id}/sftp/{user}", operator, s.deleteSFTP)
 	r("POST /api/v1/sites/{id}/adminer", operator, s.openAdminer)
+	s.fileRoutes(r)
 
 	r("PUT /api/v1/sites/{id}/smtp", operator, s.setSiteSMTP)
 	r("GET /api/v1/sites/{id}/cdn", viewer, s.cdnStatus)
@@ -342,17 +346,20 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		errors.Is(err, mail.ErrConflict), errors.Is(err, mail.ErrDisabled), errors.Is(err, errConflict),
 		errors.Is(err, sftp.ErrConflict), errors.Is(err, store.ErrConflict),
 		errors.Is(err, errLastAdmin), errors.Is(err, billing.ErrConflict), errors.Is(err, store.ErrExists),
-		errors.Is(err, store.ErrInUse):
+		errors.Is(err, store.ErrInUse), errors.Is(err, files.ErrConflict):
 		status = http.StatusConflict
 	case errors.Is(err, site.ErrInvalidDomain), errors.Is(err, site.ErrInvalidInput), errors.Is(err, errBadRequest),
 		errors.Is(err, mail.ErrInvalid), errors.Is(err, sftp.ErrInvalid), errors.Is(err, adminer.ErrInvalid),
 		errors.Is(err, backup.ErrWrongPassword), errors.Is(err, billing.ErrInvalid), errors.Is(err, billing.ErrBadSignature),
-		errors.Is(err, cluster.ErrInvalid):
+		errors.Is(err, cluster.ErrInvalid), errors.Is(err, files.ErrInvalid):
 		status = http.StatusBadRequest
 	case errors.Is(err, errUnauthorized), errors.Is(err, errBadLogin):
 		status = http.StatusUnauthorized
-	case errors.Is(err, errForbidden), errors.Is(err, billing.ErrForbidden), errors.Is(err, billing.ErrQuota):
+	case errors.Is(err, errForbidden), errors.Is(err, billing.ErrForbidden), errors.Is(err, billing.ErrQuota),
+		errors.Is(err, files.ErrPermission):
 		status = http.StatusForbidden
+	case errors.Is(err, files.ErrTooLarge):
+		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, errTooMany), errors.Is(err, wplogin.ErrTooMany):
 		status = http.StatusTooManyRequests
 	}

@@ -138,8 +138,10 @@ func (s *Server) forwardSite(w http.ResponseWriter, r *http.Request, node, siteI
 	if err := s.Cluster.Forward(rec, r, node, s.identity(r)); err != nil {
 		return err
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && rec.status/100 == 2 {
-		// Keep the registry's copy (listings, access checks) current.
+	// Keep the registry's copy (listings, access checks) current; file
+	// manager changes don't touch the site's record.
+	fileOp := strings.HasPrefix(r.URL.Path, "/api/v1/sites/"+siteID+"/files")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && rec.status/100 == 2 && !fileOp {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 		defer cancel()
 		if err := s.Cluster.RefreshSite(ctx, node, siteID); err != nil {
