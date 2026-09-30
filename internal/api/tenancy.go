@@ -38,6 +38,9 @@ type tenantRule struct {
 	child bool
 	// feature: the site's plan must include it.
 	feature string
+	// whileSuspended: a suspended account may still call it (paying an
+	// overdue invoice, asking support why).
+	whileSuspended bool
 }
 
 var (
@@ -47,6 +50,47 @@ var (
 )
 
 func feature(f string) tenantRule { return tenantRule{feature: f} }
+
+// registerTenantRoutes opens more routes to tenants: features in their own
+// files call it from init(). A route listed twice panics.
+func registerTenantRoutes(m map[string]tenantRule) {
+	for k, v := range m {
+		if _, dup := tenantRoutes[k]; dup {
+			panic("api: tenant route listed twice: " + k)
+		}
+		tenantRoutes[k] = v
+	}
+}
+
+// ownedScope is a kind of resource tenants own besides sites, accounts and
+// jobs (invoices, tickets): routes under its prefix with {id} are only
+// served when owns says the tenant may reach that {id}; anything else
+// answers 404.
+type ownedScope struct {
+	prefix string // "/api/v1/invoices/{id}"
+	owns   func(s *Server, ctx context.Context, p *Principal, id string) bool
+}
+
+var ownedScopes []ownedScope
+
+// registerScope adds an owned resource (from a feature's init()).
+func registerScope(prefix string, owns func(s *Server, ctx context.Context, p *Principal, id string) bool) {
+	if !strings.HasSuffix(prefix, "/{id}") {
+		panic("api: owned scope " + prefix + " must end in /{id}")
+	}
+	ownedScopes = append(ownedScopes, ownedScope{prefix: prefix, owns: owns})
+}
+
+// ownedScopeOf returns the owned resource a route's {id} is (nil: none).
+func ownedScopeOf(pattern string) *ownedScope {
+	path := pathOf(pattern)
+	for i, o := range ownedScopes {
+		if path == o.prefix || strings.HasPrefix(path, o.prefix+"/") {
+			return &ownedScopes[i]
+		}
+	}
+	return nil
+}
 
 // tenantRoutes: everything tenants may call. Server settings, the mail
 // server, backup destinations, bans and server-wide lists, users outside
@@ -179,6 +223,7 @@ const (
 	scopeSite          // {id} is a site
 	scopeAccount       // {id} is an account
 	scopeJob           // {id} is a job
+	scopeOwned         // {id} is an owned resource (see registerScope)
 )
 
 // pathOf is a route pattern's path ("GET /a/b" -> "/a/b").
@@ -199,6 +244,8 @@ func routeScope(pattern string) scope {
 		return scopeJob
 	case path == "/api/v1/account" || strings.HasPrefix(path, "/api/v1/account/"):
 		return scopeSelf
+	case ownedScopeOf(pattern) != nil:
+		return scopeOwned
 	}
 	return scopeNone
 }
@@ -272,7 +319,7 @@ func (s *Server) authorizeTenant(r *http.Request, pattern string, p *Principal) 
 	mutating := r.Method != http.MethodGet && r.Method != http.MethodHead
 	// A suspended account can still sign in, read, and look after its own
 	// user (password, two-factor), but change nothing.
-	if t.Suspended && mutating && sc != scopeSelf {
+	if t.Suspended && mutating && sc != scopeSelf && !rule.whileSuspended {
 		return nil, http.StatusForbidden, errSuspended
 	}
 	if t.Limits, err = s.Billing.LimitsFor(ctx, acct); err != nil {
@@ -308,6 +355,10 @@ func (s *Server) authorizeTenant(r *http.Request, pattern string, p *Principal) 
 	case scopeJob:
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil || !s.jobVisible(ctx, p, id) {
+			return nil, http.StatusNotFound, notFound
+		}
+	case scopeOwned:
+		if !ownedScopeOf(pattern).owns(s, ctx, p, r.PathValue("id")) {
 			return nil, http.StatusNotFound, notFound
 		}
 	}
