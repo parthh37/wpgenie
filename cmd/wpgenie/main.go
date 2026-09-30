@@ -44,6 +44,7 @@ import (
 	"github.com/parthh37/wpgenie/internal/site"
 	"github.com/parthh37/wpgenie/internal/store"
 	"github.com/parthh37/wpgenie/internal/updater"
+	"github.com/parthh37/wpgenie/internal/wplogin"
 )
 
 var version = "dev" // set by -ldflags at release time
@@ -113,6 +114,13 @@ Usage:
   wpgenie site sftp <site-id> [ls | add [--suffix NAME] [--password] [--key FILE] | rm <login>
                           | passwd <login> | nopasswd <login> | keys <login> <file>]
   wpgenie site adminer <site-id>        one-time link to Adminer on the site's database
+  wpgenie site wp <site-id> login [user-id] | users | password <user-id>
+                                        one-time link into wp-admin (no WordPress password),
+                                        administrators, reset an administrator's password
+  wpgenie site optimize <site-id> [ls | recommended | off | key,key,... | cleanup]
+                                        WordPress performance tweaks; clean the database now
+  wpgenie site analyse <site-id> [--fix <fix>]
+                                        security, performance and upkeep report; apply a fix
   wpgenie jobs [<job-id>] [--site ID] [--active]
                                         long operations (create, backups, restores, clones)
   wpgenie backup repos | repo add local|s3|b2|sftp ... | repo check|rm|password <repo>
@@ -126,6 +134,8 @@ Usage:
   wpgenie security allow|deny [IP/CIDR,... | none]
                                         server-wide lists (every site)
   wpgenie security reputation [refresh] IP blocklists and country database status
+  wpgenie branding [show | set [--name NAME] [--url URL] [--logo FILE|none]]
+                                        your brand in WordPress's admin instead of WordPress's
   wpgenie user ls | add <name> [--role admin|operator|viewer] | role <name> <role>
   wpgenie user disable|enable|passwd|reset-2fa|rm <name> | require-2fa on|off
                                         panel accounts (sign in to the dashboard)
@@ -201,6 +211,8 @@ func main() {
 		err = mailCmd(cfg, args[1:])
 	case "security":
 		err = securityCmd(cfg, args[1:])
+	case "branding":
+		err = brandingCmd(cfg, args[1:])
 	case "user":
 		err = userCmd(cfg, args[1:])
 	case "audit":
@@ -435,6 +447,8 @@ func serve(cfg *config.Config, node bool) error {
 		Image: cfg.AdminerImage, ImageDir: filepath.Join(cfg.ImagesDir, "adminer"), Port: cfg.AdminerPort,
 		Network: cfg.DockerNetwork, DBHost: cfg.MariaDBHost}}
 	go adminerSvc.Run(ctx)
+	// Signing in to sites' wp-admin from the panel (links on their domains).
+	wpLoginSvc := &wplogin.Service{Sites: svc, Log: log}
 	// Logins that arrived with a site moved here.
 	svc.AccessChanged = func(ctx context.Context) {
 		if err := sftpSvc.Reconcile(ctx); err != nil {
@@ -444,6 +458,7 @@ func serve(cfg *config.Config, node bool) error {
 	svc.SiteRemoved = func(ctx context.Context, id string) {
 		sftpSvc.SiteRemoved(ctx, id)
 		adminerSvc.SiteRemoved(ctx, id)
+		wpLoginSvc.SiteRemoved(ctx, id)
 	}
 	// A suspended site's SFTP logins and database sessions end until it is
 	// back (the SFTP server leaves suspended sites' logins out).
@@ -451,6 +466,7 @@ func serve(cfg *config.Config, node bool) error {
 		if suspended {
 			sftpSvc.SiteRemoved(ctx, id)
 			adminerSvc.SiteRemoved(ctx, id)
+			wpLoginSvc.SiteRemoved(ctx, id)
 			return
 		}
 		if err := sftpSvc.Reconcile(ctx); err != nil {
@@ -570,7 +586,7 @@ func serve(cfg *config.Config, node bool) error {
 	go ing.Run(ctx)
 
 	apiSrv := &api.Server{Token: cfg.APIToken, Version: version, Sites: svc, Store: st, Shield: sh,
-		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, Adminer: adminerSvc,
+		Updater: upd, Mail: mailSvc, Jobs: jobQueue, SFTP: sftpSvc, Adminer: adminerSvc, WPLogin: wpLoginSvc,
 		Lists: lists, Countries: countries, Monitor: mon, Log: log, Cluster: ctrl, Node: node,
 		Billing: bill, PanelURL: panelURL}
 	apiHandler := apiSrv.Handler()
@@ -637,7 +653,7 @@ func serve(cfg *config.Config, node bool) error {
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|shield|updates|update|auto-update|scan|" +
-			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|adminer")
+			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|adminer|wp|optimize|analyse")
 	}
 	switch args[0] {
 	case "ls":
@@ -677,7 +693,7 @@ func siteCmd(cfg *config.Config, args []string) error {
 		return spreadCmd(cfg, args[1:])
 	case "offload":
 		return offloadCmd(cfg, args[1:])
-	case "backup", "staging", "push", "domain", "cert", "sftp", "adminer":
+	case "backup", "staging", "push", "domain", "cert", "sftp", "adminer", "wp", "optimize", "analyse":
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return fmt.Errorf("usage: wpgenie site %s <site-id> ...", args[0])
 		}
@@ -695,6 +711,12 @@ func siteCmd(cfg *config.Config, args []string) error {
 			return certCmd(cfg, id, rest)
 		case "sftp":
 			return sftpCmd(cfg, id, rest)
+		case "wp":
+			return wpCmd(cfg, id, rest)
+		case "optimize":
+			return optimizeCmd(cfg, id, rest)
+		case "analyse":
+			return analyseCmd(cfg, id, rest)
 		default:
 			return adminerCmd(cfg, id)
 		}

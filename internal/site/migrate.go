@@ -529,6 +529,11 @@ func (s *Service) sanitizeImport(st *store.Site) error {
 	st.ImageFormats = slices.DeleteFunc(slices.Clone(st.ImageFormats), func(f string) bool {
 		return f != "avif" && f != "webp"
 	})
+	// From another version of WPGenie: keep only the tweaks this one knows.
+	st.Optimize = slices.DeleteFunc(slices.Clone(st.Optimize), func(k string) bool {
+		_, err := normalizeOptimizations([]string{k})
+		return err != nil
+	})
 	if !slices.Contains([]string{"off", "security", "all"}, st.AutoUpdate) {
 		st.AutoUpdate = "security"
 	}

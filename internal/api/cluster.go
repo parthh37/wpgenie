@@ -349,6 +349,11 @@ func (s *Server) ConfigureNode(ctx context.Context, n *store.Node) error {
 	if err := s.nodeAPI(ctx, n.ID, panel, http.MethodPut, "/api/v1/security/settings", g, nil); err != nil {
 		errs = append(errs, fmt.Errorf("security lists: %w", err))
 	}
+	if b, err := s.Sites.Branding(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("branding: %w", err))
+	} else if err := s.nodeAPI(ctx, n.ID, panel, http.MethodPut, "/api/v1/settings/branding", b.Input(), nil); err != nil {
+		errs = append(errs, fmt.Errorf("branding: %w", err))
+	}
 	return errors.Join(errs...)
 }
 

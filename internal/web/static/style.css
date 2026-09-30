@@ -498,3 +498,22 @@ body:not(.is-admin):not(.is-reseller) .accounts-create { display: none !importan
   .icon-btn { width: 44px; height: 44px; }
   input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
 }
+
+/* Health (the site analyser), WordPress tweaks, branding. */
+.health-score { display: flex; align-items: center; gap: 1rem; margin: .75rem 0 1rem; }
+.grade { display: grid; place-items: center; flex: none; width: 56px; height: 56px; border-radius: 14px;
+  font: 700 1.6rem/1 var(--font); color: var(--bg); background: var(--muted); }
+.grade-A { background: var(--ok); }
+.grade-B { background: color-mix(in srgb, var(--ok) 55%, var(--warn)); }
+.grade-C, .grade-D { background: var(--warn); }
+.grade-F { background: var(--bad); }
+.sev-info { color: var(--muted); }
+.readonly .analysis .analyse-site { pointer-events: auto; opacity: 1; }
+.opt-list { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.opt-item { display: flex; align-items: flex-start; gap: .6rem; color: var(--text); font-size: .88rem; }
+.opt-item input[type="checkbox"] { margin-top: .15rem; }
+.opt-item .opt-desc { display: block; margin-top: .15rem; font-weight: 400; line-height: 1.4; }
+.readonly .opt-item input { pointer-events: none; opacity: .55; }
+.brand-preview { display: flex; align-items: center; min-height: 64px; margin: .25rem 0 .75rem; padding: .75rem 1rem;
+  border: 1px dashed var(--line-2); border-radius: 10px; background: var(--well); }
+.brand-preview img { max-height: 64px; max-width: 280px; }
