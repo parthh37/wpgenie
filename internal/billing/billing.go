@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/parthh37/wpgenie/internal/auth"
+	"github.com/parthh37/wpgenie/internal/mailer"
 	"github.com/parthh37/wpgenie/internal/store"
 )
 
@@ -135,6 +136,12 @@ type Service struct {
 	// InWindow reports whether a time is in the nightly maintenance window
 	// (disk measurement runs then); nil: 03:00-05:00 local time.
 	InWindow func(time.Time) bool
+	// Built-in billing (invoicing.go): Mailer e-mails clients (nil: no
+	// e-mail), Razorpay calls Razorpay's API, PanelURL is the panel's
+	// public origin for links (payment pages, gateways' callbacks).
+	Mailer   *mailer.Service
+	Razorpay *RazorpayAPI
+	PanelURL string
 	Log      *slog.Logger
 	Now      func() time.Time
 
@@ -146,6 +153,12 @@ type Service struct {
 	measureMu sync.Mutex
 	lastDisk  time.Time
 	burst     burstState
+	// payMu: money moves one at a time (payments, credit, refunds, plan
+	// changes), and what paying does is applied by whoever recorded it.
+	// Lock order: stripeMu, then payMu, then mu.
+	payMu sync.Mutex
+	// runMu: one invoicing automation run at a time.
+	runMu sync.Mutex
 }
 
 func (s *Service) now() time.Time {
@@ -224,6 +237,31 @@ func NormalizePlan(p *store.Plan) error {
 	}
 	slices.Sort(repos)
 	p.BackupRepos = repos
+	// The store's side: what an order creates and what it costs.
+	if p.AccountKind == "" {
+		p.AccountKind = store.AccountCustomer
+	}
+	if p.AccountKind != store.AccountCustomer && p.AccountKind != store.AccountReseller {
+		return fmt.Errorf("%w: account_kind must be customer or reseller", ErrInvalid)
+	}
+	p.Description = strings.TrimSpace(p.Description)
+	if err := textField("description", p.Description, 500, true); err != nil {
+		return err
+	}
+	if p.OverageGBPrice < 0 || p.OverageGBPrice > maxAmount {
+		return fmt.Errorf("%w: invalid overage_gb_price", ErrInvalid)
+	}
+	if p.Prices == nil {
+		p.Prices = map[string]store.PlanPrice{}
+	}
+	for cycle, pr := range p.Prices {
+		if CycleMonths(cycle) == 0 {
+			return fmt.Errorf("%w: unknown billing cycle %q (known: %s)", ErrInvalid, cycle, strings.Join(Cycles, ", "))
+		}
+		if pr.Price < 0 || pr.SetupFee < 0 || pr.Price > maxAmount || pr.SetupFee > maxAmount {
+			return fmt.Errorf("%w: prices are positive amounts in minor units (1500 is 15.00)", ErrInvalid)
+		}
+	}
 	return nil
 }
 
@@ -542,6 +580,9 @@ func (s *Service) Suspend(ctx context.Context, id int64, reason string) (*store.
 	switch a.Status {
 	case store.AccountTerminated:
 		return nil, fmt.Errorf("%w: the account is terminated", ErrConflict)
+	case store.AccountPending:
+		// Already without sites; a suspension would lose the order's state.
+		return nil, fmt.Errorf("%w: the account is an order awaiting payment; cancel the order instead", ErrConflict)
 	case store.AccountSuspended:
 		if reasonRank(reason) <= reasonRank(a.SuspendReason) {
 			return a, s.applyStateLocked(ctx, id)
@@ -571,6 +612,8 @@ func (s *Service) Unsuspend(ctx context.Context, id int64, by string) (*store.Ac
 	switch {
 	case a.Status == store.AccountActive:
 		return a, s.applyStateLocked(ctx, id)
+	case a.Status == store.AccountPending:
+		return nil, fmt.Errorf("%w: the account is an order awaiting payment; accept the order to activate it", ErrConflict)
 	case a.Status == store.AccountTerminated && by != ReasonAdmin:
 		return nil, fmt.Errorf("%w: only an administrator can reactivate a terminated account", ErrForbidden)
 	case by != ReasonAdmin && by != a.SuspendReason:
@@ -698,7 +741,8 @@ func (s *Service) DeleteAccount(ctx context.Context, id int64) error {
 }
 
 // Suspended reports whether an account is effectively suspended: its own
-// status, or its reseller's.
+// status, or its reseller's. Anything but active is: suspended,
+// terminated, and pending (an order awaiting payment).
 func (s *Service) Suspended(ctx context.Context, a *store.Account) (bool, error) {
 	if a.Status != store.AccountActive {
 		return true, nil
