@@ -177,7 +177,7 @@ async function showTicketList(box, seq) {
   newBtn.hidden = !canAct() || (!staff && !sum.enabled);
   const manage = staff && isOperator() ? h('a', { class: 'button ghost', href: '#/support/manage' }, icon('sliders'), 'Manage') : null;
   const head = h('div', { class: 'bar' },
-    h('div', {}, h('h1', {}, 'Support'),
+    pageTitle('life-buoy', h('h1', {}, 'Support'),
       h('p', { class: 'muted small bar-sub' }, staff ? 'Your customers\' questions and problems, in one place.'
         : provider ? 'Your own tickets, and your customers\' tickets to answer.'
           : 'Ask us anything about your sites, e-mail or account. We\'ll e-mail you when we reply.')),
@@ -788,7 +788,7 @@ async function showManage(box, seq) {
   const reload = () => { if (!stale(seq)) loadSupport(); };
   const parts = [
     h('a', { class: 'button ghost tk-back', href: '#/support' }, icon('back'), 'All tickets'),
-    h('div', { class: 'bar' }, h('div', {}, h('h1', {}, 'Manage support'),
+    h('div', { class: 'bar' }, pageTitle('sliders', h('h1', {}, 'Manage support'),
       h('p', { class: 'muted small bar-sub' }, 'Saved answers for your team, where tickets go, and how the help desk behaves.'))),
   ];
 

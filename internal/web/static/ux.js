@@ -50,6 +50,20 @@ function toast(message, kind = 'ok') {
 
 const notify = (message) => toast(message, 'ok');
 
+// pageTitle is a page's header: its icon on a lit tile, then the title and
+// the line under it (children of the text column).
+function pageTitle(iconName, ...children) {
+  return h('div', { class: 'page-title' }, h('span', { class: 'page-icon', 'aria-hidden': 'true' }, icon(iconName)), h('div', {}, ...children));
+}
+
+// statusHero is a page's verdict at a glance ("All systems normal"): kind
+// "ok" or "bad", a title and one line under it.
+function statusHero(kind, title, sub) {
+  return h('div', { class: 'status-hero ' + kind, role: 'status' },
+    h('span', { class: 'status-hero-icon', 'aria-hidden': 'true' }, icon(kind === 'ok' ? 'check' : 'alert')),
+    h('div', {}, h('strong', {}, title), sub ? h('span', { class: 'muted small' }, sub) : null));
+}
+
 function clearToasts(kind) {
   document.querySelectorAll(`#toasts .toast.${kind}`).forEach((t) => t.remove());
 }
@@ -208,11 +222,44 @@ function shieldChip(el, mode) {
   $('.shield-chip', el).textContent = SHIELD_LABELS[mode] || mode;
 }
 
+// The rail's groups, in order, and each section's group and icon, by key.
+// Sections not listed here (new ones) go under Settings with a list icon.
+const RAIL_GROUPS = ['', 'Speed', 'Protection', 'Data', 'Settings'];
+const RAIL = {
+  overview: ['', 'dashboard'], health: ['', 'pulse'], wordpress: ['', 'key'],
+  performance: ['Speed', 'gauge'], cdn: ['Speed', 'cloud-plain'], insights: ['Speed', 'chart'], uploads: ['Speed', 'upload'],
+  security: ['Protection', 'shield'], plugins: ['Protection', 'plug'], updates: ['Protection', 'refresh'],
+  backups: ['Data', 'archive'], staging: ['Data', 'branch'], files: ['Data', 'folder'], sftp: ['Data', 'database'],
+  domains: ['Settings', 'link'], php: ['Settings', 'code'], server: ['Settings', 'server'], activity: ['Settings', 'history'],
+};
+const railOf = (key) => RAIL[key] || ['Settings', 'list'];
+
+// railButtons lays the sections out by group, a label before each group.
+function railButtons(sections, onPick) {
+  const order = (key) => RAIL_GROUPS.indexOf(railOf(key)[0]);
+  const sorted = sections.map((s, i) => [s, i]).sort((a, b) => order(a[0][0]) - order(b[0][0]) || a[1] - b[1]).map(([s]) => s);
+  const out = [];
+  let group = '';
+  for (const [key, label] of sorted) {
+    const [g, ic] = railOf(key);
+    if (g !== group) out.push(h('p', { class: 'rail-label', 'aria-hidden': 'true' }, g));
+    group = g;
+    out.push(h('button', { type: 'button', 'data-key': key, onclick: () => onPick(key) }, icon(ic), label));
+  }
+  return out;
+}
+
+// A site's monogram hue: the same site, the same colour, every time.
+const siteHue = (id) => [...id].reduce((n, c) => n + c.charCodeAt(0), 0) % 6;
+
 // decorateSite adds the workspace's parts to a freshly rendered site card
 // (renderSite calls it last, so every section's visibility is decided).
 function decorateSite(el, site) {
   el.dataset.domain = site.primary_domain.toLowerCase();
   el.dataset.status = site.status;
+  const avatar = $('.site-avatar', el);
+  $('.site-initial', avatar).textContent = site.primary_domain.replace(/^www\./, '').slice(0, 1);
+  avatar.classList.add('hue-' + siteHue(site.id));
   shieldChip(el, site.shield_mode);
   const mode = $('.mode', el);
   mode.addEventListener('change', () => shieldChip(el, mode.value));
@@ -227,8 +274,7 @@ function decorateSite(el, site) {
     // In the workspace a summary is the section's title, not a toggle.
     $('summary', d).addEventListener('click', (e) => { if (el.classList.contains('is-open')) e.preventDefault(); });
   }
-  $('.site-rail', el).replaceChildren(...sections.map(([key, label]) =>
-    h('button', { type: 'button', 'data-key': key, onclick: () => focusSite(site.id, key) }, label)));
+  $('.site-rail', el).replaceChildren(...railButtons(sections, (key) => focusSite(site.id, key)));
 
   $('.open', el).addEventListener('click', () => focusSite(site.id));
   $('.open', el).setAttribute('aria-label', `Manage ${site.primary_domain}`);
@@ -302,6 +348,43 @@ function afterSitesRender() {
   applyFocus(true);
   applyFilter();
   updateFleet();
+  renderAttention();
+}
+
+// ---- Needs attention: what to look at first, above the list ----
+
+// attentionFor says why a site needs a look and which section to open, or
+// null. "bad": broken or under fire now; "warn": a choice worth a second look.
+// el is the site's card: an automatically detected attack is on it (data-attack).
+function attentionFor(site, el) {
+  if (site.status === 'failed') return { level: 'bad', text: 'Setting it up failed. Activity says what went wrong.', section: 'activity' };
+  if (site.status === 'suspended') return { level: 'bad', text: 'Suspended: visitors can’t reach it.', section: 'overview' };
+  if (el && el.dataset.attack === '1') return { level: 'bad', text: 'Under attack. Every visitor is being checked and the site stays online.', section: 'security' };
+  if (site.status !== 'active') return null; // still being set up: its row says so
+  if (site.shield_mode === 'off') return { level: 'warn', text: 'Protection is off: nothing is checked or blocked.', section: 'security' };
+  if (site.shield_mode === 'under_attack') return { level: 'warn', text: 'Every visitor is checked until you switch it back.', section: 'security' };
+  return null;
+}
+
+// renderAttention lists the sites attentionFor picks, the worst first. It
+// runs after every load and whenever an attack starts or ends (loadAttack).
+function renderAttention() {
+  const box = $('#attention');
+  const items = [];
+  for (const s of SITES.values()) {
+    const a = attentionFor(s, document.querySelector(`#sites > .site[data-id="${CSS.escape(s.id)}"]`));
+    if (a) items.push({ site: s, ...a });
+  }
+  items.sort((a, b) => (a.level === b.level ? 0 : a.level === 'bad' ? -1 : 1));
+  box.hidden = $('#list-head').hidden = !items.length;
+  box.classList.toggle('bad', items.some((x) => x.level === 'bad'));
+  $('#attention-list').replaceChildren(...items.map(({ site, level, text, section }) => {
+    const go = h('button', { type: 'button', class: 'ghost', 'aria-label': `Review ${site.primary_domain}` }, 'Review', icon('chevron'));
+    go.addEventListener('click', () => focusSite(site.id, section));
+    return h('div', { class: 'attn ' + level },
+      h('span', { class: 'attn-dot', 'aria-hidden': 'true' }),
+      h('div', { class: 'attn-text' }, h('strong', {}, site.primary_domain), h('span', {}, text)), go);
+  }));
 }
 
 function applyFilter() {
@@ -394,6 +477,9 @@ function updateFleet() {
   const busy = sites.length - live;
   set('live', fmtNum(live));
   set('live-sub', `of ${sites.length}` + (busy ? ` · ${busy} not live` : ''));
+  // A dot per site (the first 60): green live, amber on its way, red broken.
+  const dot = (s) => (s.status === 'active' ? '' : s.status === 'failed' || s.status === 'suspended' ? 'hs-bad' : 'hs-busy') + (s.parent_id ? ' hs-staging' : '');
+  $('[data-f="strip"]', fleet).replaceChildren(...sites.slice(0, 60).map((s) => h('span', { class: dot(s), title: `${s.primary_domain}: ${s.status}` })));
   $('#fleet-sub').textContent = `${sites.length} site${sites.length === 1 ? '' : 's'}` +
     (sites.some((s) => s.parent_id) ? `, ${sites.filter((s) => s.parent_id).length} staging` : '');
 

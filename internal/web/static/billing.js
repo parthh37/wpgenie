@@ -485,7 +485,7 @@ async function renderStaffBilling(route) {
   const box = h('div', { class: 'bview', 'aria-busy': 'true' }, h('p', { class: 'muted small b-loading' }, 'Loading…'));
   const create = canStaff('admin') ? actionButton('New invoice', () => openInvoiceEditor({}), { cls: '', ic: 'plus' }) : null;
   root.replaceChildren(
-    h('div', { class: 'bar' }, h('div', {}, h('h1', {}, 'Billing'),
+    h('div', { class: 'bar' }, pageTitle('receipt', h('h1', {}, 'Billing'),
       h('p', { class: 'muted small bar-sub' }, 'Invoices, payments, and the reminders that collect them.')), h('div', { class: 'bar-actions' }, create)),
     subnav('Billing sections', views.map((v) => ({ key: v.key, label: v.label, icon: v.icon, href: '#/billing' + (v.key ? '/' + v.key : '') })),
       view.key, (k) => billingGo(k)),

@@ -13,7 +13,7 @@ async function renderClientArea(route) {
   const notices = h('div', { class: 'client-notices' });
   const box = h('div', { class: 'bview', 'aria-busy': 'true' }, h('p', { class: 'muted small b-loading' }, 'Loading…'));
   root.replaceChildren(
-    h('div', { class: 'bar' }, h('div', {}, h('h1', {}, 'Billing'), h('p', { class: 'muted small bar-sub' }, 'Your plan, invoices and payments.'))),
+    h('div', { class: 'bar' }, pageTitle('receipt', h('h1', {}, 'Billing'), h('p', { class: 'muted small bar-sub' }, 'Your plan, invoices and payments.'))),
     notices,
     subnav('Billing sections', CLIENT_VIEWS.map(([k, label, ic]) => ({ key: k, label, icon: ic, href: '#/billing' + (k ? '/' + k : '') })), key, (k) => billingGo(k)),
     box);

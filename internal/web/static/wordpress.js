@@ -179,7 +179,7 @@ function showHealth(el, site, a) {
   const when = `Analysed ${fmtTime(a.analysed_at)}` +
     (a.scanned_at ? ` · vulnerabilities as of the scan of ${fmtTime(a.scanned_at)}` : ' · never scanned');
   const worst = (vs) => SEV_ORDER.find((s) => vs.some((v) => v.severity === s)) || 'medium';
-  $('.health-body', el).replaceChildren(
+  fill($('.health-body', el),
     h('div', { class: 'health-score' },
       h('div', { class: `grade grade-${a.grade}`, role: 'img', 'aria-label': `Grade ${a.grade}` }, a.grade),
       h('div', {}, h('strong', {}, `${a.score} / 100`), h('div', { class: 'muted small' }, facts.join(' · ')), h('div', { class: 'muted small' }, when))),

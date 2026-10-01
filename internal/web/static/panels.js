@@ -44,7 +44,7 @@ async function loadMail() {
     if (!await ask('Stop the mail server and webmail? Mailboxes and mail are kept on disk.')) return;
     try { await api('PUT', '/mail', { enabled: false }); await loadMail(); } catch (err) { showError(err); }
   });
-  box.replaceChildren(
+  fill(box,
     h('div', { class: 'site-head' }, h('h2', {}, st.hostname), disable),
     table(['Component', 'State'], [['Mail server (SMTP/IMAP)', h('td', {}, status(st.server))], ['Webmail', h('td', {}, status(st.webmail))]]),
     st.detail ? h('p', { class: 'muted small' }, st.detail) : null,
@@ -246,7 +246,7 @@ async function loadSystem(fresh) {
     update.disabled = true;
     try { await api('POST', '/system/update'); pollSystem(); } catch (e) { showError(e); update.disabled = false; }
   });
-  box.replaceChildren(h('h2', {}, 'WPGenie'), table(['', ''], rows),
+  fill(box, h('h2', {}, 'WPGenie'), table(['', ''], rows),
     !info.signing_key ? h('p', { class: 'muted small' }, 'This build has no release signing key, so it cannot update itself.') : null,
     info.latest && info.available ? h('details', {}, h('summary', {}, 'Release notes'), h('pre', { class: 'small' }, info.latest.notes)) : null,
     h('div', { class: 'actions' }, check, update));
