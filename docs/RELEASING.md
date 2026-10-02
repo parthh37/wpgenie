@@ -32,6 +32,10 @@ The release workflow builds `wpgenie_<tag>_linux_{amd64,arm64}.tar.gz` (binary, 
 against the committed `release.pub` before publishing. A release that installs would reject is
 never published.
 
+Drafting the release in the GitHub UI instead (with a new tag) works too: the workflow attaches
+the signed artifacts to the existing release. Until that run finishes, the release has no assets
+and servers that check for updates will fail to download it, so prefer pushing the tag.
+
 ## Releases that change the host
 
 Self-update swaps the binary, `/opt/wpgenie` and the systemd unit, rebuilds the PHP image and runs
