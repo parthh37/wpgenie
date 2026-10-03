@@ -320,7 +320,7 @@ func layout(b Brand, subject, body string) *Rendered {
 		if len(lines) == 1 {
 			if m := buttonRe.FindStringSubmatch(strings.TrimSpace(lines[0])); m != nil {
 				text.WriteString(m[1] + ": " + m[2])
-				fmt.Fprintf(&htm, `<p style="margin:24px 0"><a href="%s" style="display:inline-block;background:#4f46e5;color:#ffffff;`+
+				fmt.Fprintf(&htm, `<p style="margin:24px 0"><a href="%s" style="display:inline-block;background:#5360ec;color:#ffffff;`+
 					`text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600">%s</a></p>`,
 					html.EscapeString(m[2]), html.EscapeString(m[1]))
 				continue
@@ -359,7 +359,7 @@ func linkify(line string) string {
 	for _, loc := range urlRe.FindAllStringIndex(line, -1) {
 		b.WriteString(html.EscapeString(line[last:loc[0]]))
 		u := html.EscapeString(line[loc[0]:loc[1]])
-		fmt.Fprintf(&b, `<a href="%s" style="color:#4f46e5">%s</a>`, u, u)
+		fmt.Fprintf(&b, `<a href="%s" style="color:#4452d9">%s</a>`, u, u)
 		last = loc[1]
 	}
 	b.WriteString(html.EscapeString(line[last:]))
@@ -372,7 +372,7 @@ func wrapHTML(b Brand, subject, content string) string {
 		head = fmt.Sprintf(`<img src="%s" alt="%s" style="max-height:40px;max-width:200px">`, html.EscapeString(b.LogoURL), head)
 	}
 	if b.URL != "" {
-		head = fmt.Sprintf(`<a href="%s" style="color:#111827;text-decoration:none">%s</a>`, html.EscapeString(b.URL), head)
+		head = fmt.Sprintf(`<a href="%s" style="color:#10141c;text-decoration:none">%s</a>`, html.EscapeString(b.URL), head)
 	}
 	footer := ""
 	if b.Footer != "" {
@@ -380,12 +380,12 @@ func wrapHTML(b Brand, subject, content string) string {
 	}
 	return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
 		`<title>` + html.EscapeString(subject) + `</title></head>` +
-		`<body style="margin:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;` +
-		`color:#111827;font-size:15px;line-height:1.55">` +
-		`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 12px"><tr><td align="center">` +
+		`<body style="margin:0;background:#f5f6f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;` +
+		`color:#10141c;font-size:15px;line-height:1.55">` +
+		`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6f9;padding:24px 12px"><tr><td align="center">` +
 		`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px">` +
 		`<tr><td style="padding:8px 4px 16px;font-size:18px;font-weight:700">` + head + `</td></tr>` +
-		`<tr><td style="background:#ffffff;border-radius:12px;padding:28px 28px 12px;border:1px solid #e5e7eb">` + content + `</td></tr>` +
-		`<tr><td style="padding:16px 4px;color:#6b7280;font-size:12px">` + footer + `</td></tr>` +
+		`<tr><td style="background:#ffffff;border-radius:12px;padding:28px 28px 12px;border:1px solid #e4e7ee">` + content + `</td></tr>` +
+		`<tr><td style="padding:16px 4px;color:#566072;font-size:12px">` + footer + `</td></tr>` +
 		`</table></td></tr></table></body></html>`
 }

@@ -14,9 +14,9 @@ body { margin: 0; background: #e9ecf2; color: var(--ink); font: 14px/1.5 "Inter 
 
 /* The toolbar above the sheet (the print button lives in it or anywhere). */
 .print-btn { position: fixed; top: 1rem; right: 1rem; z-index: 2; display: inline-flex; align-items: center; gap: .45rem; padding: .6rem 1rem;
-  border: 0; border-radius: 8px; background: #4f5de6; color: #fff; font: 600 .9rem/1.2 inherit; cursor: pointer; text-decoration: none;
+  border: 0; border-radius: 8px; background: #5360ec; color: #fff; font: 600 .9rem/1.2 inherit; cursor: pointer; text-decoration: none;
   box-shadow: 0 4px 14px rgba(16, 24, 40, .18); }
-.print-btn:hover { background: #5f6cf1; }
+.print-btn:hover { background: #6370f5; }
 .print-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .invoice { position: relative; width: min(210mm, 100% - 2rem); min-height: 297mm; margin: 2rem auto; padding: 18mm 16mm 22mm;

@@ -12,7 +12,7 @@ const LOG_TYPES = {
   access: { icon: 'globe', title: 'Visitor requests', desc: 'Every request to your sites: the page, the answer, how long it took and who asked (Caddy\'s access log).' },
   php_errors: { icon: 'bug', title: 'PHP errors', desc: 'Warnings and errors from WordPress, plugins and themes, for each site.' },
   waf: { icon: 'shield-alert', title: 'Firewall matches', desc: 'Requests the web application firewall flagged or blocked, and the rules they matched.' },
-  security: { icon: 'shield', title: 'Security events', desc: 'Blocks, bans and attacks the shield saw (the Security page\'s log, kept for good).' },
+  security: { icon: 'shield', title: 'Protection events', desc: 'Blocks, bans and attacks protection caught (the Protection page\'s log, kept for good).' },
   audit: { icon: 'clipboard', title: 'Panel activity', desc: 'Who changed what in this panel, and from where.' },
   jobs: { icon: 'list-checks', title: 'Background jobs', desc: 'Backups, restores, clones and updates: when they ran and how they went.' },
   account_events: { icon: 'building', title: 'Account activity', desc: 'Plan changes, suspensions and billing events of your clients\' accounts.' },

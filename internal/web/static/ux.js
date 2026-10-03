@@ -205,7 +205,7 @@ function goSite(id, section = 'overview') {
 
 // The site open in the workspace ({id, section}), or null for the list.
 let FOCUS = null;
-const SHIELD_LABELS = { off: 'Shield off', auto: 'Shield on', standard: 'Shield on', under_attack: 'Checking everyone' };
+const SHIELD_LABELS = { off: 'Protection off', auto: 'Protection on', standard: 'Protection on', under_attack: 'Checking everyone' };
 
 // A section is a <details class="perf"> of the site template, keyed by the
 // first word of its summary: performance, insights, cdn, … activity.
@@ -228,7 +228,7 @@ const RAIL_GROUPS = ['', 'Speed', 'Protection', 'Data', 'Settings'];
 const RAIL = {
   overview: ['', 'dashboard'], health: ['', 'pulse'], wordpress: ['', 'key'],
   performance: ['Speed', 'gauge'], cdn: ['Speed', 'cloud-plain'], insights: ['Speed', 'chart'], uploads: ['Speed', 'upload'],
-  security: ['Protection', 'shield'], plugins: ['Protection', 'plug'], updates: ['Protection', 'refresh'],
+  protection: ['Protection', 'shield'], plugins: ['Protection', 'plug'], updates: ['Protection', 'refresh'],
   backups: ['Data', 'archive'], staging: ['Data', 'branch'], files: ['Data', 'folder'], sftp: ['Data', 'database'],
   domains: ['Settings', 'link'], php: ['Settings', 'code'], server: ['Settings', 'server'], activity: ['Settings', 'history'],
 };
@@ -249,6 +249,99 @@ function railButtons(sections, onPick) {
   return out;
 }
 
+// The everyday jobs on a site's overview, in the words an owner would use,
+// each opening the section that does it. Only the first six this user can
+// reach are shown (a section a plan or role hides isn't offered).
+const TASKS = [
+  ['backups', 'archive', 'Back up or restore', 'Save a copy now, or roll back to one'],
+  ['wordpress', 'key', 'Sign in to WordPress', 'Open wp-admin without a password'],
+  ['files', 'folder', 'Edit files', 'Browse, upload and change your site’s files'],
+  ['domains', 'link', 'Add a domain', 'Point a domain here, HTTPS set up for you'],
+  ['staging', 'branch', 'Try changes safely', 'Work on a private copy, then publish'],
+  ['updates', 'refresh', 'Update WordPress', 'Core, plugins and themes in one place'],
+  ['performance', 'gauge', 'Speed up the site', 'Caching and room for busy days'],
+];
+
+function renderTasks(el, site, sections) {
+  const have = new Set(sections.map(([key]) => key));
+  const tasks = TASKS.filter(([key]) => have.has(key)).slice(0, 6);
+  const box = $('.ov-tasks', el);
+  box.hidden = !tasks.length;
+  $('.task-grid', box).replaceChildren(...tasks.map(([key, ic, title, sub]) =>
+    h('button', { type: 'button', class: 'task', onclick: () => focusSite(site.id, key) },
+      h('span', { class: 'task-ic', 'aria-hidden': 'true' }, icon(ic)),
+      h('strong', {}, title), h('span', { class: 'task-sub' }, sub), icon('chevron'))));
+}
+
+// ---- Activity rings ----
+// Three goals per site, full when all is well, as on the Watch: responses
+// without a server error (24 h), CPU headroom (now) and protection (on or
+// off). A value not known yet draws the ring's track alone; the numbers
+// are written beside the rings too, so nothing depends on colour.
+const RING_R = [44, 32, 20];
+const RING_NAMES = ['Healthy responses', 'CPU headroom', 'Protection'];
+
+function rings() {
+  const svg = svgEl('svg', { class: 'rings', viewBox: '0 0 100 100', role: 'img' });
+  RING_R.forEach((r, i) => {
+    const c = { cx: 50, cy: 50, r, 'stroke-width': 10.5 };
+    svg.append(svgEl('circle', { ...c, class: `track r${i + 1}` }),
+      svgEl('circle', { ...c, class: `arc r${i + 1} none`, pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 50 50)' }));
+  });
+  return svg;
+}
+
+const fmtPct = (v) => (v == null ? '–' : v >= 99.95 ? '100%' : v >= 99 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`);
+
+// setRings shows values ([healthy, headroom, protection], each 0–100 or
+// null) on rings() and its legend.
+function setRings(svg, legend, values) {
+  const arcs = svg.querySelectorAll('.arc');
+  const said = values.map((v, i) => (i === 2 ? (v == null ? '–' : v ? 'On' : 'Off') : fmtPct(v)));
+  values.forEach((v, i) => {
+    arcs[i].classList.toggle('none', v == null);
+    arcs[i].setAttribute('stroke-dasharray', `${v == null ? 0 : Math.max(0, Math.min(100, v))} 100`);
+  });
+  svg.setAttribute('aria-label', RING_NAMES.map((n, i) => `${n}: ${said[i] === '–' ? 'not known yet' : said[i]}`).join(', '));
+  if (legend) legend.querySelectorAll('.rl-v').forEach((el, i) => { el.textContent = said[i]; });
+}
+
+function ringLegend() {
+  return h('dl', { class: 'ring-legend', 'aria-hidden': 'true' }, ...RING_NAMES.map((name, i) =>
+    h('div', { class: `l${i + 1}` }, h('dt', {}), h('dd', { class: 'rl-v' }, '–'), h('dd', { class: 'rl-k' }, name))));
+}
+
+// VITALS: site ID -> {healthy, headroom, protection}, filled in as the
+// site, its traffic and its CPU arrive.
+const VITALS = new Map();
+
+function setVitals(id, part) {
+  const v = Object.assign(VITALS.get(id) || {}, part);
+  VITALS.set(id, v);
+  const el = document.querySelector(`#sites > .site[data-id="${CSS.escape(id)}"]`);
+  const box = el && $('.vitals', el);
+  if (box && box.firstElementChild) setRings($('.rings', box), $('.ring-legend', box), [v.healthy, v.headroom, v.protection]);
+  updateFleetVitals();
+}
+
+const vitalsTraffic = (id, s) => setVitals(id, { healthy: s.totals.requests ? 100 * (1 - (s.totals.errors_5xx || 0) / s.totals.requests) : null });
+const vitalsCPU = (id, c) => setVitals(id, { headroom: c ? Math.max(0, 100 - c.percent) : null });
+const vitalsMode = (id, mode) => setVitals(id, { protection: mode === 'off' ? 0 : 100 });
+
+// The fleet's rings: the average of what's known, and the share of sites protected.
+function updateFleetVitals() {
+  const box = document.querySelector('#fleet [data-f="rings"]');
+  if (!box) return;
+  if (!box.firstElementChild) box.replaceChildren(rings(), ringLegend());
+  const vs = [...SITES.keys()].map((id) => VITALS.get(id)).filter(Boolean);
+  const avg = (k) => { const xs = vs.map((v) => v[k]).filter((x) => x != null); return xs.length ? sum(xs) / xs.length : null; };
+  const prot = avg('protection');
+  setRings($('.rings', box), $('.ring-legend', box), [avg('healthy'), avg('headroom'), prot]);
+  // The fleet's protection is a share, not on/off.
+  const third = $('.l3 .rl-v', box);
+  if (third && prot != null) third.textContent = `${Math.round(prot)}%`;
+}
+
 // A site's monogram hue: the same site, the same colour, every time.
 const siteHue = (id) => [...id].reduce((n, c) => n + c.charCodeAt(0), 0) % 6;
 
@@ -262,7 +355,8 @@ function decorateSite(el, site) {
   avatar.classList.add('hue-' + siteHue(site.id));
   shieldChip(el, site.shield_mode);
   const mode = $('.mode', el);
-  mode.addEventListener('change', () => shieldChip(el, mode.value));
+  mode.addEventListener('change', () => { shieldChip(el, mode.value); vitalsMode(site.id, mode.value); });
+  $('.vitals', el).replaceChildren(h('h2', {}, 'Vitals'), rings(), ringLegend());
   const url = 'https://' + site.primary_domain;
   $('.visit', el).href = url;
   $('.wp-admin', el).href = url + '/wp-admin/';
@@ -275,6 +369,7 @@ function decorateSite(el, site) {
     $('summary', d).addEventListener('click', (e) => { if (el.classList.contains('is-open')) e.preventDefault(); });
   }
   $('.site-rail', el).replaceChildren(...railButtons(sections, (key) => focusSite(site.id, key)));
+  renderTasks(el, site, sections);
 
   $('.open', el).addEventListener('click', () => focusSite(site.id));
   $('.open', el).setAttribute('aria-label', `Manage ${site.primary_domain}`);
@@ -284,9 +379,11 @@ function decorateSite(el, site) {
     if (!el.classList.contains('is-open') && !e.target.closest('a, button, input, select, label, summary, details')) focusSite(site.id);
   });
   if (STATS.has(site.id)) drawSpark(el, STATS.get(site.id));
+  vitalsMode(site.id, site.shield_mode);
 }
 
 function showSection(card, key) {
+  if (key === 'security') key = 'protection'; // the section's name until 2026-10
   if (key !== 'overview' && !card.querySelector(`details.perf[data-key="${CSS.escape(key)}"]:not([hidden])`)) key = 'overview';
   card.dataset.section = key;
   const rail = $('.site-rail', card);
@@ -359,10 +456,10 @@ function afterSitesRender() {
 function attentionFor(site, el) {
   if (site.status === 'failed') return { level: 'bad', text: 'Setting it up failed. Activity says what went wrong.', section: 'activity' };
   if (site.status === 'suspended') return { level: 'bad', text: 'Suspended: visitors can’t reach it.', section: 'overview' };
-  if (el && el.dataset.attack === '1') return { level: 'bad', text: 'Under attack. Every visitor is being checked and the site stays online.', section: 'security' };
+  if (el && el.dataset.attack === '1') return { level: 'bad', text: 'Under attack. Every visitor is being checked and the site stays online.', section: 'protection' };
   if (site.status !== 'active') return null; // still being set up: its row says so
-  if (site.shield_mode === 'off') return { level: 'warn', text: 'Protection is off: nothing is checked or blocked.', section: 'security' };
-  if (site.shield_mode === 'under_attack') return { level: 'warn', text: 'Every visitor is checked until you switch it back.', section: 'security' };
+  if (site.shield_mode === 'off') return { level: 'warn', text: 'Protection is off: nothing is checked or blocked.', section: 'protection' };
+  if (site.shield_mode === 'under_attack') return { level: 'warn', text: 'Every visitor is checked until you switch it back.', section: 'protection' };
   return null;
 }
 
@@ -456,13 +553,16 @@ function drawSpark(el, s) {
     readout.style.left = `${Math.max(0, Math.min(r.width - readout.offsetWidth, e.clientX - r.left - readout.offsetWidth / 2))}px`;
   });
   svg.addEventListener('pointerleave', () => { cursor.classList.remove('on'); readout.hidden = true; });
+  const quiet = !sum(views) && !sum(blocked);
   box.replaceChildren(
     h('div', { class: 'spark-legend' }, h('span', { class: 'lg views' }, 'Page views'), h('span', { class: 'lg blocked' }, 'Blocked'), h('span', { class: 'muted' }, 'last 24 h')),
     svg, readout);
+  if (quiet) box.append(h('p', { class: 'spark-empty' }, 'No visits in the last 24 hours. This fills in as people visit.'));
 }
 
 function siteStatsLoaded(id, s, el) {
   STATS.set(id, s);
+  vitalsTraffic(id, s);
   drawSpark(el, s);
   updateFleet();
 }
@@ -491,7 +591,7 @@ function updateFleet() {
   set('blocked', stats.length ? fmtNum(total('blocked')) : '–');
   const attacked = sites.filter((s) => s.shield_mode === 'under_attack').length;
   const off = sites.filter((s) => s.shield_mode === 'off').length;
-  set('attack', attacked ? `${attacked} in Under attack mode` : off ? `${off} with the shield off` : 'Every shield on');
+  set('attack', attacked ? `${attacked} in Under attack mode` : off ? `${off} with protection off` : 'Protection on for every site');
   fleet.classList.toggle('attack', attacked > 0);
 
   const box = $('[data-f="chart"]', fleet);
@@ -527,7 +627,7 @@ function paletteItems() {
       label: `${attack ? 'Turn off' : 'Turn on'} Under attack mode · ${s.primary_domain}`,
       run: async () => {
         await api('PUT', `/sites/${s.id}/shield`, { mode: attack ? 'standard' : 'under_attack', block_ai_bots: s.block_ai_bots });
-        notify(attack ? `${s.primary_domain}: back to the standard shield` : `${s.primary_domain}: every visitor is challenged now`);
+        notify(attack ? `${s.primary_domain}: back to standard protection` : `${s.primary_domain}: every visitor is challenged now`);
         if (!$('#app').hidden) await load();
       },
     });
