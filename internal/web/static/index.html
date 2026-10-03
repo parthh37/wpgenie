@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WPGenie</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="/support.css">
@@ -115,6 +116,9 @@
   <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
   <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
   <symbol id="i-cloud-plain" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+  <linearGradient id="ring-g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="rg-1a"/><stop offset="1" class="rg-1b"/></linearGradient>
+  <linearGradient id="ring-g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="rg-2a"/><stop offset="1" class="rg-2b"/></linearGradient>
+  <linearGradient id="ring-g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="rg-3a"/><stop offset="1" class="rg-3b"/></linearGradient>
 </svg>
 
 <aside class="side" id="side" aria-label="Navigation">
@@ -132,7 +136,7 @@
       <button class="tab" data-tab="support"><svg class="i"><use href="#i-life-buoy"/></svg>Support <span id="support-badge" class="nav-count" hidden></span></button>
       <button class="tab staff-only" data-tab="backups"><svg class="i"><use href="#i-archive"/></svg>Backups</button>
       <button class="tab staff-only" data-tab="mail"><svg class="i"><use href="#i-mail"/></svg>Mail</button>
-      <button class="tab staff-only" data-tab="security"><svg class="i"><use href="#i-shield"/></svg>Security</button>
+      <button class="tab staff-only" data-tab="security"><svg class="i"><use href="#i-shield"/></svg>Protection</button>
       <button class="tab staff-only" data-tab="monitoring"><svg class="i"><use href="#i-activity"/></svg>Monitoring <span id="alert-dot" class="dot bad" hidden><span class="sr-only">(alerts firing)</span></span></button>
     </div>
     <div class="nav-group">
@@ -182,7 +186,7 @@
     </div>
     <ul class="auth-aside" aria-label="What WPGenie does">
       <li><svg class="i"><use href="#i-box"/></svg><div><strong>Every site in its own container</strong><span>Unprivileged, read-only PHP with automatic HTTPS.</span></div></li>
-      <li><svg class="i"><use href="#i-shield"/></svg><div><strong>A shield in front of WordPress</strong><span>Bot and AI-crawler blocking, WAF, and a CAPTCHA with no third party.</span></div></li>
+      <li><svg class="i"><use href="#i-shield"/></svg><div><strong>Protection in front of WordPress</strong><span>Bot and AI-crawler blocking, WAF, and a CAPTCHA with no third party.</span></div></li>
       <li><svg class="i"><use href="#i-archive"/></svg><div><strong>Backups you can trust</strong><span>Encrypted, deduplicated, restored in one click.</span></div></li>
       <li><svg class="i"><use href="#i-lock"/></svg><div><strong>Yours, on your server</strong><span>Visitor data never leaves it.</span></div></li>
     </ul>
@@ -224,6 +228,7 @@
       <div class="tile tile-wide"><span class="tile-k"><svg class="i"><use href="#i-chart"/></svg>Page views · 24 h</span><span class="tile-v" data-f="views">–</span><span class="tile-chart" data-f="chart"></span></div>
       <div class="tile"><span class="tile-k"><svg class="i"><use href="#i-users"/></svg>Visitors · 24 h</span><span class="tile-v" data-f="visitors">–</span><span class="tile-s" data-f="bandwidth"></span></div>
       <div class="tile tile-shield"><span class="tile-k"><svg class="i"><use href="#i-shield"/></svg>Threats blocked · 24 h</span><span class="tile-v" data-f="blocked">–</span><span class="tile-s" data-f="attack"></span></div>
+      <div class="tile tile-vitals"><span class="tile-k"><svg class="i"><use href="#i-zap"/></svg>Fleet vitals</span><span class="tile-rings" data-f="rings"></span></div>
     </div>
 
 
@@ -237,7 +242,7 @@
     <div id="empty" class="empty" hidden>
       <span class="empty-icon"><svg class="i"><use href="#i-globe"/></svg></span>
       <h2>No sites yet</h2>
-      <p class="muted">A site is ready in about a minute: WordPress, HTTPS, the shield and nightly backups included.</p>
+      <p class="muted">A site is ready in about a minute: WordPress, HTTPS, bot protection and nightly backups included.</p>
       <button type="button" class="can-create" id="empty-new"><svg class="i"><use href="#i-plus"/></svg>Create your first site</button>
     </div>
   </section>
@@ -330,11 +335,11 @@
   </section>
 
   <section class="panel" data-panel="security" hidden>
-    <div class="bar"><div class="page-title"><span class="page-icon"><svg class="i"><use href="#i-shield"/></svg></span><div><h1>Security</h1><p class="muted small bar-sub">Rules that protect every site on this server at once.</p></div></div></div>
+    <div class="bar"><div class="page-title"><span class="page-icon"><svg class="i"><use href="#i-shield"/></svg></span><div><h1>Protection</h1><p class="muted small bar-sub">Rules that protect every site on this server at once.</p></div></div></div>
     <div class="card">
       <h2><svg class="i"><use href="#i-eye"/></svg>IP reputation</h2>
       <p class="muted small">Public blocklists of hijacked networks and addresses attacking servers right now, refreshed every 6 hours.
-        Each site chooses whether listed clients are challenged or blocked (Site → Security). Verified search engines are never affected.</p>
+        Each site chooses whether listed clients are challenged or blocked (Site → Protection). Verified search engines are never affected.</p>
       <div id="reputation"></div>
     </div>
     <div class="card">
@@ -409,7 +414,7 @@
         </label>
         <label>Plan<select name="plan_id" required></select></label>
         <label class="staff-only">Reseller <span class="muted">(customers only)</span><select name="parent_id"></select></label>
-        <label>Email <span class="muted">(optional)</span><input name="email" type="email"></label>
+        <label>E-mail <span class="muted">(optional)</span><input name="email" type="email"></label>
         <label>First user <span class="muted">(optional; password generated)</span><input name="username" placeholder="username"></label>
       </div>
       <div class="actions">
@@ -626,7 +631,12 @@
         <div><dt>Bot hits</dt><dd data-k="bot_hits">–</dd></div>
         <div class="cpu"><dt>CPU now</dt><dd data-k="cpu">–</dd></div>
       </dl>
+      <section class="vitals" aria-label="Vitals"></section>
       <div class="spark"></div>
+      <nav class="ov-tasks" aria-label="Common tasks" hidden>
+        <h2>Common tasks</h2>
+        <div class="task-grid"></div>
+      </nav>
       <div class="ov-controls">
         <h2><svg class="i"><use href="#i-shield"/></svg>Protection</h2>
         <div class="attack-banner" role="status" hidden></div>
@@ -642,7 +652,7 @@
           <label class="check"><input type="checkbox" class="ai"> Block AI crawlers</label>
         </div>
         <p class="muted small"><em>Automatic</em> checks suspicious visitors, and every visitor while an attack is detected: a quick
-          check in the browser, no CAPTCHA puzzle. More under Security.</p>
+          check in the browser, no CAPTCHA puzzle. More under Protection.</p>
       </div>
       <div class="danger-zone can-create">
         <div>
@@ -852,7 +862,7 @@
       <div class="offload-status"></div>
     </details>
     <details class="perf sec">
-      <summary>Security <span class="muted small sec-summary"></span></summary>
+      <summary>Protection <span class="muted small sec-summary"></span></summary>
       <div class="attack-banner" role="status" hidden></div>
       <p class="sec-off st-warning small" hidden>Protection is off: nothing is checked or blocked on this site. Pick a visitor check
         below to turn it on.</p>
@@ -896,7 +906,7 @@
         <p class="muted small waf-note"></p>
         <div class="grid">
           <label>Admin allowlist <span class="muted">(only these IPs/CIDRs reach wp-admin; empty = anyone)</span><input class="admin-allow" placeholder="203.0.113.7, 198.51.100.0/24"></label>
-          <label>Trusted IPs <span class="muted">(bypass the shield: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
+          <label>Trusted IPs <span class="muted">(bypass protection: office, uptime monitor)</span><input class="trusted" placeholder="192.0.2.10"></label>
           <label>Blocked IPs <span class="muted">(denied on this site)</span><input class="deny" placeholder="198.51.100.0/24"></label>
         </div>
         <div class="controls">

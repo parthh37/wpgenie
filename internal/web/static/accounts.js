@@ -247,7 +247,7 @@ async function showAccountDetail(id) {
       h('span', { class: 'pill ' + (a.effectively_suspended ? 'suspended' : 'active') },
         a.status + (a.suspend_reason ? ` · ${a.suspend_reason}` : ''))),
     h('p', { class: 'muted small' }, `Plan ${a.plan.name}: ${planSummary(a.limits)}`),
-    table(['', ''], [['Email', a.email || '–'], ['Reseller', a.parent_name || '–'], ['WHMCS service', a.whmcs_service_id || '–'],
+    table(['', ''], [['E-mail', a.email || '–'], ['Reseller', a.parent_name || '–'], ['WHMCS service', a.whmcs_service_id || '–'],
       ['Stripe customer', a.stripe_customer_id || '–'], ['Created', fmtTime(a.created_at)]]),
     usageBars(u, burst),
     planPicker,

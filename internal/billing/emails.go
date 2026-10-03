@@ -49,7 +49,7 @@ func init() {
 		{Name: "invoice.overdue", Description: "After the due date of an unpaid invoice, on each overdue reminder day.",
 			Subject: "Overdue: invoice {{.Invoice.Number}} ({{.Invoice.Balance}})",
 			Body: "Hello {{.Contact.Name}},\n\nInvoice {{.Invoice.Number}} was due on {{.Invoice.DueDate}} and " +
-				"{{.Invoice.Balance}} is still unpaid ({{.Days}} day(s) overdue).{{if .SuspendDate}} To keep your " +
+				"{{.Invoice.Balance}} is still unpaid ({{.Days}} {{if eq .Days 1}}day{{else}}days{{end}} overdue).{{if .SuspendDate}} To keep your " +
 				"services running, please pay it before {{.SuspendDate}}.{{end}}\n\n[[Pay now|{{.Invoice.URL}}]]\n\n{{.Brand.Name}}",
 			Vars: append(invVars, "Days", "SuspendDate"), Sample: sample(map[string]any{"Days": 3, "SuspendDate": "Nov 4, 2026"})},
 		{Name: "invoice.paid", Description: "The receipt, once an invoice is paid.",

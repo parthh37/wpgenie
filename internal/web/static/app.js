@@ -366,6 +366,7 @@ async function loadCPU(site) {
     if (!el) return;
     const c = m.cpu;
     $('[data-k="cpu"]', el).textContent = c ? `${c.percent}%` : '–';
+    vitalsCPU(site.id, c);
     const parts = c ? [`CPU ${c.percent}% of each instance's allowance across ${c.replicas} instance(s)`] : [];
     if (c && c.workers_percent != null) parts.push(`PHP workers ${c.workers_percent}% busy` + (c.queued ? `, ${c.queued} request(s) waiting` : ''));
     if (c && c.p95_ms != null) parts.push(`95% of the last minute's ${c.responses} responses within ${Math.round(c.p95_ms)} ms`);
@@ -415,7 +416,7 @@ function renderSecurity(el, site) {
   f('login-rate').value = site.login_per_min || 0;
   f('difficulty').value = site.challenge_bits || 0;
   const note = f('waf-note');
-  if (site.body_waf === 'detect') note.textContent = 'Log only: matches appear under Security → Recent blocks as "detect". Switch to Block once nothing legitimate shows up there.';
+  if (site.body_waf === 'detect') note.textContent = 'Log only: matches appear under Protection → Recent blocks as "detect". Switch to Block once nothing legitimate shows up there.';
   const save = f('sec-save');
   save.addEventListener('click', async () => {
     save.disabled = true;

@@ -240,12 +240,12 @@ function openNewSiteWizard() {
         label: 'Details',
         el: h('div', { class: 'grid' },
           h('label', {}, 'Site title', name),
-          h('label', {}, 'Admin email', email),
+          h('label', {}, 'Admin e-mail', email),
           h('label', {}, 'Admin username ', h('span', { class: 'muted' }, '(optional)'), user), err),
         button: () => ({ label: 'Create site' }),
         async next() {
           err.hidden = true;
-          if (!email.checkValidity()) { err.textContent = 'Enter the admin\'s email address.'; err.hidden = false; email.focus(); return false; }
+          if (!email.checkValidity()) { err.textContent = 'Enter the admin\'s e-mail address.'; err.hidden = false; email.focus(); return false; }
           const body = { domain: domain.value, name: name.value.trim(), admin_email: email.value.trim(), admin_user: user.value.trim() };
           if (node) body.node = node.value || node.dataset.auto || '';
           // Provisioning runs as a job (progress in the jobs tray); the
