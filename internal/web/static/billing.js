@@ -568,56 +568,74 @@ async function staffOverview(box) {
 
 // barChart draws amounts by month as bars from a zero baseline, the latest
 // month in full colour; the numbers are in its description and in a table
-// under it, and each bar shows its value under the pointer.
+// under it, and each bar shows its value under the pointer. It's drawn at
+// its box's width in pixels (again when that changes), so its labels stay
+// the size of the text around them instead of growing with a viewBox.
 function barChart(points, { title }) {
-  const W = 640, H = 230, L = 64, R = 8, T = 14, B = 30;
-  const pw = W - L - R, ph = H - T - B;
+  const H = 230, L = 64, R = 8, T = 14, B = 30;
+  const ph = H - T - B;
   const most = Math.max(0, ...points.map((p) => p.amount || 0));
   // A "nice" step (1, 2, 2.5 or 5 × 10ⁿ) for four gridlines.
   const raw = Math.max(most, 10 ** currency().decimals) / 4;
   const e = 10 ** Math.floor(Math.log10(raw)), m = raw / e;
   const step = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e, max = step * 4;
   const id = uid('chart');
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'bchart', role: 'img', 'aria-labelledby': `${id}-t ${id}-d` });
-  const t = svgEl('title', { id: id + '-t' });
-  t.textContent = title;
-  const d = svgEl('desc', { id: id + '-d' });
-  d.textContent = points.length ? points.map((p) => `${monthLabel(p.month, true)}: ${money(p.amount)}`).join('; ') : 'No data yet.';
-  svg.append(t, d);
-  for (let i = 0; i <= 4; i++) {
-    const y = T + ph - (i / 4) * ph;
-    svg.append(svgEl('line', { x1: L, x2: W - R, y1: y, y2: y, class: i ? 'gridline' : 'baseline' }));
-    const lab = svgEl('text', { x: L - 10, y: y + 4, class: 'ylab', 'text-anchor': 'end' });
-    lab.textContent = money(step * i, true);
-    svg.append(lab);
-  }
   const wrap = h('div', { class: 'bchart-wrap' });
   const tip = h('div', { class: 'bchart-tip', hidden: true });
-  const slot = pw / Math.max(1, points.length), bw = Math.min(34, slot * 0.6);
-  points.forEach((p, i) => {
-    const x = L + slot * i + (slot - bw) / 2, bh = max ? ((p.amount || 0) / max) * ph : 0;
-    if (bh > 0) {
-      const hh = Math.max(bh, 2), y = T + ph - hh, r = Math.min(4, bw / 2, hh);
-      svg.append(svgEl('path', {
-        class: 'bar' + (i === points.length - 1 ? ' current' : ''),
-        d: `M${x} ${y + hh}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + bw - r}Q${x + bw} ${y} ${x + bw} ${y + r}V${y + hh}Z`,
-      }));
+
+  const draw = (W) => {
+    const pw = W - L - R;
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'bchart', role: 'img', 'aria-labelledby': `${id}-t ${id}-d` });
+    const t = svgEl('title', { id: id + '-t' });
+    t.textContent = title;
+    const d = svgEl('desc', { id: id + '-d' });
+    d.textContent = points.length ? points.map((p) => `${monthLabel(p.month, true)}: ${money(p.amount)}`).join('; ') : 'No data yet.';
+    svg.append(t, d);
+    for (let i = 0; i <= 4; i++) {
+      const y = T + ph - (i / 4) * ph;
+      svg.append(svgEl('line', { x1: L, x2: W - R, y1: y, y2: y, class: i ? 'gridline' : 'baseline' }));
+      const lab = svgEl('text', { x: L - 10, y: y + 4, class: 'ylab', 'text-anchor': 'end' });
+      lab.textContent = money(step * i, true);
+      svg.append(lab);
     }
-    const xl = svgEl('text', { x: x + bw / 2, y: H - 9, class: 'xlab' + (i % 2 ? ' odd' : ''), 'text-anchor': 'middle' });
-    xl.textContent = monthLabel(p.month);
-    const hit = svgEl('rect', { x: L + slot * i, y: T, width: slot, height: ph, class: 'hit' });
-    hit.addEventListener('pointerenter', () => {
-      tip.textContent = `${monthLabel(p.month, true)} · ${money(p.amount)}`;
-      tip.hidden = false;
-      const box = wrap.getBoundingClientRect(), r = hit.getBoundingClientRect();
-      // CSSOM, not a style attribute: the panel's CSP allows this.
-      tip.style.left = `${Math.max(0, Math.min(box.width - tip.offsetWidth, r.left - box.left + r.width / 2 - tip.offsetWidth / 2))}px`;
-      tip.style.top = `${Math.max(0, (T + ph - bh) * (box.height / H) - 34)}px`;
+    const slot = pw / Math.max(1, points.length), bw = Math.min(34, slot * 0.6);
+    // Every other month's label, where a whole year doesn't fit.
+    const thin = slot < 44;
+    points.forEach((p, i) => {
+      const x = L + slot * i + (slot - bw) / 2, bh = max ? ((p.amount || 0) / max) * ph : 0;
+      if (bh > 0) {
+        const hh = Math.max(bh, 2), y = T + ph - hh, r = Math.min(4, bw / 2, hh);
+        svg.append(svgEl('path', {
+          class: 'bar' + (i === points.length - 1 ? ' current' : ''),
+          d: `M${x} ${y + hh}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + bw - r}Q${x + bw} ${y} ${x + bw} ${y + r}V${y + hh}Z`,
+        }));
+      }
+      const hit = svgEl('rect', { x: L + slot * i, y: T, width: slot, height: ph, class: 'hit' });
+      hit.addEventListener('pointerenter', () => {
+        tip.textContent = `${monthLabel(p.month, true)} · ${money(p.amount)}`;
+        tip.hidden = false;
+        const box = wrap.getBoundingClientRect(), r = hit.getBoundingClientRect();
+        // CSSOM, not a style attribute: the panel's CSP allows this.
+        tip.style.left = `${Math.max(0, Math.min(box.width - tip.offsetWidth, r.left - box.left + r.width / 2 - tip.offsetWidth / 2))}px`;
+        tip.style.top = `${Math.max(0, T + ph - bh - 34)}px`;
+      });
+      hit.addEventListener('pointerleave', () => { tip.hidden = true; });
+      if (!thin || i % 2 === (points.length - 1) % 2) {
+        const xl = svgEl('text', { x: x + bw / 2, y: H - 9, class: 'xlab', 'text-anchor': 'middle' });
+        xl.textContent = monthLabel(p.month);
+        svg.append(xl);
+      }
+      svg.append(hit);
     });
-    hit.addEventListener('pointerleave', () => { tip.hidden = true; });
-    svg.append(xl, hit);
-  });
-  wrap.append(svg, tip);
+    wrap.replaceChildren(svg, tip);
+  };
+  draw(640);
+  let drawn = 640;
+  new ResizeObserver(([entry]) => {
+    const w = Math.round(entry.contentRect.width);
+    if (w > 0 && w !== drawn) { drawn = w; tip.hidden = true; draw(w); }
+  }).observe(wrap);
+
   const tbl = h('details', { class: 'chart-table' }, h('summary', {}, 'Show the numbers'),
     btable(['Month', { label: 'Income', num: true }], points.map((p) => [monthLabel(p.month, true), money(p.amount)])));
   return h('div', {}, wrap, points.length && !most ? h('p', { class: 'muted small' }, 'No income recorded yet: bars appear as payments come in.') : null, tbl);

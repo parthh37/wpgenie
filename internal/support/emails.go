@@ -35,7 +35,9 @@ func init() {
 
 Your ticket number is {{.Ticket.Mask}}.
 
-[[View your ticket|{{.Ticket.URL}}]]`,
+[[View your ticket|{{.Ticket.URL}}]]
+
+{{.Brand.Name}}`,
 			Vars:   append([]string{"Name", "ByStaff", "Message"}, vars...),
 			Sample: map[string]any{"Ticket": ticket, "Name": "Acme Ltd", "Message": "Hello, we noticed your site…"}},
 		{Name: "ticket.new_staff", Description: "To staff (or the reseller handling it), when a ticket is opened or escalated.",
@@ -75,7 +77,9 @@ Your ticket number is {{.Ticket.Mask}}.
 
 If you still need help, reply to it and it opens again.
 
-[[View your ticket|{{.Ticket.URL}}]]`,
+[[View your ticket|{{.Ticket.URL}}]]
+
+{{.Brand.Name}}`,
 			Vars:   append([]string{"Name", "AutoClosed", "Days"}, vars...),
 			Sample: map[string]any{"Ticket": ticket, "Name": "Acme Ltd", "AutoClosed": true, "Days": 7}},
 	} {

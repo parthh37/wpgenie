@@ -22,11 +22,14 @@
 .tk-card { padding: 0; overflow: hidden; }
 .tk-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1rem; padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--line); }
-.tk-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
-button.tk-chip { min-height: 32px; padding: .3rem .8rem; border-radius: 999px; background: transparent; color: var(--muted);
-  border: 1px solid var(--line-2); font-weight: 550; font-size: .84rem; }
-button.tk-chip:hover { background: var(--hover); color: var(--text); }
-button.tk-chip[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+/* The status filter: a segmented control. */
+.tk-chips { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 9px; background: var(--well); }
+button.tk-chip { min-height: 28px; padding: .25rem .9rem; border-radius: 7px; background: transparent; color: var(--text);
+  border: 0; font-weight: 500; font-size: .8125rem; transition: background-color .2s var(--ease), box-shadow .2s; }
+button.tk-chip:hover { background: var(--hover); }
+button.tk-chip:active:not(:disabled) { transform: none; }
+button.tk-chip[aria-pressed="true"] { background: var(--panel); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .14), 0 0 0 .5px rgba(0, 0, 0, .06); }
+:root:not([data-theme="light"]) button.tk-chip[aria-pressed="true"] { background: #636366; }
 .tk-filters { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .tk-filters select { width: auto; max-width: 12rem; margin: 0; min-height: 36px; }
 .tk-filters .filter input { width: 260px; }
