@@ -71,6 +71,9 @@ src/
 | Tables | `<SimpleTable headers rows/>`, `<KeyValues items/>` from `@/components/app/data-table`; shadcn `Table` for anything richer |
 | Charts | `<LineChart series label readout/>`, `hourly()`, `hoursSince()` from `@/components/app/chart`; `<ActivityRings/>`, `<RingLegend/>` |
 | Formatting | `fmtBytes`, `fmtNum`, `fmtTime`, `fmtDate`, `fmtAgo`, `fmtMem`, `fmtPct`, `plural`, `splitList`, `humanize` from `@/lib/format` |
+| Number cards, notices, sub-tabs, filters | `Kpi`, `Banner`, `SubNav`, `Chips` from `@/components/app/blocks` |
+| Empty / failed / busy | `EmptyState`, `LoadError` (404 = "not on this server yet"), `ActionButton` (disabled while running, errors to toasts) |
+| Forms in dialogs | `FormDialog` (errors inside, next to the field the API names), `MoneyInput`, `PercentInput`, `ChoiceCard`, `CopyField`, `BTable` |
 | Money | `money(minor)`, `toMinor`, `fromMinor`, `fmtRate`, `cycleOf`, `methodName`, `invoiceState`, `dueLine`… from `@/lib/money`, after `useBillingConfig()` has loaded |
 
 Forms: shadcn `Field`, `FieldLabel`, `FieldDescription`, `FieldGroup`,

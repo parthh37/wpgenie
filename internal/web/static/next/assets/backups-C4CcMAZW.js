@@ -1,0 +1,1 @@
+import{R as e}from"./button-CMXT4Ezc.js";import{t}from"./legacy-fallback-Bwxwgydo.js";var n=e();function r(){return(0,n.jsx)(t,{path:`backups`,title:`Backups`})}export{r as default};

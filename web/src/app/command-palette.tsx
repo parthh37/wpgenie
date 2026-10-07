@@ -18,8 +18,10 @@ import { toggleTheme, useTheme } from "@/lib/theme"
 // actions and pages, found by typing.
 
 let open = false
+let opened = 0 // a fresh body (empty query) each time it opens
 const subs = new Set<() => void>()
 const setOpen = (v: boolean) => {
+  if (v && !open) opened++
   open = v
   subs.forEach((f) => f())
 }
@@ -60,10 +62,6 @@ export function matchScore(label: string, query: string) {
 
 export function CommandPalette({ pages }: { pages: PageDef[] }) {
   const isOpen = useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => open)
-  const s = useSession()
-  const { data: sites = [] } = useSites()
-  const theme = useTheme()
-  const [query, setQuery] = useState("")
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -83,10 +81,24 @@ export function CommandPalette({ pages }: { pages: PageDef[] }) {
     return () => document.removeEventListener("keydown", onKey)
   }, [])
 
-  useEffect(() => {
-    if (isOpen) setQuery("")
-  }, [isOpen])
+  return (
+    <Dialog open={isOpen} onOpenChange={setOpen}>
+      <DialogHeader className="sr-only">
+        <DialogTitle>Search or jump to</DialogTitle>
+        <DialogDescription>Sites, their sections, actions and pages</DialogDescription>
+      </DialogHeader>
+      <DialogContent showCloseButton={false} className="top-[18%] translate-y-0 overflow-hidden rounded-3xl! p-0 sm:max-w-xl">
+        <PaletteBody key={opened} pages={pages} />
+      </DialogContent>
+    </Dialog>
+  )
+}
 
+function PaletteBody({ pages }: { pages: PageDef[] }) {
+  const s = useSession()
+  const { data: sites = [] } = useSites()
+  const theme = useTheme()
+  const [query, setQuery] = useState("")
   const items = useMemo<Item[]>(() => {
     const out: Item[] = []
     for (const site of sites) {
@@ -146,14 +158,8 @@ export function CommandPalette({ pages }: { pages: PageDef[] }) {
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={setOpen}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>Search or jump to</DialogTitle>
-        <DialogDescription>Sites, their sections, actions and pages</DialogDescription>
-      </DialogHeader>
-      <DialogContent showCloseButton={false} className="top-[18%] translate-y-0 overflow-hidden rounded-3xl! p-0 sm:max-w-xl">
-        {/* Ranked here (matchScore), not by cmdk. */}
-        <Command shouldFilter={false} className="rounded-3xl">
+    // Ranked here (matchScore), not by cmdk.
+    <Command shouldFilter={false} className="rounded-3xl">
           <CommandInput placeholder="Search sites, sections and actions…" value={query} onValueChange={setQuery} />
           <CommandList className="max-h-[min(420px,60vh)]">
             <CommandEmpty>Nothing matches “{q}”.</CommandEmpty>
@@ -168,8 +174,6 @@ export function CommandPalette({ pages }: { pages: PageDef[] }) {
               ))}
             </CommandGroup>
           </CommandList>
-        </Command>
-      </DialogContent>
-    </Dialog>
+    </Command>
   )
 }

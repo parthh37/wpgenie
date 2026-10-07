@@ -95,7 +95,7 @@ export const fromMinor = (minor: number | null | undefined | "") =>
 // toMinor reads an amount typed by a person ("1,234.50", "1.234,50", "$ 12"):
 // minor units, null when empty, NaN when it isn't a number.
 export function toMinor(text: string | number | null | undefined): number | null {
-  let s = String(text ?? "").trim().replace(/[\s ']/g, "")
+  let s = String(text ?? "").trim().replace(/[\s\u00a0']/g, "")
   if (!s) return null
   if (s.includes(",") && s.includes(".")) {
     s = s.lastIndexOf(",") > s.lastIndexOf(".") ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "")

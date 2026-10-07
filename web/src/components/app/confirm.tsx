@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { useRef, useState, useSyncExternalStore } from "react"
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -108,26 +108,29 @@ export async function askTextCheck(message: string, opts: AskTextOptions & { che
   })
 }
 
+let seq = 0
+const ids = new WeakMap<Request, number>()
+const idOf = (r: Request) => {
+  if (!ids.has(r)) ids.set(r, ++seq)
+  return ids.get(r)!
+}
+
 export function ConfirmHost() {
   const current = useSyncExternalStore(
     (f) => (subs.add(f), () => void subs.delete(f)),
     () => queue[0]
   )
-  const [value, setValue] = useState("")
+  if (!current) return null
+  return <Ask key={idOf(current)} current={current} />
+}
+
+function Ask({ current }: { current: Request }) {
+  const [value, setValue] = useState(current.field?.value || "")
   const [checked, setChecked] = useState(false)
-  const [openState, setOpenState] = useState(false)
+  const [openState, setOpenState] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const okRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    if (!current) return
-    setValue(current.field?.value || "")
-    setChecked(false)
-    setOpenState(true)
-  }, [current])
-
-  if (!current) return null
   const field = current.field
   const blocked = !!field && field.match != null && value.trim() !== field.match
 

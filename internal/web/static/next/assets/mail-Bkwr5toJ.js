@@ -1,0 +1,1 @@
+import{R as e}from"./button-CMXT4Ezc.js";import{t}from"./legacy-fallback-Bwxwgydo.js";var n=e();function r(){return(0,n.jsx)(t,{path:`mail`,title:`Mail`})}export{r as default};
