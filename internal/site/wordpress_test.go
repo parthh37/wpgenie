@@ -238,24 +238,46 @@ func TestAdminLogin(t *testing.T) {
 	}
 }
 
+// usersExec answers the panel's user listing: the first user is owner (1),
+// then an administrator dev (7) and an editor eddie (9).
+func usersExec(t *testing.T) func([]string, io.Reader, io.Writer) error {
+	return func(args []string, _ io.Reader, out io.Writer) error {
+		if len(args) != 5 || args[3] != "eval" || !strings.Contains(args[4], "get_users") {
+			t.Errorf("unexpected %v", args)
+			return fmt.Errorf("unexpected %v", args)
+		}
+		fmt.Fprint(out, `{"first":1,"users":[{"id":1,"login":"owner","email":"o@a.test","name":"Owner","role":"administrator"},`+
+			`{"id":"7","login":"dev","email":"d@a.test","name":"Dev","role":"administrator"},`+
+			`{"id":9,"login":"eddie","email":"e@a.test","name":"Ed","role":"editor"}]}`)
+		return nil
+	}
+}
+
+func TestUsers(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rt.exec = usersExec(t)
+	users, err := h.svc.Users(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []WPUser{
+		{ID: 1, Login: "owner", Email: "o@a.test", Name: "Owner", Role: RoleAdministrator, Owner: true},
+		{ID: 7, Login: "dev", Email: "d@a.test", Name: "Dev", Role: RoleAdministrator},
+		{ID: 9, Login: "eddie", Email: "e@a.test", Name: "Ed", Role: RoleEditor},
+	}
+	if !slices.Equal(users, want) {
+		t.Fatalf("users = %+v", users)
+	}
+}
+
 func TestResetAdminPassword(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	h.rt.exec = func(args []string, _ io.Reader, out io.Writer) error {
-		if strings.Join(args[3:5], " ") != "user list" {
-			return fmt.Errorf("unexpected %v", args)
-		}
-		fmt.Fprint(out, `[{"ID":1,"user_login":"owner","user_email":"o@a.test","display_name":"Owner"},`+
-			`{"ID":"7","user_login":"dev","user_email":"d@a.test","display_name":"Dev"}]`)
-		return nil
-	}
-	admins, err := h.svc.Administrators(ctx, "s1")
-	if err != nil || len(admins) != 2 || admins[1].ID != 7 || admins[1].Login != "dev" {
-		t.Fatalf("admins = %+v %v", admins, err)
-	}
+	h.rt.exec = usersExec(t)
 
 	if _, err := h.svc.ResetAdminPassword(ctx, "s1", PasswordInput{UserID: 3}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("not an administrator: %v", err)
+		t.Fatalf("not an administrator or editor: %v", err)
 	}
 	if _, err := h.svc.ResetAdminPassword(ctx, "s1", PasswordInput{UserID: 7, Password: "short"}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("short password: %v", err)
@@ -276,6 +298,86 @@ func TestResetAdminPassword(t *testing.T) {
 		if strings.Contains(l, res.Password) {
 			t.Error("the password went on the command line")
 		}
+	}
+}
+
+func TestCreateUser(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rt.exec = usersExec(t)
+	ok := NewUserInput{Login: "eddie", Email: "e@a.test", Name: "Ed", Role: RoleEditor}
+
+	for name, in := range map[string]NewUserInput{
+		"short login":        {Login: "ab", Email: "e@a.test", Role: RoleEditor},
+		"login is an option": {Login: "--yes", Email: "e@a.test", Role: RoleEditor},
+		"login with space":   {Login: "a b c", Email: "e@a.test", Role: RoleEditor},
+		"bad e-mail":         {Login: "edd", Email: "nope", Role: RoleEditor},
+		"e-mail is option":   {Login: "edd", Email: "--x@a.test", Role: RoleEditor},
+		"other role":         {Login: "edd", Email: "e@a.test", Role: "subscriber"},
+		"short password":     {Login: "edd", Email: "e@a.test", Role: RoleEditor, Password: "short"},
+		"control in name":    {Login: "edd", Email: "e@a.test", Role: RoleEditor, Name: "a\nb"},
+	} {
+		if _, err := h.svc.CreateUser(ctx, "s1", in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(*h.log) != 0 {
+		t.Fatalf("ran %v for invalid input", *h.log)
+	}
+
+	res, err := h.svc.CreateUser(ctx, "s1", ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.User.ID != 9 || res.User.Role != RoleEditor || len(res.Password) < 20 {
+		t.Fatalf("created = %+v", res)
+	}
+	want := []string{"wp user create eddie e@a.test --role=editor --display_name=Ed --prompt=user_pass"}
+	if !slices.Equal(*h.log, want) {
+		t.Errorf("commands %v, want %v", *h.log, want)
+	}
+	for _, l := range *h.log {
+		if strings.Contains(l, res.Password) {
+			t.Error("the password went on the command line")
+		}
+	}
+
+	h.svc.Store.SetSiteStatus(ctx, "s1", store.StatusSuspended)
+	if _, err := h.svc.CreateUser(ctx, "s1", ok); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("suspended site: %v", err)
+	}
+}
+
+func TestDeleteUser(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rt.exec = usersExec(t)
+
+	// The first user, and someone who isn't an administrator or editor.
+	for _, uid := range []int{1, 3} {
+		if _, err := h.svc.DeleteUser(ctx, "s1", uid); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("deleting %d: %v", uid, err)
+		}
+	}
+	if len(*h.log) != 0 {
+		t.Fatalf("ran %v", *h.log)
+	}
+
+	u, err := h.svc.DeleteUser(ctx, "s1", 9)
+	if err != nil || u.Login != "eddie" {
+		t.Fatalf("deleted %+v %v", u, err)
+	}
+	if want := []string{"wp user delete 9 --reassign=1 --yes"}; !slices.Equal(*h.log, want) {
+		t.Errorf("commands %v, want %v", *h.log, want)
+	}
+
+	// Never the last administrator, even when the first user isn't one.
+	h.rt.exec = func(_ []string, _ io.Reader, out io.Writer) error {
+		fmt.Fprint(out, `{"first":1,"users":[{"id":1,"login":"owner","role":"editor"},{"id":5,"login":"boss","role":"administrator"}]}`)
+		return nil
+	}
+	if _, err := h.svc.DeleteUser(ctx, "s1", 5); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("last administrator: %v", err)
 	}
 }
 

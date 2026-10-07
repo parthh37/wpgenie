@@ -1078,9 +1078,15 @@ nothing about the sign-in is stored anywhere; cookie names and values WordPress 
 they go into `Set-Cookie` headers (the cookie constants are overridable in `wp-config.php`'s editable part).
 Deleting or suspending a site forgets its unused links; the admin allowlist still applies to wp-admin.
 
-**Administrators' passwords.** `POST /sites/{id}/wp-admin/password` sets a new password for an administrator
-(or a random 24-character one, shown once) with `wp user update --prompt=user_pass` (the password on stdin,
-never argv) and ends all their sessions. WordPress sends no e-mail about it.
+**Administrators and editors.** `GET /sites/{id}/wp-admin/users` lists both roles (one `wp eval`: `get_users`
+with `role__in`, plus the ID of the site's *first user*, the lowest ID whatever its role: the account
+`wp core install` made, or an imported site's original owner). `POST` there adds one (`wp user create
+--role=… --prompt=user_pass`; login and e-mail are positional, so neither may start with `-`); `DELETE
+…/users/{user}` deletes one with `wp user delete --reassign=<first user>`, so their posts and pages survive. The
+first user can never be deleted, nor the last administrator. `POST /sites/{id}/wp-admin/password` sets a new
+password for an administrator or editor (or a random 24-character one, shown once) with `wp user update
+--prompt=user_pass` (the password on stdin, never argv) and ends all their sessions. WordPress sends no e-mail
+about any of it.
 
 **Branding** (`site/branding.go`, `images/php/branding.php`). One server-wide brand (`PUT /settings/branding`,
 admins): a name, a link and a logo (PNG, JPEG, GIF, WebP or SVG, 256 KB at most, its bytes checked against its

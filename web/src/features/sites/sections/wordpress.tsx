@@ -1,24 +1,27 @@
 import { useState } from "react"
-import { ExternalLinkIcon, KeyRoundIcon, LogInIcon, UsersIcon } from "lucide-react"
+import { ExternalLinkIcon, KeyRoundIcon, LogInIcon, PlusIcon, UsersIcon } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { LoadError } from "@/components/app/blocks"
-import { askText } from "@/components/app/confirm"
+import { ActionButton, ChoiceCard, FormDialog, LoadError } from "@/components/app/blocks"
+import { ask, askText } from "@/components/app/confirm"
 import { SimpleTable } from "@/components/app/data-table"
 import { Section } from "@/components/app/page"
 import { showSecret } from "@/components/app/secret"
 import { notify, showError } from "@/components/app/toaster"
 import { api } from "@/lib/api"
 import { plural } from "@/lib/format"
-import { useApi } from "@/lib/query"
+import { invalidate, useApi } from "@/lib/query"
 import { useSession } from "@/lib/session"
 import type { Site } from "@/lib/types"
 import type { SectionProps } from "../sections"
 import type { WPUser } from "./protect/types"
 
 // WordPress admin: sign in to wp-admin as any administrator without their
-// password, and reset an administrator's password (wordpress.js
-// renderWordPress/showAdmins).
+// password; add and delete administrators and editors (never the site's
+// first user); reset a password (wordpress.js renderWordPress/showAdmins).
 
 // openFresh opens a tab now, in the click (one opened after the request
 // would be blocked as a pop-up), then sends it to the URL get() resolves
@@ -87,7 +90,7 @@ export default function WordpressSection({ site }: SectionProps) {
         icon={KeyRoundIcon}
         tint="yellow"
         title="Sign in without a password"
-        description="Sign in to wp-admin as any administrator without their password: a one-time link on the site's own domain opens a normal WordPress session (listed in that user's sessions, ended by logging out). Resetting a password ends all of that administrator's sessions; WordPress sends no e-mail about it."
+        description="Sign in to wp-admin as any administrator without their password: a one-time link on the site's own domain opens a normal WordPress session (listed in that user's sessions, ended by logging out). Resetting a password ends all of that user's sessions; WordPress sends no e-mail about it."
       >
         <div className="flex flex-wrap gap-2">
           {s.canChangeSite(site) ? (
@@ -104,21 +107,46 @@ export default function WordpressSection({ site }: SectionProps) {
           )}
         </div>
       </Section>
-      <Administrators site={site} />
+      <Users site={site} />
     </div>
   )
 }
 
-function Administrators({ site }: { site: Site }) {
+const ROLE_LABEL: Record<WPUser["role"], string> = { administrator: "Administrator", editor: "Editor" }
+
+async function deleteUser(site: Site, u: WPUser, owner?: WPUser) {
+  const to = owner ? owner.login : "the site's first user"
+  if (!(await ask(`Delete the WordPress ${u.role} ${u.login}? Their posts and pages move to ${to}; their sessions end.`))) return
+  await api("DELETE", `/sites/${site.id}/wp-admin/users/${u.id}`)
+  notify(`${u.login} deleted; their content now belongs to ${to}`)
+  await invalidate(`/sites/${site.id}/wp-admin/users`)
+}
+
+function Users({ site }: { site: Site }) {
   const s = useSession()
+  const [adding, setAdding] = useState(false)
   const q = useApi<WPUser[]>(`/sites/${site.id}/wp-admin/users`)
   const users = q.data ?? []
+  const owner = users.find((u) => u.owner)
+  const admins = users.filter((u) => u.role === "administrator").length
   return (
     <Section
       icon={UsersIcon}
       tint="blue"
-      title="Administrators"
-      description={q.data ? plural(users.length, "administrator") : undefined}
+      title="Administrators & editors"
+      description={
+        q.data
+          ? `${plural(admins, "administrator")}, ${plural(users.length - admins, "editor")}. The site's first user can't be deleted: content of deleted users moves to it.`
+          : undefined
+      }
+      action={
+        s.canChangeSite(site) && (
+          <Button onClick={() => setAdding(true)}>
+            <PlusIcon data-icon="inline-start" />
+            Add user
+          </Button>
+        )
+      }
     >
       {q.isPending ? (
         <div className="flex flex-col gap-2">
@@ -129,28 +157,127 @@ function Administrators({ site }: { site: Site }) {
         <LoadError error={q.error} retry={() => q.refetch()} className="py-6 shadow-none" />
       ) : (
         <SimpleTable
-          headers={["Administrator", "E-mail", ""]}
-          empty="No administrators found."
+          headers={["User", "E-mail", ""]}
+          empty="No administrators or editors found."
           rowKey={(i) => users[i].id}
           rows={users.map((u) => [
-            <div className="flex flex-col">
-              <strong className="font-semibold">{u.login}</strong>
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <strong className="font-semibold">{u.login}</strong>
+                <Badge variant={u.role === "administrator" ? "default" : "secondary"}>{ROLE_LABEL[u.role]}</Badge>
+                {u.owner && (
+                  <Badge variant="outline" title="The site's first user: it can't be deleted">
+                    First user
+                  </Badge>
+                )}
+              </div>
               {u.name && u.name !== u.login && <span className="text-sm font-normal text-muted-foreground">{u.name}</span>}
             </div>,
             u.email,
             s.canChangeSite(site) ? (
-              <div className="flex justify-end gap-2">
-                <Button variant="tinted" size="sm" onClick={() => wpLogin(site, u.id)}>
-                  Sign in as {u.login}
-                </Button>
+              <div className="flex flex-wrap justify-end gap-2">
+                {u.role === "administrator" && (
+                  <Button variant="tinted" size="sm" onClick={() => wpLogin(site, u.id)}>
+                    Sign in as {u.login}
+                  </Button>
+                )}
                 <Button variant="tinted" size="sm" onClick={() => resetPassword(site, u)}>
                   Reset password
                 </Button>
+                {/* The first user and the last administrator stay (the server refuses too). */}
+                {!u.owner && !(u.role === "administrator" && admins <= 1) && (
+                  <ActionButton run={() => deleteUser(site, u, owner)} size="sm" variant="destructive">
+                    Delete
+                  </ActionButton>
+                )}
               </div>
             ) : null,
           ])}
         />
       )}
+      <AddUser site={site} open={adding} onOpenChange={setAdding} />
     </Section>
+  )
+}
+
+// AddUser adds an administrator or editor. WordPress sends no e-mail: the
+// password (typed, or a random one) is shown once.
+function AddUser({ site, open, onOpenChange }: { site: Site; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const [role, setRole] = useState<WPUser["role"]>("editor")
+  const id = (f: string) => `wp-new-${f}-${site.id}`
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o)
+        if (!o) setRole("editor")
+      }}
+      title={`Add a WordPress user to ${site.primary_domain}`}
+      intro="WordPress sends them no e-mail: share the username and password yourself."
+      ok="Add user"
+      onSubmit={async (f) => {
+        const password = String(f.get("password") ?? "")
+        const r = await api<{ user: WPUser; password: string }>("POST", `/sites/${site.id}/wp-admin/users`, {
+          login: String(f.get("login") ?? "").trim(),
+          email: String(f.get("email") ?? "").trim(),
+          name: String(f.get("name") ?? "").trim(),
+          role,
+          password,
+        })
+        if (password) notify(`${ROLE_LABEL[r.user.role]} ${r.user.login} added`)
+        else
+          showSecret(`New WordPress ${r.user.role} on ${site.primary_domain}`, [
+            `Sign in at: https://${site.primary_domain}/wp-admin/`,
+            `Username:   ${r.user.login}`,
+            `Password:   ${r.password}`,
+          ])
+        await invalidate(`/sites/${site.id}/wp-admin/users`)
+      }}
+    >
+      <div role="radiogroup" aria-label="Role" className="grid gap-2 sm:grid-cols-2">
+        <ChoiceCard name="role" value="editor" title="Editor" checked={role === "editor"} onChange={() => setRole("editor")}>
+          Writes, edits and publishes everyone's posts and pages. No plugins, themes or settings.
+        </ChoiceCard>
+        <ChoiceCard name="role" value="administrator" title="Administrator" checked={role === "administrator"} onChange={() => setRole("administrator")}>
+          Everything, including plugins, themes, users and settings.
+        </ChoiceCard>
+      </div>
+      <Field>
+        <FieldLabel htmlFor={id("login")}>Username</FieldLabel>
+        <Input
+          id={id("login")}
+          name="login"
+          required
+          minLength={3}
+          maxLength={60}
+          pattern="[A-Za-z0-9_.][A-Za-z0-9_.\-]*"
+          autoComplete="off"
+          spellCheck={false}
+          autoFocus
+        />
+        <FieldDescription>3 to 60 letters, digits, dots, dashes or underscores. It can't be changed later.</FieldDescription>
+      </Field>
+      <Field>
+        <FieldLabel htmlFor={id("email")}>E-mail</FieldLabel>
+        <Input id={id("email")} name="email" type="email" required maxLength={100} autoComplete="off" spellCheck={false} />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor={id("name")}>Display name</FieldLabel>
+        <Input id={id("name")} name="name" maxLength={250} autoComplete="off" placeholder="optional" />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor={id("password")}>Password</FieldLabel>
+        <Input
+          id={id("password")}
+          name="password"
+          type="password"
+          minLength={12}
+          maxLength={200}
+          autoComplete="new-password"
+          placeholder="empty: a strong random one"
+        />
+        <FieldDescription>12 characters or more. Left empty, a random one is made and shown once.</FieldDescription>
+      </Field>
+    </FormDialog>
   )
 }

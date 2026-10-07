@@ -167,4 +167,7 @@ export interface WPUser {
   login: string
   email: string
   name: string
+  role: "administrator" | "editor"
+  // The site's first user: never deleted; deleted users' content moves to it.
+  owner?: boolean
 }

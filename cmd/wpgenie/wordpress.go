@@ -19,9 +19,11 @@ import (
 // WordPress itself: wp-admin sign-in links, administrators' passwords,
 // performance tweaks and the site analyser. Clients of the local API.
 
-// wpCmd: wpgenie site wp <site-id> login [user-id] | users | password <user-id>.
+// wpCmd: wpgenie site wp <site-id> login [user-id] | users | password <user-id> |
+// add-user <login> <email> administrator|editor | delete-user <user-id>.
 func wpCmd(cfg *config.Config, id string, args []string) error {
-	usage := errors.New("usage: wpgenie site wp <site-id> login [user-id] | users | password <user-id>")
+	usage := errors.New("usage: wpgenie site wp <site-id> login [user-id] | users | password <user-id> |\n" +
+		"  add-user <login> <email> administrator|editor | delete-user <user-id>")
 	base := "/sites/" + id + "/wp-admin"
 	if len(args) == 0 {
 		return usage
@@ -33,9 +35,13 @@ func wpCmd(cfg *config.Config, id string, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tLOGIN\tEMAIL\tNAME")
+		fmt.Fprintln(w, "ID\tLOGIN\tROLE\tEMAIL\tNAME")
 		for _, u := range users {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", u.ID, u.Login, u.Email, u.Name)
+			role := u.Role
+			if u.Owner {
+				role += " (first user)"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", u.ID, u.Login, role, u.Email, u.Name)
 		}
 		return w.Flush()
 	case "login":
@@ -67,6 +73,30 @@ func wpCmd(cfg *config.Config, id string, args []string) error {
 			return err
 		}
 		fmt.Printf("New password for %s (shown once; their sessions were ended):\n\n  %s\n", out.User, out.Password)
+		return nil
+	case "add-user":
+		if len(args) != 4 {
+			return usage
+		}
+		var out site.NewUser
+		in := site.NewUserInput{Login: args[1], Email: args[2], Role: args[3]}
+		if err := call(cfg, "POST", base+"/users", in, &out); err != nil {
+			return err
+		}
+		fmt.Printf("Added %s %s (ID %d). Password (shown once):\n\n  %s\n", out.User.Role, out.User.Login, out.User.ID, out.Password)
+		return nil
+	case "delete-user":
+		if len(args) != 2 {
+			return usage
+		}
+		if _, err := strconv.Atoi(args[1]); err != nil {
+			return usage
+		}
+		var out site.WPUser
+		if err := call(cfg, "DELETE", base+"/users/"+args[1], nil, &out); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted %s; their content moved to the site's first user.\n", out.Login)
 		return nil
 	}
 	return usage

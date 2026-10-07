@@ -47,7 +47,7 @@ export default function SharingSection({ site }: SectionProps) {
   const remove = async (g: SiteGrant) => {
     if (
       !(await ask(
-        `Stop sharing ${site.primary_domain} with ${g.username}? They can’t reach it or its staging copies from now on, and the SFTP logins they added are deleted. Files they changed and WordPress accounts they made stay: check them if you need to.`
+        `Stop sharing ${site.primary_domain} with ${g.username}? They can’t reach it or its staging copies from now on, and the SFTP logins they added are deleted. Files they changed stay, and so do WordPress users they made: see WordPress admin.`
       ))
     )
       return

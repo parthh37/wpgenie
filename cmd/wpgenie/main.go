@@ -122,9 +122,11 @@ Usage:
   wpgenie site sftp <site-id> [ls | add [--suffix NAME] [--password] [--key FILE] | rm <login>
                           | passwd <login> | nopasswd <login> | keys <login> <file>]
   wpgenie site phpmyadmin <site-id>     one-time link to phpMyAdmin on the site's database
-  wpgenie site wp <site-id> login [user-id] | users | password <user-id>
+  wpgenie site wp <site-id> [login [user-id] | users | password <user-id>
+                          | add-user <login> <email> administrator|editor | delete-user <user-id>]
                                         one-time link into wp-admin (no WordPress password),
-                                        administrators, reset an administrator's password
+                                        administrators and editors: add, delete (never the
+                                        site's first user), reset a password
   wpgenie site optimize <site-id> [ls | recommended | off | key,key,... | cleanup]
                                         WordPress performance tweaks; clean the database now
   wpgenie site analyse <site-id> [--fix <fix>]
