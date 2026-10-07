@@ -13,21 +13,35 @@ export const queryClient = new QueryClient({
   },
 })
 
-// useApi is useQuery for a GET: the key is the path.
-export function useApi<T>(path: string | null, opts: { refetchInterval?: number; enabled?: boolean } = {}) {
+// useApi is useQuery for a GET: the key is the path. Screens with forms
+// filled from the data pass refetchOnWindowFocus: false, so coming back to
+// the tab doesn't replace what's being typed.
+export function useApi<T>(
+  path: string | null,
+  opts: { refetchInterval?: number | false; enabled?: boolean; refetchOnWindowFocus?: boolean; staleTime?: number } = {}
+) {
   return useQuery<T>({
     queryKey: [path],
     queryFn: () => api<T>("GET", path!),
     enabled: path != null && opts.enabled !== false,
     refetchInterval: opts.refetchInterval,
+    refetchOnWindowFocus: opts.refetchOnWindowFocus,
+    staleTime: opts.staleTime,
   })
 }
 
-// invalidate refetches every query whose path starts with prefix
-// ("/sites" refreshes the list and every site's details).
+// matchesPrefix: "/sites" matches "/sites", "/sites/x/…" and "/sites?…",
+// not "/sitesfoo"; a prefix ending in "/" or "?" matches as it is.
+export function matchesPrefix(key: string, prefix: string) {
+  if (prefix.endsWith("/") || prefix.endsWith("?")) return key.startsWith(prefix)
+  return key === prefix || key.startsWith(prefix + "/") || key.startsWith(prefix + "?")
+}
+
+// invalidate refetches every query under a path ("/sites" refreshes the
+// list and every site's details; "/account" leaves "/accounts" alone).
 export const invalidate = (prefix: string) =>
   queryClient.invalidateQueries({
-    predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith(prefix),
+    predicate: (q) => typeof q.queryKey[0] === "string" && matchesPrefix(q.queryKey[0] as string, prefix),
   })
 
 export const useSites = () => useApi<Site[]>("/sites")

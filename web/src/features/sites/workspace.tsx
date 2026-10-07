@@ -7,6 +7,7 @@ import { IconTile } from "@/components/app/icon-tile"
 import { Page } from "@/components/app/page"
 import { StatusPill } from "@/components/app/status"
 import { PageSpinner } from "@/app/shell"
+import { ScreenBoundary } from "@/components/app/error-boundary"
 import { useClustered, useSite } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
 import { cn } from "@/lib/utils"
@@ -111,9 +112,11 @@ export function SiteWorkspace({ id, section }: { id: string; section?: string })
               {current.label}
             </h2>
           )}
-          <Suspense fallback={<PageSpinner />}>
-            <Section key={site.id + current.key} site={site} />
-          </Suspense>
+          <ScreenBoundary key={site.id + current.key}>
+            <Suspense fallback={<PageSpinner />}>
+              <Section site={site} />
+            </Suspense>
+          </ScreenBoundary>
         </section>
       </div>
     </Page>

@@ -91,8 +91,11 @@ export async function startJob<R extends { job_id: JobID }>(
   const res = await api<R>(method, path, body)
   followJob(res.job_id, async (v) => {
     if (v.job.status === "failed") showError(new Error(`${JOB_NAMES[v.job.kind] || v.job.kind} failed: ${v.job.error}`))
-    if (onDone) await onDone(v, res)
-    await invalidate("/sites")
+    try {
+      if (onDone) await onDone(v, res)
+    } finally {
+      await invalidate("/sites")
+    }
   })
   return res
 }

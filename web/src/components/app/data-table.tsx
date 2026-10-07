@@ -31,7 +31,7 @@ export function SimpleTable({
         {rows.map((r, i) => (
           <TableRow key={rowKey ? rowKey(i) : i}>
             {r.map((c, j) => (
-              <TableCell key={j} className={cn("align-top", j === 0 && "font-medium")}>
+              <TableCell key={j} className={cn("align-top whitespace-normal [overflow-wrap:anywhere]", j === 0 && "font-medium")}>
                 {c}
               </TableCell>
             ))}

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Kbd } from "@/components/ui/kbd"
 import { Spinner } from "@/components/ui/spinner"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { ScreenBoundary } from "@/components/app/error-boundary"
 import { IconTile } from "@/components/app/icon-tile"
 import { Logo } from "@/components/app/logo"
 import { Toaster, showError } from "@/components/app/toaster"
@@ -16,7 +17,7 @@ import { CommandPalette, openPalette } from "@/app/command-palette"
 import { GROUP_LABEL, PAGES, type NavGroup, type PageDef } from "@/app/pages"
 import { useAlertsFiring, useNavFlags, useSupportSummary, useTenantBilling, useUpdateAvailable } from "@/app/nav-state"
 import { pollJobs, stopJobs } from "@/lib/jobs"
-import { href, navigate, useRoute } from "@/lib/router"
+import { href, navigate, useLocation, useRoute } from "@/lib/router"
 import { useSession } from "@/lib/session"
 import { toggleTheme, useTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
@@ -29,6 +30,7 @@ export function AppShell() {
   const flags = useNavFlags(s)
   const billing = useTenantBilling(s)
   const [page] = useRoute()
+  const location = useLocation()
   const visible = PAGES.filter((p) => p.visible(s, flags))
 
   // Jobs follow the session.
@@ -67,9 +69,11 @@ export function AppShell() {
       <SidebarInset className="min-w-0 bg-background">
         <MobileTop />
         <main id="main" tabIndex={-1} className="flex-1 outline-none">
-          <Suspense fallback={<PageSpinner />}>
-            <Screen key={current.key} />
-          </Suspense>
+          <ScreenBoundary key={location}>
+            <Suspense fallback={<PageSpinner />}>
+              <Screen key={current.key} />
+            </Suspense>
+          </ScreenBoundary>
         </main>
       </SidebarInset>
       <CommandPalette pages={visible} />

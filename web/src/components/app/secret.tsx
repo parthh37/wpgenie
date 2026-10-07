@@ -39,7 +39,7 @@ export function SecretHost() {
     >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{s.title}</DialogTitle>
+          <DialogTitle className="pr-8">{s.title}</DialogTitle>
           {s.note && <DialogDescription>{s.note}</DialogDescription>}
         </DialogHeader>
         <pre className="overflow-x-auto rounded-xl bg-muted p-3 font-mono text-sm whitespace-pre-wrap select-all [overflow-wrap:anywhere]">{text}</pre>

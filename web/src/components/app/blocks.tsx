@@ -532,7 +532,7 @@ export function BTable({ cols, rows, empty, caption, className }: { cols: Array<
             }
           >
             {r.cells.map((cell, j) => (
-              <TableCell key={j} className={cn("align-top", c[j]?.num && "text-right tabular-nums")}>
+              <TableCell key={j} className={cn("align-top whitespace-normal [overflow-wrap:anywhere]", c[j]?.num && "text-right whitespace-nowrap tabular-nums")}>
                 {cell}
               </TableCell>
             ))}

@@ -6,10 +6,12 @@ import type { NavFlags } from "@/app/pages"
 // What the navigation shows beside its pages: tickets awaiting a reply,
 // alerts firing, a WPGenie update; and which pages a tenant gets.
 
-interface SupportSummary {
+export interface SupportSummary {
   enabled: boolean
   total: number
   awaiting: number
+  active: number
+  limits?: { max_files: number; max_file_mb: number; extensions: string[] | null }
 }
 
 export function useSupportSummary(s: Session) {

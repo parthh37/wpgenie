@@ -49,7 +49,7 @@ export const useAttack = (site: Site) =>
 
 // Vitals: [healthy responses %, CPU headroom %, protection 0/100].
 export function vitals(site: Site, stats: SiteStats | undefined, cpu: CPU | null | undefined): RingValues {
-  const healthy = stats && stats.totals.requests ? 100 * (1 - (stats.totals.errors_5xx || 0) / stats.totals.requests) : null
+  const healthy = stats?.totals?.requests ? 100 * (1 - (stats.totals.errors_5xx || 0) / stats.totals.requests) : null
   const headroom = cpu ? Math.max(0, 100 - cpu.percent) : null
   return [healthy, headroom, site.shield_mode === "off" ? 0 : 100]
 }
