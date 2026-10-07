@@ -18,7 +18,7 @@ import { api } from "@/lib/api"
 import { fmtBytes, fmtNum, sum } from "@/lib/format"
 import { useClustered, useNodes, useSites } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
-import { useSession } from "@/lib/session"
+import { ACCESS_LABELS, useSession } from "@/lib/session"
 import type { Site, SiteStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SHIELD_LABELS, attentionFor, siteHue, useAttack, useSiteCPU, useSiteStats, vitals, type Attack, type CPU } from "./data"
@@ -315,7 +315,13 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
             {parent && <Badge variant="secondary">staging of {parent.primary_domain}</Badge>}
             {site.parent_id && !parent && <Badge variant="secondary">staging</Badge>}
             {clustered && <Badge variant="secondary">{nodes?.find((n) => n.id === (site.node || "local"))?.name ?? site.node ?? "local"}</Badge>}
-            {site.account_id != null && s.me?.account_id !== site.account_id && <Badge variant="secondary">account #{site.account_id}</Badge>}
+            {site.access ? (
+              <Badge variant="secondary" className="bg-primary/12 text-primary">
+                Shared · {ACCESS_LABELS[site.access]}
+              </Badge>
+            ) : (
+              site.account_id != null && s.me?.account_id !== site.account_id && <Badge variant="secondary">account #{site.account_id}</Badge>
+            )}
           </div>
         </div>
       </div>

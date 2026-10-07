@@ -88,7 +88,7 @@ export default function InsightsSection({ site }: SectionProps) {
           <RefreshCwIcon data-icon="inline-start" className={cn(q.isFetching && "animate-spin")} />
           Refresh
         </Button>
-        {s.canChange && (
+        {s.canChangeSite(site) && (
           <Button variant="destructive" onClick={clear}>
             Clear PHP errors
           </Button>

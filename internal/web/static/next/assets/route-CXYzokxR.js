@@ -1,1 +1,0 @@
-import{S as e,b as t}from"./table-DYBm8yqA.js";function n(){let[,n=``,r=``,i=``]=e();return{view:n,id:r,sub:i,query:t()}}var r=(e=``,t)=>`/billing`+(e?`/${e}`+(t!=null&&t!==``?`/${encodeURIComponent(String(t))}`:``):``);export{n,r as t};

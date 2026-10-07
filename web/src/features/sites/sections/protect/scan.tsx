@@ -41,7 +41,7 @@ export function ScanSection({ site }: { site: Site }) {
       title="Vulnerability and hack scan"
       description="Checks what's installed against known vulnerabilities, and looks for signs of a break-in (changed WordPress or plugin files, PHP hidden in uploads). Runs every night."
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button variant="tinted" size="sm" disabled={busy} onClick={scan}>
             <ScanSearchIcon data-icon="inline-start" />
             {busy ? "Scanning… (up to a minute)" : "Scan now"}

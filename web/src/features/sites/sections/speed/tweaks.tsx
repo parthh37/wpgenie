@@ -81,12 +81,12 @@ export function TweaksCard({ site }: { site: Site }) {
               <label
                 key={o.key}
                 title={o.description}
-                className={cn("flex items-start gap-3", s.canChange ? "cursor-pointer" : "cursor-not-allowed")}
+                className={cn("flex items-start gap-3", s.canChangeSite(site) ? "cursor-pointer" : "cursor-not-allowed")}
               >
                 <Checkbox
                   className="mt-0.5"
                   checked={on.has(o.key)}
-                  disabled={!s.canChange}
+                  disabled={!s.canChangeSite(site)}
                   onCheckedChange={(c) =>
                     setOn((prev) => {
                       const next = new Set(prev)
@@ -107,7 +107,7 @@ export function TweaksCard({ site }: { site: Site }) {
             ))}
           </div>
         )}
-        {s.canChange && (
+        {s.canChangeSite(site) && (
           <div className="flex flex-wrap gap-2">
             <ActionButton run={cleanup}>Clean database now</ActionButton>
             <ActionButton

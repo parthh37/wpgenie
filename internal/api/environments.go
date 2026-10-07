@@ -40,9 +40,10 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) error {
 	}
 	siteID, active := r.URL.Query().Get("site"), r.URL.Query().Get("active") == "1"
 	if tenantOf(r) != nil {
-		// Their sites' jobs, and those they started (a failed create).
+		// Their sites' jobs (shared sites' too), and those they started (a
+		// failed create).
 		p := principalFrom(r.Context())
-		owned, err := s.ownedSites(r.Context(), p)
+		owned, _, err := s.visibleSites(r.Context(), p)
 		if err != nil {
 			return err
 		}
@@ -343,13 +344,25 @@ func (s *Server) createStaging(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	view := siteView{Site: st, AccountID: acctID}
 	if acctID != 0 {
 		if err := s.assignNewSite(ctx, st.ID, acctID); err != nil {
 			return err
 		}
+		// The copy is the owner's, like the live site; someone the live
+		// site is shared with gets it at the same level, or they couldn't
+		// reach what they just made.
+		if t := tenantOf(r); t != nil && t.Access != "" {
+			p := principalFrom(ctx)
+			g := &store.SiteGrant{SiteID: st.ID, UserID: p.UserID, Access: t.Access, GrantedBy: p.Name}
+			if err := s.Store.CreateSiteGrant(ctx, g, maxSiteGrants); err != nil {
+				s.Log.Error("sharing a staging copy with who made it", "site", st.ID, "err", err)
+			}
+			view.Access = t.Access
+		}
 	}
 	s.announceSite(id, st.ID, acctID)
-	return jobAccepted(w, id, map[string]any{"site": siteView{st, acctID}})
+	return jobAccepted(w, id, map[string]any{"site": view})
 }
 
 func (s *Server) pushStaging(w http.ResponseWriter, r *http.Request) error {
@@ -364,7 +377,9 @@ func (s *Server) pushStaging(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if _, ok := s.siteOwnerInScope(r.Context(), principalFrom(r.Context()), stg.ParentID); !ok {
+		// Shared with them, it needs the level the push needs here.
+		_, access, ok := s.siteAccess(r.Context(), principalFrom(r.Context()), stg.ParentID)
+		if !ok || !accessAllows(access, requiredAccess("POST /api/v1/sites/{id}/push")) {
 			return fmt.Errorf("%w: the live site isn't yours", errForbidden)
 		}
 	}

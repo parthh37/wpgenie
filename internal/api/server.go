@@ -157,6 +157,7 @@ func (s *Server) Handler() http.Handler {
 	s.invoicingRoutes(mux, r)
 	s.supportRoutes(mux, r)
 	s.logshipRoutes(mux, r)
+	s.sharingRoutes(r)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.
@@ -431,7 +432,7 @@ func (s *Server) listSites(w http.ResponseWriter, r *http.Request) error {
 		return st.Status == store.StatusImporting || st.Status == store.StatusMoved
 	})
 	sites = append(sites, remote...)
-	owners, err := s.siteOwners(r)
+	owners, shared, err := s.siteOwners(r)
 	if err != nil {
 		return err
 	}
@@ -441,26 +442,26 @@ func (s *Server) listSites(w http.ResponseWriter, r *http.Request) error {
 		if !ok && tenantOf(r) != nil {
 			continue
 		}
-		out = append(out, siteView{st, acct})
+		out = append(out, siteView{Site: st, AccountID: acct, Access: shared[st.ID]})
 	}
 	return writeJSON(w, http.StatusOK, out)
 }
 
-// siteOwners maps sites to their accounts: the tenant's scope, or every
-// owned site for staff.
-func (s *Server) siteOwners(r *http.Request) (map[string]int64, error) {
+// siteOwners maps sites to their accounts: the tenant's (with those shared
+// with them, and their level in shared), or every owned site for staff.
+func (s *Server) siteOwners(r *http.Request) (owners map[string]int64, shared map[string]string, err error) {
 	if tenantOf(r) != nil {
-		return s.ownedSites(r.Context(), principalFrom(r.Context()))
+		return s.visibleSites(r.Context(), principalFrom(r.Context()))
 	}
 	all, err := s.Store.AllSiteOwners(r.Context())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make(map[string]int64, len(all))
 	for _, o := range all {
 		out[o.SiteID] = o.AccountID
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 func (s *Server) getSite(w http.ResponseWriter, r *http.Request) error {
@@ -471,6 +472,9 @@ func (s *Server) getSite(w http.ResponseWriter, r *http.Request) error {
 	v := siteView{Site: st}
 	if o, err := s.Store.SiteOwnerOf(r.Context(), st.ID); err == nil {
 		v.AccountID = o.AccountID
+	}
+	if t := tenantOf(r); t != nil {
+		v.Access = t.Access
 	}
 	return writeJSON(w, http.StatusOK, v)
 }
@@ -531,7 +535,7 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	s.announceSite(id, st.ID, acctID)
-	return writeJSON(w, http.StatusAccepted, map[string]any{"site": siteView{st, acctID}, "job_id": id})
+	return writeJSON(w, http.StatusAccepted, map[string]any{"site": siteView{Site: st, AccountID: acctID}, "job_id": id})
 }
 
 // targetAccount is the account a new site is for (0: none, staff-only).
@@ -626,6 +630,9 @@ func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) error {
 	}
 	if st.ParentID == "" && tenantOf(r) == nil && auth.Level(principalFrom(r.Context()).Role) < auth.Level(admin) {
 		return errForbidden
+	}
+	if t := tenantOf(r); st.ParentID == "" && t != nil && t.Access != "" {
+		return errOwnerDeletes
 	}
 	var acctID int64
 	if o, err := s.Store.SiteOwnerOf(r.Context(), st.ID); err == nil {

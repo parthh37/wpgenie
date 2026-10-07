@@ -22,6 +22,20 @@ export interface AuthState {
   account?: { id: number; name: string; kind: string; status: string }
 }
 
+// What a user of another account may do on a site shared with them, least
+// to most. Only owners delete a site or share it.
+export type SiteAccess = "viewer" | "developer" | "manager"
+
+// SiteGrant: a site shared with a user (GET /sites/<id>/access).
+export interface SiteGrant {
+  site_id: string
+  user_id: number
+  username: string
+  access: SiteAccess
+  granted_by: string
+  created_at: string
+}
+
 export type SiteStatus = "provisioning" | "active" | "failed" | "suspended" | string
 
 export interface Site {
@@ -73,6 +87,9 @@ export interface Site {
   smtp: boolean
   parent_id: string
   account_id?: number
+  // The level another account shared this site with you at; absent when
+  // it's yours (or you're staff).
+  access?: SiteAccess
   php: { memory_limit_mb: number; upload_max_mb: number; max_execution_time: number; max_input_vars: number }
   created_at: string
   updated_at: string

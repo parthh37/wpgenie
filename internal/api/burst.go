@@ -56,6 +56,11 @@ func (s *Server) siteBurst(w http.ResponseWriter, r *http.Request) error {
 			if out.Account, err = s.Billing.BurstBalanceOf(r.Context(), a); err != nil {
 				return err
 			}
+			// Someone the site is shared with sees this site's minutes,
+			// not which other sites the account has.
+			if t := tenantOf(r); t != nil && t.Access != "" {
+				out.Account.PerSite = map[string]int64{st.ID: out.Account.PerSite[st.ID]}
+			}
 		}
 	}
 	return writeJSON(w, http.StatusOK, out)

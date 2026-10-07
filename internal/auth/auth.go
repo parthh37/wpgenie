@@ -71,6 +71,32 @@ func TenantRole(kind string) string {
 	return ""
 }
 
+// Site access levels, from least to most: what a tenant user may do on a
+// site another account owns and shared with them (see
+// internal/api/sharing.go). Owning a site is more than any of them: only
+// its owners delete it (staging copies aside) and decide who it's shared
+// with.
+const (
+	AccessViewer    = "viewer"    // looks: stats, logs, settings; no files, backups or changes
+	AccessDeveloper = "developer" // works on it: files, SFTP, database, backups, staging, caches, updates
+	AccessManager   = "manager"   // also its domains, certificate, CDN, mail and paid resources
+)
+
+// AccessLevel orders site access levels; unknown ones have none.
+func AccessLevel(access string) int {
+	switch access {
+	case AccessViewer:
+		return 1
+	case AccessDeveloper:
+		return 2
+	case AccessManager:
+		return 3
+	}
+	return 0
+}
+
+func ValidAccess(access string) bool { return AccessLevel(access) > 0 }
+
 // Password hashing: PBKDF2-HMAC-SHA256 from the standard library, at
 // OWASP's 2023 iteration count. Stored as
 // "pbkdf2-sha256$<iterations>$<salt>$<hash>" (base64, unpadded), so the

@@ -58,7 +58,7 @@ function Domains({ site }: { site: Site }) {
   }
 
   const actions = (d: string, redirecting: boolean) =>
-    s.canChange && (
+    s.canChangeSite(site, "manager") && (
       <div className="flex flex-wrap justify-end gap-1.5">
         <ActionButton run={() => makePrimary(d)} size="sm" disabled={primary.running}>
           Make primary
@@ -112,7 +112,7 @@ function Domains({ site }: { site: Site }) {
       title="Domains"
       description={more ? `${site.primary_domain} and ${more} more domain(s).` : `The site answers on ${site.primary_domain} only.`}
       action={
-        s.canChange && (
+        s.canChangeSite(site, "manager") && (
           <div className="flex flex-wrap gap-2">
             {!known.includes(twin) && (
               <Button variant="tinted" onClick={() => setWizard({ open: true, preset: { domain: twin, redirect: true } })}>
@@ -181,7 +181,7 @@ function Certificate({ site }: { site: Site }) {
       tint="green"
       title="TLS certificate"
       action={
-        s.canChange &&
+        s.canChangeSite(site, "manager") &&
         !error &&
         !isPending && (
           <div className="flex flex-wrap gap-2">

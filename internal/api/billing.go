@@ -235,6 +235,9 @@ func (s *Server) retryWebhookDelivery(w http.ResponseWriter, r *http.Request) er
 type siteView struct {
 	*store.Site
 	AccountID int64 `json:"account_id,omitempty"`
+	// Access: the level the site is shared with the tenant asking at
+	// (sharing.go); "" for its owners and staff.
+	Access string `json:"access,omitempty"`
 }
 
 // setSiteAccount gives a site to an account (account_id 0: back to
@@ -264,7 +267,7 @@ func (s *Server) setSiteAccount(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, siteView{st, in.AccountID})
+	return writeJSON(w, http.StatusOK, siteView{Site: st, AccountID: in.AccountID})
 }
 
 // backupDestinations lists where a site's backups may go: every

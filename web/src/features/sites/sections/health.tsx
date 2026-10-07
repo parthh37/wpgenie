@@ -168,7 +168,7 @@ function Report({ site, a }: { site: Site; a: Analysis }) {
 function FixButton({ site, f }: { site: Site; f: Finding }) {
   const s = useSession()
   const [busy, setBusy] = useState(false)
-  if (!s.canChange || !f.fix) return null
+  if (!s.canChangeSite(site) || !f.fix) return null
   const fix = async () => {
     if (
       (f.fix === "update_all" || f.fix === "update_security") &&

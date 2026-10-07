@@ -134,7 +134,7 @@ func (s *Server) securityEvents(w http.ResponseWriter, r *http.Request) error {
 	if tenantOf(r) == nil {
 		return writeJSON(w, http.StatusOK, s.clusterEvents(r, s.Shield.Events(siteID, limit), limit))
 	}
-	owned, err := s.ownedSites(r.Context(), principalFrom(r.Context()))
+	owned, _, err := s.visibleSites(r.Context(), principalFrom(r.Context()))
 	if err != nil {
 		return err
 	}

@@ -159,7 +159,7 @@ function ProtectionControls({ site }: { site: Site }) {
             <strong className="font-semibold text-danger">Under attack</strong> since {fmtTime(attack.attack.since)}: {attack.attack.reason}. Every visitor is
             checked automatically, and your site stays online. This ends by itself once the attack stops.
           </p>
-          {s.canChange && (
+          {s.canChangeSite(site, "manager") && (
             <Button variant="tinted" size="sm" onClick={over}>
               It's over
             </Button>
@@ -172,7 +172,7 @@ function ProtectionControls({ site }: { site: Site }) {
           <NativeSelect
             id={`mode-${site.id}`}
             value={site.shield_mode}
-            disabled={busy || !s.canChange}
+            disabled={busy || !s.canChangeSite(site, "manager")}
             onChange={(e) => save(e.target.value, site.block_ai_bots)}
           >
             <NativeSelectOption value="auto">Automatic</NativeSelectOption>
@@ -182,7 +182,7 @@ function ProtectionControls({ site }: { site: Site }) {
           </NativeSelect>
         </Field>
         <Label className="h-9 font-normal">
-          <Switch checked={site.block_ai_bots} disabled={busy || !s.canChange} onCheckedChange={(v) => save(site.shield_mode, v)} />
+          <Switch checked={site.block_ai_bots} disabled={busy || !s.canChangeSite(site, "manager")} onCheckedChange={(v) => save(site.shield_mode, v)} />
           Block AI crawlers
         </Label>
       </div>
@@ -207,7 +207,8 @@ function ProtectionControls({ site }: { site: Site }) {
 function DangerZone({ site }: { site: Site }) {
   const s = useSession()
   // Operators may delete staging sites; live ones need an admin (or tenant).
-  if (!s.canCreate && !(site.parent_id && s.canChange)) return null
+  // A site shared with you is its owner's to delete.
+  if (site.access || (!s.canCreate && !(site.parent_id && s.canChange))) return null
   const del = async () => {
     const typed = await askText(
       `This permanently deletes ${site.primary_domain}, its files and database (its backups stay in their destinations and can be restored as a new site).`,

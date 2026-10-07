@@ -70,7 +70,7 @@ export default function FilesSection({ site }: SectionProps) {
   }
   return (
     <>
-      <Browser site={site} list={list} loading={q.isFetching} canWrite={s.canChange} go={setDir} />
+      <Browser site={site} list={list} loading={q.isFetching} canWrite={s.canChangeSite(site)} go={setDir} />
       <EditorHost />
     </>
   )

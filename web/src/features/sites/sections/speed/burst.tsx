@@ -71,7 +71,7 @@ export function BurstCard({ site }: { site: Site }) {
   }, [focusHours])
 
   const notAllowed = !!b?.account && !b.account.allowed && s.isTenant
-  const locked = !active || busy || !s.canChange || notAllowed
+  const locked = !active || busy || !s.canChangeSite(site, "manager") || notAllowed
 
   const save = async (body: { mode: string; hours?: number }, msg: string) => {
     setBusy(true)
@@ -148,7 +148,7 @@ export function BurstCard({ site }: { site: Site }) {
                 <NativeSelectOption value="0">until I turn it off</NativeSelectOption>
               </NativeSelect>
             </Field>
-            {s.canChange && (
+            {s.canChangeSite(site, "manager") && (
               <Button type="button" disabled={locked} onClick={start}>
                 {mode === "on" ? "Change" : "Start burst"}
               </Button>

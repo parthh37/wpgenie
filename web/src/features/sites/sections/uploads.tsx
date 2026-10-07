@@ -206,7 +206,7 @@ function OffloadForm({
 
   const on = !!st?.enabled
   const removed = st?.removed_local || 0
-  const locked = !active || !s.canChange
+  const locked = !active || !s.canChangeSite(site)
 
   const save = async (e: FormEvent) => {
     e.preventDefault()
@@ -326,7 +326,7 @@ function OffloadForm({
           {field("local_days", <>Remove local copies after {hint("(days, 0 = keep)")}</>, { type: "number", min: 0, max: 3650, inputMode: "numeric" })}
         </div>
 
-        {s.canChange && (
+        {s.canChangeSite(site) && (
           <div className="flex flex-wrap gap-2">
             <Button type="submit" disabled={!active || saving}>
               {saving ? "Checking…" : "Save"}

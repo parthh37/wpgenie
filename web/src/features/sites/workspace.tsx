@@ -10,6 +10,7 @@ import { PageSpinner } from "@/app/shell"
 import { ScreenBoundary } from "@/components/app/error-boundary"
 import { useClustered, useNodes, useSite } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
+import { ACCESS_LABELS } from "@/lib/session"
 import { cn } from "@/lib/utils"
 import { SHIELD_LABELS, useAttack } from "./data"
 import { SiteAvatar } from "./list"
@@ -140,6 +141,11 @@ function SiteHeader({ siteId }: { siteId: string }) {
           <span className="font-mono text-xs">{site.id}</span>
           <span>· PHP {site.php_version}</span>
           <StatusPill status={site.status} />
+          {site.access && (
+            <Badge variant="secondary" className="bg-primary/12 text-primary" title="Its owner shared it with you">
+              Shared with you · {ACCESS_LABELS[site.access]}
+            </Badge>
+          )}
           <Badge
             variant="secondary"
             className={cn(
