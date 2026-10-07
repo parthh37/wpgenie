@@ -1,24 +1,9 @@
-# Logs
-logs
+# Dependencies and local files. (The build goes to
+# ../internal/web/static/next, which is committed.)
+node_modules/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
+.DS_Store
 *.local
-
-# Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+.idea/
