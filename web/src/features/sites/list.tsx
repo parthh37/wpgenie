@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useQueries } from "@tanstack/react-query"
 import {
-  ActivityIcon, ChartColumnIcon, ChevronRightIcon, GlobeIcon, PlusIcon, SearchIcon, ShieldIcon, TriangleAlertIcon, UsersIcon, ZapIcon,
+  ActivityIcon, ChartColumnIcon, ChevronRightIcon, GlobeIcon, HeartPulseIcon, PlusIcon, SearchIcon, ShieldIcon, TriangleAlertIcon, UsersIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -9,11 +9,11 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { ActivityRings, RingLegend, type RingValues } from "@/components/app/activity-rings"
 import { LineChart, hourly, hoursSince } from "@/components/app/chart"
 import { IconTile } from "@/components/app/icon-tile"
 import { Page, PageHeader } from "@/components/app/page"
 import { StatusPill } from "@/components/app/status"
+import { VitalBars, VitalMeter, type VitalValues } from "@/components/app/vitals"
 import { api } from "@/lib/api"
 import { fmtBytes, fmtNum, sum } from "@/lib/format"
 import { useClustered, useNodes, useSites } from "@/lib/query"
@@ -118,12 +118,14 @@ export function SitesList() {
             <TriangleAlertIcon className={attention.some((x) => x.a!.level === "bad") ? "size-5 text-danger" : "size-5 text-warning"} />
             Needs attention
           </h2>
-          <div className="flex flex-col gap-1.5">
+          {/* One grid for every row (subgrid), so the domains and the reasons
+              line up in columns. */}
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-y-1.5 sm:grid-cols-[auto_minmax(0,max-content)_minmax(0,1fr)_auto]">
             {attention.map(({ site, a }) => (
-              <div key={site.id} className="flex items-center gap-3 rounded-xl bg-card px-3 py-2.5 card-shadow">
+              <div key={site.id} className="col-span-full grid grid-cols-subgrid items-center gap-x-3 rounded-xl bg-card py-2.5 pr-2.5 pl-3.5 card-shadow">
                 <span aria-hidden className={cn("size-2.5 shrink-0 rounded-full", a!.level === "bad" ? "bg-danger-fill" : "bg-warning-fill")} />
-                <div className="flex min-w-0 flex-1 flex-col text-sm sm:flex-row sm:gap-2">
-                  <strong className="font-semibold">{site.primary_domain}</strong>
+                <div className="flex min-w-0 flex-col text-sm sm:contents">
+                  <strong className="truncate font-semibold sm:max-w-64">{site.primary_domain}</strong>
                   <span className="text-muted-foreground">{a!.text}</span>
                 </div>
                 <Button variant="tinted" size="sm" aria-label={`Review ${site.primary_domain}`} onClick={() => navigate(sitePath(site.id, a!.section))}>
@@ -139,10 +141,15 @@ export function SitesList() {
       {attention.length > 0 && list.length > 0 && <h2 className="mb-3 text-[1.0625rem] font-semibold">All sites</h2>}
 
       {list.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {shown.map((site) => (
-            <SiteRow key={site.id} site={site} sites={list} underAttack={!!attackById.get(site.id)?.active} />
-          ))}
+        <div className="@container">
+          {/* Columns are set here and shared by every row (subgrid), so the
+              numbers, labels and buttons line up down the list. They follow
+              the list's own width, not the window's (the sidebar takes some). */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-y-2 @md:grid-cols-[minmax(0,1fr)_auto_auto] @3xl:grid-cols-[minmax(13rem,1.5fr)_minmax(6rem,1fr)_auto_auto] @5xl:grid-cols-[minmax(13rem,1.5fr)_minmax(6rem,1fr)_auto_auto_auto]">
+            {shown.map((site) => (
+              <SiteRow key={site.id} site={site} sites={list} underAttack={!!attackById.get(site.id)?.active} />
+            ))}
+          </div>
           {!shown.length && <p className="py-8 text-center text-muted-foreground">No sites match the filter.</p>}
         </div>
       )}
@@ -203,7 +210,7 @@ const TileValue = ({ children }: { children: React.ReactNode }) => (
   <span className="font-heading text-[1.75rem] leading-tight font-bold tracking-[-0.02em] tabular-nums">{children}</span>
 )
 
-function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]; vitals: RingValues[] }) {
+function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]; vitals: VitalValues[] }) {
   const live = sites.filter((x) => x.status === "active").length
   const busy = sites.length - live
   const total = (k: string) => sum(stats.map((x) => x.totals[k] || 0))
@@ -214,7 +221,7 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
     const xs = vs.map((v) => v[i]).filter((x): x is number => x != null)
     return xs.length ? sum(xs) / xs.length : null
   }
-  const fleetRings: RingValues = [avg(0), avg(1), avg(2)]
+  const fleetVitals: VitalValues = [avg(0), avg(1), avg(2)]
 
   const chart = useMemo(() => {
     if (!stats.length) return null
@@ -226,7 +233,18 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
   }, [stats])
 
   return (
-    <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-[1fr_2fr_1fr_1fr] xl:grid-cols-[1fr_2fr_1fr_1fr_1.3fr]">
+    // A bento: traffic and vitals stand tall at either end, the counts sit
+    // between them. Laid out by the page's own width (@container).
+    <div className="mb-6 @container">
+    <div className="grid grid-cols-2 gap-3 @4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(16rem,1.3fr)]">
+      <Tile icon={ChartColumnIcon} label="Page views · 24 h" className="col-span-2 @4xl:col-span-1 @4xl:row-span-2">
+        <TileValue>{stats.length ? fmtNum(total("page_views")) : "–"}</TileValue>
+        {chart && (
+          <div className="mt-auto pt-2">
+            <LineChart series={[{ values: chart.views, color: "c1", area: true }]} height={72} label="Page views on every site, last 24 hours" />
+          </div>
+        )}
+      </Tile>
       <Tile icon={ActivityIcon} label="Live sites">
         <TileValue>{fmtNum(live)}</TileValue>
         <span className="text-xs text-muted-foreground">
@@ -255,26 +273,20 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
           ))}
         </span>
       </Tile>
-      <Tile icon={ChartColumnIcon} label="Page views · 24 h" className="col-span-2 max-lg:order-first lg:col-span-1">
-        <TileValue>{stats.length ? fmtNum(total("page_views")) : "–"}</TileValue>
-        {chart && <LineChart series={[{ values: chart.views, color: "c1", area: true }]} height={56} label="Page views on every site, last 24 hours" />}
-      </Tile>
       <Tile icon={UsersIcon} label="Visitors · 24 h">
         <TileValue>{stats.length ? fmtNum(sum(stats.map((x) => x.unique_visitors))) : "–"}</TileValue>
         <span className="text-xs text-muted-foreground">{stats.length ? `${fmtBytes(total("bytes_out"))} served` : ""}</span>
       </Tile>
-      <Tile icon={ShieldIcon} label="Threats blocked · 24 h" className={cn(attacked > 0 && "bg-danger-fill/10")}>
+      <Tile icon={HeartPulseIcon} label="Fleet vitals" className="col-span-2 @4xl:col-span-1 @4xl:row-span-2">
+        <VitalBars values={fleetVitals} protectionAsShare className="mt-3 flex-1 justify-evenly" />
+      </Tile>
+      <Tile icon={ShieldIcon} label="Threats blocked · 24 h" className={cn("col-span-2", attacked > 0 && "bg-danger-fill/10")}>
         <TileValue>{stats.length ? fmtNum(total("blocked")) : "–"}</TileValue>
         <span className={cn("text-xs", attacked ? "font-medium text-danger" : off ? "text-warning" : "text-muted-foreground")}>
           {attacked ? `${attacked} in Under attack mode` : off ? `${off} with protection off` : "Protection on for every site"}
         </span>
       </Tile>
-      <Tile icon={ZapIcon} label="Fleet vitals" className="max-sm:col-span-2 lg:col-span-4 xl:col-span-1">
-        <div className="flex flex-wrap items-center gap-4">
-          <ActivityRings values={fleetRings} protectionAsShare className="size-[84px]" />
-          <RingLegend values={fleetRings} protectionAsShare className="min-w-0 flex-1" />
-        </div>
-      </Tile>
+    </div>
     </div>
   )
 }
@@ -289,12 +301,12 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
   const { data: cpu } = useSiteCPU(site)
   useAttack(site)
   const parent = site.parent_id ? sites.find((x) => x.id === site.parent_id) : undefined
-  const ring = vitals(site, stats, cpu)
+  const vs = vitals(site, stats, cpu)
   const open = sitePath(site.id)
 
   return (
     <article
-      className="group grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-3 rounded-2xl bg-card px-4 py-3.5 card-shadow transition-[transform,box-shadow] hover:-translate-y-px hover:shadow-md md:grid-cols-[minmax(14rem,1.4fr)_minmax(8rem,1fr)_auto_auto_auto]"
+      className="group col-span-full grid cursor-pointer grid-cols-subgrid items-center gap-x-5 rounded-2xl bg-card px-4 py-3 card-shadow transition-[transform,box-shadow] hover:-translate-y-px hover:shadow-[var(--shadow-card-raised)]"
       onClick={(e) => {
         if (!(e.target as HTMLElement).closest("a, button, input, select, label")) navigate(open)
       }}
@@ -310,9 +322,13 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
           >
             {site.primary_domain}
           </a>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <span>PHP {site.php_version}</span>
-            {parent && <Badge variant="secondary">staging of {parent.primary_domain}</Badge>}
+          <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap text-muted-foreground">
+            <span className="shrink-0">PHP {site.php_version}</span>
+            {parent && (
+              <Badge variant="secondary" className="min-w-0">
+                <span className="truncate">staging of {parent.primary_domain}</span>
+              </Badge>
+            )}
             {site.parent_id && !parent && <Badge variant="secondary">staging</Badge>}
             {clustered && <Badge variant="secondary">{nodes?.find((n) => n.id === (site.node || "local"))?.name ?? site.node ?? "local"}</Badge>}
             {site.account_id != null && s.me?.account_id !== site.account_id && <Badge variant="secondary">account #{site.account_id}</Badge>}
@@ -320,31 +336,36 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
         </div>
       </div>
 
-      <div className="hidden min-w-0 md:block">
+      <div className="hidden min-w-0 @3xl:block">
         <Spark stats={stats} compact />
       </div>
 
-      <dl className="hidden grid-cols-[4.5rem_4.5rem_3rem] gap-x-3 text-right lg:grid">
+      <dl className="m-0 hidden grid-cols-[4.5rem_4.5rem_3rem_3rem] items-start gap-x-4 @5xl:grid">
         <Stat k="Visitors" v={stats ? fmtNum(stats.unique_visitors) : "–"} />
         <Stat k="Views" v={stats ? fmtNum(stats.totals.page_views) : "–"} />
         <Stat k="CPU" v={cpu ? `${cpu.percent}%` : "–"} />
+        <div className="flex flex-col items-end">
+          <dt className="text-[0.6875rem] text-muted-foreground">Vitals</dt>
+          <dd className="m-0 flex h-5 items-center">
+            <VitalMeter values={vs} />
+          </dd>
+        </div>
       </dl>
 
-      <div className="hidden items-center gap-2 sm:flex">
-        <span
-          className={cn(
-            "rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap",
-            underAttack || site.shield_mode === "under_attack"
-              ? "bg-danger-fill/16 text-danger"
-              : site.shield_mode === "off"
-                ? "bg-warning-fill/16 text-warning"
-                : "bg-secondary text-muted-foreground"
-          )}
-        >
-          {underAttack ? "Under attack" : SHIELD_LABELS[site.shield_mode] || site.shield_mode}
-        </span>
-        <StatusPill status={site.status} />
-        <ActivityRings values={ring} className="size-[38px]" />
+      {/* One word on the row: what's wrong if something is, else protection.
+          The dot on the avatar already says live or not. */}
+      <div className="hidden justify-end @md:flex">
+        {site.status !== "active" ? (
+          <StatusPill status={site.status} />
+        ) : (
+          <StatusPill
+            status={site.shield_mode}
+            tone={underAttack || site.shield_mode === "under_attack" ? "bad" : site.shield_mode === "off" ? "warn" : "ok"}
+            className="whitespace-nowrap"
+          >
+            {underAttack ? "Under attack" : SHIELD_LABELS[site.shield_mode] || site.shield_mode}
+          </StatusPill>
+        )}
       </div>
 
       <Button variant="tinted" size="sm" render={<a href={href(open)} />} nativeButton={false} aria-label={`Manage ${site.primary_domain}`}>
@@ -356,7 +377,7 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
 }
 
 const Stat = ({ k, v }: { k: string; v: string }) => (
-  <div className="flex flex-col">
+  <div className="flex flex-col items-end">
     <dt className="text-[0.6875rem] text-muted-foreground">{k}</dt>
     <dd className="m-0 text-sm font-semibold tabular-nums">{v}</dd>
   </div>

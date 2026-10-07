@@ -3,7 +3,8 @@
 The control panel, rebuilt on [shadcn/ui](https://ui.shadcn.com) (Base UI
 primitives, style "maia") with Tailwind v4, themed to Apple's Human Interface
 Guidelines: the system font, grouped backgrounds, systemIndigo as the one
-tint, Settings-style icon tiles, activity rings and Dynamic Island toasts.
+tint, Liquid Glass surfaces over a soft wash of colour, Settings-style icon
+tiles, vital gauges and Dynamic Island toasts.
 
 It replaces the vanilla-JS dashboard in `internal/web/static` screen by screen.
 Until it has parity it is served at **`/next/`**; the classic panel stays at
@@ -32,6 +33,10 @@ it and fails if the committed copy is stale.
   `text-muted-foreground`, `text-success`/`text-danger`/`text-warning`,
   `bg-success-fill/15`, `text-link`), never raw colours.
   `prefers-reduced-motion` is honoured globally.
+- **Glass.** Every card surface is `bg-card card-shadow` (frosted, with a lit
+  edge); menus and dialogs add `material`. Don't put an opaque background on
+  the page or the shell, or the glass has nothing to show. Reduce
+  Transparency (`prefers-reduced-transparency`) swaps in solid surfaces.
 - **Words.** The panel says "Protection" (on/off), never "Shield". Customers
   are non-technical: plain words, sentences that say what happens.
 - **The server enforces everything.** Hide what a role can't do, but never
@@ -69,7 +74,7 @@ src/
 | Icon tile | `<IconTile icon={ShieldIcon} tint="green" size="md"/>` |
 | Status words | `<StatusText status="failed"/>`, `<StatusPill status="active"/>`, `<Severity level/>`, `toneOf(status)` |
 | Tables | `<SimpleTable headers rows/>`, `<KeyValues items/>` from `@/components/app/data-table`; shadcn `Table` for anything richer |
-| Charts | `<LineChart series label readout/>`, `hourly()`, `hoursSince()` from `@/components/app/chart`; `<ActivityRings/>`, `<RingLegend/>` |
+| Charts | `<LineChart series label readout/>`, `hourly()`, `hoursSince()` from `@/components/app/chart`; `<VitalBars values/>` (labelled gauges for a card), `<VitalMeter values/>` (compact, for a row) from `@/components/app/vitals` |
 | Formatting | `fmtBytes`, `fmtNum`, `fmtTime`, `fmtDate`, `fmtAgo`, `fmtMem`, `fmtPct`, `plural`, `splitList`, `humanize` from `@/lib/format` |
 | Number cards, notices, sub-tabs, filters | `Kpi`, `Banner`, `SubNav`, `Chips` from `@/components/app/blocks` |
 | Empty / failed / busy | `EmptyState`, `LoadError` (404 = "not on this server yet"), `ActionButton` (disabled while running, errors to toasts) |

@@ -6,7 +6,7 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch"
-import { ActivityRings, RingLegend } from "@/components/app/activity-rings"
+import { VitalBars } from "@/components/app/vitals"
 import { askText } from "@/components/app/confirm"
 import { IconTile } from "@/components/app/icon-tile"
 import { Section } from "@/components/app/page"
@@ -38,7 +38,7 @@ export default function OverviewSection({ site }: SectionProps) {
   const clustered = useClustered()
   const { data: stats } = useSiteStats(site)
   const { data: cpu } = useSiteCPU(site)
-  const ring = vitals(site, stats, cpu)
+  const vs = vitals(site, stats, cpu)
   const have = new Set(sectionsFor(site, clustered).map((x) => x.key))
   const tasks = TASKS.filter(([k]) => have.has(k)).slice(0, 6)
 
@@ -57,7 +57,7 @@ export default function OverviewSection({ site }: SectionProps) {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
         <Card>
           <CardContent className="flex flex-col gap-5">
-            <dl className="grid grid-cols-3 gap-4 sm:grid-cols-6">
+            <dl className="m-0 grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-x-4 gap-y-3">
               <Stat k="Visitors 24h" v={stats ? fmtNum(stats.unique_visitors) : "–"} />
               <Stat k="Page views" v={stats ? fmtNum(stats.totals.page_views) : "–"} />
               <Stat k="Bandwidth" v={stats ? fmtBytes(stats.totals.bytes_out) : "–"} />
@@ -72,10 +72,7 @@ export default function OverviewSection({ site }: SectionProps) {
         <Card>
           <CardContent className="flex h-full flex-col gap-4">
             <h3 className="text-[1.0625rem] font-semibold">Vitals</h3>
-            <div className="flex items-center gap-5 xl:flex-col xl:items-start">
-              <ActivityRings values={ring} className="size-28" />
-              <RingLegend values={ring} />
-            </div>
+            <VitalBars values={vs} className="flex-1 justify-evenly" />
           </CardContent>
         </Card>
       </div>
@@ -116,8 +113,8 @@ export default function OverviewSection({ site }: SectionProps) {
 
 const Stat = ({ k, v }: { k: string; v: string }) => (
   <div className="flex flex-col">
-    <dt className="text-xs text-muted-foreground">{k}</dt>
-    <dd className="m-0 font-heading text-xl font-bold tracking-[-0.02em] tabular-nums">{v}</dd>
+    <dt className="truncate text-xs text-muted-foreground">{k}</dt>
+    <dd className="m-0 font-heading text-xl font-bold tracking-[-0.02em] whitespace-nowrap tabular-nums">{v}</dd>
   </div>
 )
 

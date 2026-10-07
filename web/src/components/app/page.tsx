@@ -27,7 +27,7 @@ export function PageHeader({
   return (
     <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
       <IconTile icon={icon} tint={tint} size="xl" className="max-sm:hidden" />
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-[1_1_16rem]">
         <h1 className="text-[2.125rem] leading-tight font-bold tracking-[-0.022em]">{title}</h1>
         {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
       </div>
@@ -66,7 +66,7 @@ export function Section({
               {title}
             </CardTitle>
           )}
-          {description && <CardDescription className={cn("max-w-[78ch]", icon && "sm:pl-[38px]")}>{description}</CardDescription>}
+          {description && <CardDescription className="max-w-[78ch]">{description}</CardDescription>}
           {action && <CardAction>{action}</CardAction>}
         </CardHeader>
       )}
