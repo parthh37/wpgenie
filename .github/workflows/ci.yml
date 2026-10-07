@@ -24,6 +24,22 @@ jobs:
           WPGENIE_TEST_DOCKER: "1"
       - run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/wpgenie
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run lint
+        working-directory: web
+      - name: build, and check the committed copy (internal/web/static/next) is current
+        run: make ui-check
+
   postgres:
     runs-on: ubuntu-latest
     steps:

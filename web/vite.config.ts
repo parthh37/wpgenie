@@ -13,6 +13,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(import.meta.dirname, "./src"),
+      // See src/lib/stubs/radix-dialog.tsx.
+      "@radix-ui/react-dialog": resolve(import.meta.dirname, "./src/lib/stubs/radix-dialog.tsx"),
     },
   },
   build: {

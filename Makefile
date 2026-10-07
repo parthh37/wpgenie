@@ -1,7 +1,16 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-linux test test-integration test-postgres test-e2e lint php-image caddy-image release-key clean
+# The React panel (web/), built into internal/web/static/next and committed,
+# so `go build` never needs Node. CI checks the committed build is current.
+.PHONY: ui ui-check build build-linux test test-integration test-postgres test-e2e lint php-image caddy-image release-key clean
+
+ui:
+	cd web && npm ci && npm run build
+
+ui-check: ui
+	@git diff --exit-code --stat -- internal/web/static/next && test -z "$$(git status --porcelain -- internal/web/static/next)" \
+	  || { echo "internal/web/static/next is stale: run make ui and commit it"; exit 1; }
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/wpgenie ./cmd/wpgenie
