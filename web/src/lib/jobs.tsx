@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react"
 import { api } from "@/lib/api"
 import { invalidate, queryClient } from "@/lib/query"
 import { showError } from "@/components/app/toaster"
-import type { Job, Site } from "@/lib/types"
+import type { Job, JobID, Site } from "@/lib/types"
 
 // Long operations (backups, restores, staging, PHP changes…) answer 202
 // {job_id} and run as jobs. The tray shows the active ones and those that
@@ -19,6 +19,8 @@ export const JOB_NAMES: Record<string, string> = {
   "primary-domain": "Primary domain change",
   "repo-upkeep": "Backup upkeep",
   images: "Image conversion",
+  "offload-sync": "Uploads offload sync",
+  "offload-download": "Uploads copied back from the bucket",
 }
 
 export interface JobResult {
@@ -28,7 +30,7 @@ export interface JobResult {
 
 type OnDone = ((v: JobResult) => void | Promise<void>) | undefined
 
-const followed = new Map<string, OnDone>()
+const followed = new Map<JobID, OnDone>()
 let active: Job[] = []
 let finished: Job[] = [] // ended while followed, newest first
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -73,14 +75,14 @@ export function stopJobs() {
   emit()
 }
 
-export function followJob(id: string, onDone?: OnDone) {
+export function followJob(id: JobID, onDone?: OnDone) {
   followed.set(id, onDone)
   pollJobs()
 }
 
 // startJob runs a request that answers 202 {job_id}, follows the job and
 // refreshes the sites when it ends (showing its error if it failed).
-export async function startJob<R extends { job_id: string }>(
+export async function startJob<R extends { job_id: JobID }>(
   method: "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
@@ -95,7 +97,7 @@ export async function startJob<R extends { job_id: string }>(
   return res
 }
 
-export function dismissJob(id: string) {
+export function dismissJob(id: JobID) {
   finished = finished.filter((j) => j.id !== id)
   emit()
 }

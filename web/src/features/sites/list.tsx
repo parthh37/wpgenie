@@ -255,7 +255,7 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
           ))}
         </span>
       </Tile>
-      <Tile icon={ChartColumnIcon} label="Page views · 24 h" className="col-span-2 lg:col-span-1 lg:row-span-1">
+      <Tile icon={ChartColumnIcon} label="Page views · 24 h" className="col-span-2 max-lg:order-first lg:col-span-1">
         <TileValue>{stats.length ? fmtNum(total("page_views")) : "–"}</TileValue>
         {chart && <LineChart series={[{ values: chart.views, color: "c1", area: true }]} height={56} label="Page views on every site, last 24 hours" />}
       </Tile>
@@ -269,8 +269,8 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
           {attacked ? `${attacked} in Under attack mode` : off ? `${off} with protection off` : "Protection on for every site"}
         </span>
       </Tile>
-      <Tile icon={ZapIcon} label="Fleet vitals" className="col-span-2 lg:col-span-4 xl:col-span-1">
-        <div className="flex items-center gap-4">
+      <Tile icon={ZapIcon} label="Fleet vitals" className="max-sm:col-span-2 lg:col-span-4 xl:col-span-1">
+        <div className="flex flex-wrap items-center gap-4">
           <ActivityRings values={fleetRings} protectionAsShare className="size-[84px]" />
           <RingLegend values={fleetRings} protectionAsShare className="min-w-0 flex-1" />
         </div>
@@ -324,7 +324,7 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
         <Spark stats={stats} compact />
       </div>
 
-      <dl className="hidden grid-cols-3 gap-x-5 text-right lg:grid">
+      <dl className="hidden grid-cols-[4.5rem_4.5rem_3rem] gap-x-3 text-right lg:grid">
         <Stat k="Visitors" v={stats ? fmtNum(stats.unique_visitors) : "–"} />
         <Stat k="Views" v={stats ? fmtNum(stats.totals.page_views) : "–"} />
         <Stat k="CPU" v={cpu ? `${cpu.percent}%` : "–"} />

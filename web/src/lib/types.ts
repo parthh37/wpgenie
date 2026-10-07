@@ -93,8 +93,11 @@ export interface SiteStats {
   series: Array<{ hour: string; page_views?: number; blocked?: number; [k: string]: number | string | undefined }>
 }
 
+// Job IDs are numbers in the API (store.Job.ID is an int64).
+export type JobID = number | string
+
 export interface Job {
-  id: string
+  id: JobID
   kind: string
   site_id?: string
   status: "queued" | "running" | "succeeded" | "failed" | string
