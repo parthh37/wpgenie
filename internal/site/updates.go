@@ -114,6 +114,28 @@ func (s *Service) wpJSON(ctx context.Context, id string, into any, args ...strin
 	return err
 }
 
+// wpUpdate is the "update" field of `wp plugin|theme list`: "none",
+// "available" or "version higher than expected" for regular items, but a
+// JSON false for must-use plugins and drop-ins.
+type wpUpdate string
+
+func (u *wpUpdate) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*u = wpUpdate(s)
+		return nil
+	}
+	var flag bool
+	if err := json.Unmarshal(b, &flag); err != nil {
+		return fmt.Errorf("update: want a string or bool, got %s", b)
+	}
+	*u = "none"
+	if flag {
+		*u = "available"
+	}
+	return nil
+}
+
 // Inventory lists core, plugins and themes with their available updates,
 // as wordpress.org reports them. Premium plugins that ship their own
 // updater only report updates with plugins loaded, which the panel never
@@ -138,11 +160,11 @@ func (s *Service) Inventory(ctx context.Context, id string) (*Inventory, error) 
 	}
 	for _, kind := range []string{"plugin", "theme"} {
 		var items []struct {
-			Name          string `json:"name"`
-			Status        string `json:"status"`
-			Version       string `json:"version"`
-			Update        string `json:"update"`
-			UpdateVersion string `json:"update_version"`
+			Name          string   `json:"name"`
+			Status        string   `json:"status"`
+			Version       string   `json:"version"`
+			Update        wpUpdate `json:"update"`
+			UpdateVersion string   `json:"update_version"`
 		}
 		if err := s.wpJSON(ctx, id, &items, kind, "list", "--format=json",
 			"--fields=name,status,version,update,update_version"); err != nil {

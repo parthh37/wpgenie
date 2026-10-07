@@ -471,3 +471,27 @@ func TestWPJSONIgnoresStderrNoise(t *testing.T) {
 		t.Fatal("garbage on stdout must be an error, not an empty list")
 	}
 }
+
+// WP-CLI reports "update": false (not a string) for must-use plugins and
+// drop-ins; decoding a list containing one must not fail.
+func TestWPUpdateAcceptsStringOrBool(t *testing.T) {
+	out := `[{"name":"akismet","update":"available"},{"name":"hello","update":"none"},
+		{"name":"mu-loader","status":"must-use","update":false},{"name":"x","update":true}]`
+	var items []struct {
+		Name   string   `json:"name"`
+		Update wpUpdate `json:"update"`
+	}
+	if err := json.Unmarshal([]byte(out), &items); err != nil {
+		t.Fatal(err)
+	}
+	want := []wpUpdate{"available", "none", "none", "available"}
+	for i, it := range items {
+		if it.Update != want[i] {
+			t.Errorf("%s: update = %q, want %q", it.Name, it.Update, want[i])
+		}
+	}
+	var bad wpUpdate
+	if err := json.Unmarshal([]byte(`42`), &bad); err == nil {
+		t.Error("a number should not decode")
+	}
+}
