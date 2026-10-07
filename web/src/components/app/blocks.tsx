@@ -224,7 +224,7 @@ export function EmptyState({
 export function LoadError({ error, retry, className }: { error: unknown; retry?: () => void; className?: string }) {
   const missing = error instanceof ApiError && error.status === 404
   return (
-    <Empty role="alert" className={cn("rounded-2xl bg-card py-12 card-shadow", className)}>
+    <Empty role="alert" className={cn("mb-4 rounded-2xl bg-card py-12 card-shadow", className)}>
       <EmptyHeader>
         <EmptyMedia>
           <IconTile icon={TriangleAlertIcon} tint="red" size="xl" />
@@ -532,7 +532,7 @@ export function BTable({ cols, rows, empty, caption, className }: { cols: Array<
             }
           >
             {r.cells.map((cell, j) => (
-              <TableCell key={j} className={cn("align-top whitespace-normal [overflow-wrap:anywhere]", c[j]?.num && "text-right whitespace-nowrap tabular-nums")}>
+              <TableCell key={j} className={cn("align-top whitespace-normal [overflow-wrap:break-word]", c[j]?.num && "text-right whitespace-nowrap tabular-nums")}>
                 {cell}
               </TableCell>
             ))}

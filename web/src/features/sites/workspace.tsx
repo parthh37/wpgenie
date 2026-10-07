@@ -67,7 +67,7 @@ export function SiteWorkspace({ id, section }: { id: string; section?: string })
       <a
         ref={backRef}
         href={href("sites")}
-        className="mb-4 inline-flex items-center gap-1 rounded-full text-[0.9375rem] font-medium text-link no-underline hover:no-underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+        className="mb-3 -ml-1.5 inline-flex items-center gap-1 rounded-full py-0.5 pr-2.5 pl-1 text-[0.9375rem] font-medium text-link no-underline hover:no-underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
       >
         <ChevronLeftIcon className="size-5" />
         All sites

@@ -79,7 +79,7 @@ export function AppShell() {
   return (
     <SidebarProvider>
       <AppSidebar pages={visible} current={current.key} />
-      <SidebarInset className="min-w-0 bg-background">
+      <SidebarInset className="min-w-0">
         <MobileTop />
         <main id="main" tabIndex={-1} className="flex-1 outline-none">
           <ScreenBoundary key={location}>
@@ -153,7 +153,7 @@ function AppSidebar({ pages, current }: { pages: PageDef[]; current: string }) {
   )
 
   return (
-    <Sidebar className="material border-r-[0.5px] border-sidebar-border [&_[data-slot=sidebar-inner]]:bg-sidebar">
+    <Sidebar className="border-r-[0.5px] border-sidebar-border [&_[data-slot=sidebar-inner]]:bg-sidebar [&_[data-slot=sidebar-inner]]:material">
       <SidebarHeader className="gap-3 px-3 pt-4">
         <div className="flex items-center gap-2.5 px-1">
           <Logo className="size-8" />
