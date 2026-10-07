@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { Site, SiteStats } from "@/lib/types"
-import type { RingValues } from "@/components/app/activity-rings"
+import type { VitalValues } from "@/components/app/vitals"
 
 // A site's live numbers: traffic (24 h), CPU now (the autoscaler's
 // sampling, every 15 s) and whether an attack is under way (every minute).
@@ -48,13 +48,13 @@ export const useAttack = (site: Site) =>
   })
 
 // Vitals: [healthy responses %, CPU headroom %, protection 0/100].
-export function vitals(site: Site, stats: SiteStats | undefined, cpu: CPU | null | undefined): RingValues {
+export function vitals(site: Site, stats: SiteStats | undefined, cpu: CPU | null | undefined): VitalValues {
   const healthy = stats?.totals?.requests ? 100 * (1 - (stats.totals.errors_5xx || 0) / stats.totals.requests) : null
   const headroom = cpu ? Math.max(0, 100 - cpu.percent) : null
   return [healthy, headroom, site.shield_mode === "off" ? 0 : 100]
 }
 
-export const useVitals = (site: Site): RingValues => {
+export const useVitals = (site: Site): VitalValues => {
   const { data: stats } = useSiteStats(site)
   const { data: cpu } = useSiteCPU(site)
   return vitals(site, stats, cpu)
