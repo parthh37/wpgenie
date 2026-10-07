@@ -10,7 +10,7 @@ export interface BillingConfig {
   unavailable?: boolean
   enabled?: boolean
   currency?: { code?: string; symbol?: string; decimals?: number }
-  company?: { name?: string }
+  company?: { name?: string; address?: string; tax_id?: string; [k: string]: unknown }
   company_name?: string
   methods?: Array<{ id: string; name?: string; description?: string; enabled?: boolean }> | Record<string, { enabled?: boolean; name?: string; description?: string }>
   tax_inclusive?: boolean

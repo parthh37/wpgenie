@@ -8,7 +8,7 @@ import { Page } from "@/components/app/page"
 import { StatusPill } from "@/components/app/status"
 import { PageSpinner } from "@/app/shell"
 import { ScreenBoundary } from "@/components/app/error-boundary"
-import { useClustered, useSite } from "@/lib/query"
+import { useClustered, useNodes, useSite } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
 import { cn } from "@/lib/utils"
 import { SHIELD_LABELS, useAttack } from "./data"
@@ -20,6 +20,9 @@ import { RAIL_GROUPS, resolveSection, sectionsFor } from "./sections"
 export function SiteWorkspace({ id, section }: { id: string; section?: string }) {
   const { site, data: sites, isLoading } = useSite(id)
   const clustered = useClustered()
+  // Whether there's a Server section depends on the nodes: wait for them
+  // before deciding an address names a section the site doesn't have.
+  const nodesLoaded = !useNodes().isLoading
   const backRef = useRef<HTMLAnchorElement>(null)
 
   // A site that isn't in the list (deleted, or not yours): back to the list.
@@ -42,9 +45,9 @@ export function SiteWorkspace({ id, section }: { id: string; section?: string })
   const current = site ? resolveSection(site, clustered, section) : undefined
   // An address naming a section the site doesn't have: the overview's address.
   useEffect(() => {
-    if (site && current && section && current.key !== section && !(section === "security" && current.key === "protection"))
+    if (site && current && nodesLoaded && section && current.key !== section && !(section === "security" && current.key === "protection"))
       navigate(sitePath(site.id, current.key), { replace: true })
-  }, [site, current, section])
+  }, [site, current, section, nodesLoaded])
 
   if (isLoading || !site || !current) {
     return (

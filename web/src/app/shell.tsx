@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from "react"
+import { Suspense, useCallback, useEffect, useMemo } from "react"
 import { LogOutIcon, MoonIcon, SearchIcon, SunIcon } from "lucide-react"
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader,
@@ -14,6 +14,7 @@ import { Logo } from "@/components/app/logo"
 import { Toaster, showError } from "@/components/app/toaster"
 import { JobTray } from "@/app/job-tray"
 import { CommandPalette, openPalette } from "@/app/command-palette"
+import { NewSiteDialog } from "@/features/sites/new-site"
 import { GROUP_LABEL, PAGES, type NavGroup, type PageDef } from "@/app/pages"
 import { useAlertsFiring, useNavFlags, useSupportSummary, useTenantBilling, useUpdateAvailable } from "@/app/nav-state"
 import { pollJobs, stopJobs } from "@/lib/jobs"
@@ -31,7 +32,13 @@ export function AppShell() {
   const billing = useTenantBilling(s)
   const [page] = useRoute()
   const location = useLocation()
-  const visible = PAGES.filter((p) => p.visible(s, flags))
+  const visible = useMemo(() => PAGES.filter((p) => p.visible(s, flags)), [s, flags.support, flags.billing]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Whether a page's visibility is settled: Support waits for its summary,
+  // a tenant's Billing for their account's billing.
+  const decided = useCallback(
+    (key: string) => (key === "support" ? flags.support !== null : key === "billing" && s.isTenant ? !billing.isLoading : !s.loading),
+    [flags.support, billing.isLoading, s.isTenant, s.loading]
+  )
 
   // Jobs follow the session.
   useEffect(() => {
@@ -49,7 +56,11 @@ export function AppShell() {
     }
     if (mustPay && (!page || page === "sites")) navigate("/billing", { replace: true })
     else if (!page) navigate("/sites", { replace: true })
-  }, [page, s.mustSetup2FA, mustPay])
+    // A page this user doesn't get (once it's known): its address becomes
+    // Sites', as the page shown is.
+    else if (!PAGES.some((p) => p.key === page) || (decided(page) && !visible.some((p) => p.key === page)))
+      navigate("/sites", { replace: true })
+  }, [page, s.mustSetup2FA, mustPay, visible, decided])
 
   // Switching pages clears errors about the last one and scrolls to the top.
   useEffect(() => {
@@ -59,8 +70,10 @@ export function AppShell() {
 
   const current: PageDef =
     (s.mustSetup2FA ? PAGES.find((p) => p.key === "account") : visible.find((p) => p.key === page)) ??
-    // Support's visibility isn't known until its summary arrives: don't bounce.
-    (page === "support" && flags.support === null ? PAGES.find((p) => p.key === "support")! : PAGES[0])
+    // Not known yet whether this user gets the page: show it rather than
+    // flash Sites (the server still decides what it shows).
+    (!decided(page ?? "") ? PAGES.find((p) => p.key === page) : undefined) ??
+    PAGES[0]
   const Screen = current.component
 
   return (
@@ -77,6 +90,7 @@ export function AppShell() {
         </main>
       </SidebarInset>
       <CommandPalette pages={visible} />
+      <NewSiteDialog />
       <JobTray />
       <Toaster withSidebar />
     </SidebarProvider>

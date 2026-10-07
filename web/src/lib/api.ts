@@ -25,6 +25,9 @@ export function onAuthEvent(fn: (e: AuthEvent) => void) {
 }
 const emit = (e: AuthEvent) => listeners.forEach((fn) => fn(e))
 
+// signedOut: for requests made without api() (raw uploads) that got a 401.
+export const signedOut = () => emit("signed-out")
+
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
 
 export async function api<T = unknown>(method: Method, path: string, body?: unknown): Promise<T> {

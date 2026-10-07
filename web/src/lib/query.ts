@@ -1,5 +1,6 @@
 import { QueryClient, useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useSession } from "@/lib/session"
 import type { Node, Site } from "@/lib/types"
 
 export const queryClient = new QueryClient({
@@ -51,10 +52,13 @@ export function useSite(id: string | undefined) {
   return { ...q, site: id ? q.data?.find((s) => s.id === id) : undefined }
 }
 
-// Nodes of a cluster ([] on a single server, or for users who can't see them).
+// Nodes of a cluster ([] on a single server, or for users who can't see
+// them: tenants don't ask).
 export function useNodes() {
+  const { isStaff } = useSession()
   return useQuery<Node[]>({
     queryKey: ["/nodes"],
+    enabled: isStaff,
     queryFn: () => api<Node[]>("GET", "/nodes").catch(() => []),
     staleTime: 60_000,
   })

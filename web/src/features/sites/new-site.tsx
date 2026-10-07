@@ -1,9 +1,11 @@
 import { useSyncExternalStore } from "react"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
+import { useSession } from "@/lib/session"
+import { CredentialsHost } from "./wizard/credentials"
+import { NewSiteWizard } from "./wizard/new-site"
 
 // The new-site wizard: openNewSite() from anywhere (the Sites page, the
-// command palette).
+// command palette). The shell renders NewSiteDialog, which also shows a new
+// site's admin credentials once its creation job is done, on any page.
 
 let open = false
 const subs = new Set<() => void>()
@@ -17,17 +19,12 @@ export const useNewSiteOpen = () => useSyncExternalStore((f) => (subs.add(f), ()
 
 export function NewSiteDialog() {
   const isOpen = useNewSiteOpen()
+  const s = useSession()
   return (
-    <Dialog open={isOpen} onOpenChange={set}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>New site</DialogTitle>
-          <DialogDescription>The new-site wizard is still in the classic panel.</DialogDescription>
-        </DialogHeader>
-        <Button render={<a href="/#/sites" />} nativeButton={false}>
-          Open the classic panel
-        </Button>
-      </DialogContent>
-    </Dialog>
+    <>
+      {/* Admins and tenants create sites (the server checks the plan's limits). */}
+      {s.canCreate && <NewSiteWizard open={isOpen} onClose={closeNewSite} />}
+      <CredentialsHost />
+    </>
   )
 }

@@ -1,7 +1,7 @@
 import { useHashQuery, useRoute } from "@/lib/router"
 
 // Billing's addresses: #/billing/<view>/<id>/<sub>[?query] (#/billing/invoices/42,
-// #/billing/settings/methods, #/billing?paid=1 after a payment page).
+// #/billing/settings/payments, #/billing?paid=1 after a payment page).
 export interface BillingRoute {
   view: string
   id: string

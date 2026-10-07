@@ -114,5 +114,9 @@ export interface Node {
   status: string
   up: boolean
   last_error?: string
+  public_ip?: string
+  // This panel's own server.
+  local?: boolean
+  sites?: number
   [k: string]: unknown
 }
