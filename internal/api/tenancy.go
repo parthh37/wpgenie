@@ -166,6 +166,8 @@ var tenantRoutes = map[string]tenantRule{
 	"GET /api/v1/sites/{id}/analysis":                         anyTenant,
 	"POST /api/v1/sites/{id}/analysis/fix":                    anyTenant, // each fix is a route tenants have
 	"GET /api/v1/sites/{id}/wp-admin/users":                   anyTenant,
+	"POST /api/v1/sites/{id}/wp-admin/users":                  anyTenant,
+	"DELETE /api/v1/sites/{id}/wp-admin/users/{user}":         anyTenant,
 	"POST /api/v1/sites/{id}/wp-admin/login":                  anyTenant,
 	"POST /api/v1/sites/{id}/wp-admin/password":               anyTenant,
 	"GET /api/v1/optimizations":                               anyTenant,

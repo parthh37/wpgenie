@@ -215,9 +215,11 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/sites/{id}/analysis", viewer, s.siteAnalysis)
 	r("POST /api/v1/sites/{id}/analysis/fix", operator, s.analysisFix)
 
-	// WordPress itself: wp-admin without a password, administrators'
-	// passwords, performance tweaks (see wordpress.go).
-	r("GET /api/v1/sites/{id}/wp-admin/users", viewer, s.wpAdmins)
+	// WordPress itself: wp-admin without a password, administrators and
+	// editors and their passwords, performance tweaks (see wordpress.go).
+	r("GET /api/v1/sites/{id}/wp-admin/users", viewer, s.wpUsers)
+	r("POST /api/v1/sites/{id}/wp-admin/users", operator, s.wpCreateUser)
+	r("DELETE /api/v1/sites/{id}/wp-admin/users/{user}", operator, s.wpDeleteUser)
 	r("POST /api/v1/sites/{id}/wp-admin/login", operator, s.wpLogin)
 	r("POST /api/v1/sites/{id}/wp-admin/password", operator, s.wpAdminPassword)
 	r("GET /api/v1/optimizations", viewer, s.optimizations)
