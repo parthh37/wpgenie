@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/parthh37/wpgenie/internal/site"
 )
@@ -10,13 +11,42 @@ import (
 // password, administrators' passwords, performance tweaks, the site
 // analyser, and the brand WordPress's admin shows.
 
-// wpAdmins lists a site's WordPress administrators.
-func (s *Server) wpAdmins(w http.ResponseWriter, r *http.Request) error {
-	users, err := s.Sites.Administrators(r.Context(), r.PathValue("id"))
+// wpUsers lists a site's WordPress administrators and editors.
+func (s *Server) wpUsers(w http.ResponseWriter, r *http.Request) error {
+	users, err := s.Sites.Users(r.Context(), r.PathValue("id"))
 	if err != nil {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, users)
+}
+
+// wpCreateUser adds an administrator or editor: their password is in the
+// response, once.
+func (s *Server) wpCreateUser(w http.ResponseWriter, r *http.Request) error {
+	var in site.NewUserInput
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	res, err := s.Sites.CreateUser(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	return writeJSON(w, http.StatusCreated, res)
+}
+
+// wpDeleteUser deletes an administrator or editor (never the site's first
+// user, nor its last administrator).
+func (s *Server) wpDeleteUser(w http.ResponseWriter, r *http.Request) error {
+	uid, err := strconv.Atoi(r.PathValue("user"))
+	if err != nil || uid <= 0 {
+		return errBadRequest
+	}
+	u, err := s.Sites.DeleteUser(r.Context(), r.PathValue("id"), uid)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, u)
 }
 
 // wpLogin returns a one-time link that signs the browser in to wp-admin

@@ -18,18 +18,31 @@ import (
 	"github.com/parthh37/wpgenie/internal/store"
 )
 
-// WordPress's own administrators, from the panel: list them, sign in to
-// wp-admin as one without their password (see internal/wplogin), and reset
-// a forgotten password. Everything runs through WP-CLI with plugins and
-// themes skipped, so a compromised plugin can't observe or steer it.
+// WordPress's own users, from the panel: list the administrators and
+// editors, add and delete them, sign in to wp-admin as an administrator
+// without their password (see internal/wplogin), and reset a forgotten
+// password. Everything runs through WP-CLI with plugins and themes
+// skipped, so a compromised plugin can't observe or steer it.
+//
+// The site's first user (the lowest ID: the account `wp core install`
+// made, or the original owner of an imported site) is its owner: it can't
+// be deleted from the panel, and deleted users' content moves to it.
 
-// WPUser is a WordPress administrator.
+// WPUser is a WordPress administrator or editor.
 type WPUser struct {
 	ID    int    `json:"id"`
 	Login string `json:"login"`
 	Email string `json:"email"`
 	Name  string `json:"name"`
+	Role  string `json:"role"`            // RoleAdministrator or RoleEditor
+	Owner bool   `json:"owner,omitempty"` // the site's first user
 }
+
+// The roles the panel manages.
+const (
+	RoleAdministrator = "administrator"
+	RoleEditor        = "editor"
+)
 
 // flexInt decodes a JSON number or numeric string (WP-CLI prints IDs
 // either way depending on the command and version).
@@ -41,26 +54,57 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	return err
 }
 
-// Administrators lists the site's WordPress administrators, oldest first.
-func (s *Service) Administrators(ctx context.Context, id string) ([]WPUser, error) {
+// listUsersPHP prints the administrators and editors, oldest first, and
+// the ID of the site's first user whatever its role. Someone with both
+// roles counts as an administrator.
+const listUsersPHP = `
+$first = get_users( array( 'orderby' => 'ID', 'order' => 'ASC', 'number' => 1, 'fields' => 'ID' ) );
+$users = array();
+foreach ( get_users( array( 'role__in' => array( 'administrator', 'editor' ), 'orderby' => 'ID', 'order' => 'ASC' ) ) as $u ) {
+	$users[] = array(
+		'id' => $u->ID, 'login' => $u->user_login, 'email' => $u->user_email, 'name' => $u->display_name,
+		'role' => in_array( 'administrator', (array) $u->roles, true ) ? 'administrator' : 'editor',
+	);
+}
+echo wp_json_encode( array( 'first' => $first ? (int) $first[0] : 0, 'users' => $users ) );
+`
+
+// Users lists the site's WordPress administrators and editors, oldest
+// first, the site's owner marked.
+func (s *Service) Users(ctx context.Context, id string) ([]WPUser, error) {
+	users, _, err := s.wpUsers(ctx, id)
+	return users, err
+}
+
+// wpUsers is Users and the ID of the site's first user (0: no users),
+// who may be neither an administrator nor an editor.
+func (s *Service) wpUsers(ctx context.Context, id string) ([]WPUser, int, error) {
 	if err := s.requireActive(ctx, id); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	var rows []struct {
-		ID          flexInt `json:"ID"`
-		Login       string  `json:"user_login"`
-		Email       string  `json:"user_email"`
-		DisplayName string  `json:"display_name"`
+	var r struct {
+		First flexInt `json:"first"`
+		Users []struct {
+			ID    flexInt `json:"id"`
+			Login string  `json:"login"`
+			Email string  `json:"email"`
+			Name  string  `json:"name"`
+			Role  string  `json:"role"`
+		} `json:"users"`
 	}
-	if err := s.wpJSON(ctx, id, &rows, "user", "list", "--role=administrator",
-		"--fields=ID,user_login,user_email,display_name", "--orderby=ID", "--order=ASC", "--format=json"); err != nil {
-		return nil, err
+	if err := s.wpJSON(ctx, id, &r, "eval", listUsersPHP); err != nil {
+		return nil, 0, err
 	}
-	out := make([]WPUser, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, WPUser{ID: int(r.ID), Login: r.Login, Email: r.Email, Name: r.DisplayName})
+	out := make([]WPUser, 0, len(r.Users))
+	for _, u := range r.Users {
+		role := RoleEditor
+		if u.Role == RoleAdministrator {
+			role = RoleAdministrator
+		}
+		out = append(out, WPUser{ID: int(u.ID), Login: u.Login, Email: u.Email, Name: u.Name,
+			Role: role, Owner: int(u.ID) == int(r.First)})
 	}
-	return out, nil
+	return out, int(r.First), nil
 }
 
 func (s *Service) requireActive(ctx context.Context, id string) error {
@@ -216,8 +260,8 @@ func validCookie(c AuthCookie) bool {
 	return ok(c.Name, "=()<>@:/[]?{}") && ok(c.Value, "") && strings.HasPrefix(c.Path, "/") && ok(c.Path, "")
 }
 
-// PasswordInput resets an administrator's password. An empty password
-// makes a random one.
+// PasswordInput resets an administrator's or editor's password. An empty
+// password makes a random one.
 type PasswordInput struct {
 	UserID   int    `json:"user_id"`
 	Password string `json:"password"`
@@ -240,8 +284,8 @@ func validWPPassword(pw string) error {
 	return nil
 }
 
-// ResetAdminPassword sets a new password for an administrator and ends
-// all their sessions (a reset is what you do when an account may be
+// ResetAdminPassword sets a new password for an administrator or editor
+// and ends all their sessions (a reset is what you do when an account may be
 // compromised). WordPress sends no e-mail about it.
 func (s *Service) ResetAdminPassword(ctx context.Context, id string, in PasswordInput) (*PasswordReset, error) {
 	pw := in.Password
@@ -250,15 +294,15 @@ func (s *Service) ResetAdminPassword(ctx context.Context, id string, in Password
 	} else if err := validWPPassword(pw); err != nil {
 		return nil, err
 	}
-	admins, err := s.Administrators(ctx, id)
+	users, err := s.Users(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	i := slices.IndexFunc(admins, func(u WPUser) bool { return u.ID == in.UserID })
+	i := slices.IndexFunc(users, func(u WPUser) bool { return u.ID == in.UserID })
 	if i < 0 {
-		return nil, fmt.Errorf("%w: no administrator with ID %d on this site", ErrInvalidInput, in.UserID)
+		return nil, fmt.Errorf("%w: no administrator or editor with ID %d on this site", ErrInvalidInput, in.UserID)
 	}
-	u := admins[i]
+	u := users[i]
 	uid := strconv.Itoa(u.ID)
 	// The password goes on stdin, never argv (visible in the process list).
 	if _, err := s.Runtime.WP(ctx, id, strings.NewReader(pw+"\n"), "user", "update", uid, "--prompt=user_pass", "--skip-email"); err != nil {
@@ -267,6 +311,116 @@ func (s *Service) ResetAdminPassword(ctx context.Context, id string, in Password
 	if _, err := s.Runtime.WP(ctx, id, nil, "user", "session", "destroy", uid, "--all"); err != nil {
 		s.Log.Warn("ending a WordPress user's sessions after a password reset", "site", id, "user", u.Login, "err", err)
 	}
-	s.event(id, "wp-admin", fmt.Sprintf("Password of WordPress administrator %s reset from the panel; their sessions ended", u.Login))
+	s.event(id, "wp-admin", fmt.Sprintf("Password of WordPress %s %s reset from the panel; their sessions ended", u.Role, u.Login))
 	return &PasswordReset{UserID: u.ID, User: u.Login, Password: pw}, nil
+}
+
+// NewUserInput adds a WordPress user. An empty password makes a random
+// one; an empty name leaves WordPress's default (the username).
+type NewUserInput struct {
+	Login    string `json:"login"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Role     string `json:"role"` // RoleAdministrator or RoleEditor
+	Password string `json:"password"`
+}
+
+// NewUser is the user made and their password, shown once.
+type NewUser struct {
+	User     WPUser `json:"user"`
+	Password string `json:"password"`
+}
+
+// validNewUser checks a new user's fields. Login and e-mail go to WP-CLI
+// as positional arguments, so neither may start with "-" (it would be
+// read as an option: a login of "--role=administrator").
+func validNewUser(in *NewUserInput) error {
+	in.Login = strings.TrimSpace(in.Login)
+	in.Email = strings.TrimSpace(in.Email)
+	in.Name = strings.TrimSpace(in.Name)
+	if !userRe.MatchString(in.Login) || strings.HasPrefix(in.Login, "-") {
+		return fmt.Errorf("%w: the username must be 3 to 60 letters, digits, dots, dashes or underscores, not starting with a dash", ErrInvalidInput)
+	}
+	if len(in.Email) > 100 || !emailRe.MatchString(in.Email) || strings.HasPrefix(in.Email, "-") {
+		return fmt.Errorf("%w: e-mail address", ErrInvalidInput)
+	}
+	if len(in.Name) > 250 || strings.ContainsFunc(in.Name, unicode.IsControl) {
+		return fmt.Errorf("%w: the name must be at most 250 characters, without control characters", ErrInvalidInput)
+	}
+	if in.Role != RoleAdministrator && in.Role != RoleEditor {
+		return fmt.Errorf("%w: the role must be %s or %s", ErrInvalidInput, RoleAdministrator, RoleEditor)
+	}
+	if in.Password != "" {
+		return validWPPassword(in.Password)
+	}
+	return nil
+}
+
+// CreateUser adds a WordPress administrator or editor. WordPress sends no
+// e-mail about it: the panel shows the password once.
+func (s *Service) CreateUser(ctx context.Context, id string, in NewUserInput) (*NewUser, error) {
+	if err := validNewUser(&in); err != nil {
+		return nil, err
+	}
+	if err := s.requireActive(ctx, id); err != nil {
+		return nil, err
+	}
+	pw := in.Password
+	if pw == "" {
+		pw = randString(24, passAlphabet)
+	}
+	args := []string{"user", "create", in.Login, in.Email, "--role=" + in.Role}
+	if in.Name != "" {
+		args = append(args, "--display_name="+in.Name)
+	}
+	// The password goes on stdin, never argv (visible in the process list).
+	// WP-CLI echoes it back to stdout, so the output isn't used: the new
+	// user is looked up afterwards.
+	if _, err := s.Runtime.WP(ctx, id, strings.NewReader(pw+"\n"), append(args, "--prompt=user_pass")...); err != nil {
+		if msg := err.Error(); strings.Contains(msg, "already exists") || strings.Contains(msg, "already used") ||
+			strings.Contains(msg, "already registered") {
+			return nil, fmt.Errorf("%w: a user with that username or e-mail address already exists on this site", ErrInvalidInput)
+		}
+		return nil, err
+	}
+	s.event(id, "wp-admin", fmt.Sprintf("WordPress %s %s added from the panel", in.Role, in.Login))
+	res := &NewUser{User: WPUser{Login: in.Login, Email: in.Email, Name: in.Name, Role: in.Role}, Password: pw}
+	if users, err := s.Users(ctx, id); err == nil {
+		if i := slices.IndexFunc(users, func(u WPUser) bool { return strings.EqualFold(u.Login, in.Login) }); i >= 0 {
+			res.User = users[i]
+		}
+	}
+	return res, nil
+}
+
+// DeleteUser deletes a WordPress administrator or editor; their posts and
+// pages move to the site's first user. Neither that first user nor the
+// last administrator can be deleted.
+func (s *Service) DeleteUser(ctx context.Context, id string, userID int) (*WPUser, error) {
+	users, first, err := s.wpUsers(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(users, func(u WPUser) bool { return u.ID == userID })
+	if i < 0 {
+		return nil, fmt.Errorf("%w: no administrator or editor with ID %d on this site", ErrInvalidInput, userID)
+	}
+	u := users[i]
+	if u.ID == first {
+		return nil, fmt.Errorf("%w: %s is the site's first user, which can't be deleted", ErrInvalidInput, u.Login)
+	}
+	admins := 0
+	for _, o := range users {
+		if o.Role == RoleAdministrator {
+			admins++
+		}
+	}
+	if u.Role == RoleAdministrator && admins <= 1 {
+		return nil, fmt.Errorf("%w: %s is the site's only administrator", ErrInvalidInput, u.Login)
+	}
+	if _, err := s.Runtime.WP(ctx, id, nil, "user", "delete", strconv.Itoa(u.ID), "--reassign="+strconv.Itoa(first), "--yes"); err != nil {
+		return nil, err
+	}
+	s.event(id, "wp-admin", fmt.Sprintf("WordPress %s %s deleted from the panel; their content moved to the site's first user", u.Role, u.Login))
+	return &u, nil
 }
