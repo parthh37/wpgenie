@@ -582,7 +582,7 @@ func (s *Service) ApplyFix(ctx context.Context, id, fix string) (*FixResult, err
 		in := ShieldInput{Mode: shield.Mode(st.ShieldMode), BlockAIBots: st.BlockAIBots}
 		msg := "Firewall on"
 		if fix == FixShield {
-			in.Mode, msg = shield.ModeAuto, "Shield on"
+			in.Mode, msg = shield.ModeAuto, "Protection on"
 		} else {
 			on := true
 			in.WAF = &on

@@ -1,0 +1,9 @@
+# Dependencies and local files. (The build goes to
+# ../internal/web/static/next, which is committed.)
+node_modules/
+*.log
+.DS_Store
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea/
