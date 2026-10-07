@@ -120,12 +120,12 @@ func (s *Service) LastPluginReport(ctx context.Context, id string) (*PluginRepor
 func (s *Service) analyseLocked(ctx context.Context, st *store.Site) (*PluginReport, error) {
 	rep := &PluginReport{AnalysedAt: time.Now().UTC()}
 	var items []struct {
-		Name          string `json:"name"`
-		Title         string `json:"title"`
-		Status        string `json:"status"`
-		Version       string `json:"version"`
-		Update        string `json:"update"`
-		UpdateVersion string `json:"update_version"`
+		Name          string   `json:"name"`
+		Title         string   `json:"title"`
+		Status        string   `json:"status"`
+		Version       string   `json:"version"`
+		Update        wpUpdate `json:"update"`
+		UpdateVersion string   `json:"update_version"`
 	}
 	if err := s.wpJSON(ctx, st.ID, &items, "plugin", "list", "--format=json",
 		"--fields=name,title,status,version,update,update_version"); err != nil {
