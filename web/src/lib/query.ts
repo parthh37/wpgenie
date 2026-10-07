@@ -1,0 +1,52 @@
+import { QueryClient, useQuery } from "@tanstack/react-query"
+import { api } from "@/lib/api"
+import type { Node, Site } from "@/lib/types"
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // The panel is a live view: refetch on focus, but don't hammer.
+      staleTime: 5_000,
+      retry: (n, err) => n < 1 && !(err && "status" in err && (err as { status: number }).status < 500),
+      refetchOnWindowFocus: true,
+    },
+  },
+})
+
+// useApi is useQuery for a GET: the key is the path.
+export function useApi<T>(path: string | null, opts: { refetchInterval?: number; enabled?: boolean } = {}) {
+  return useQuery<T>({
+    queryKey: [path],
+    queryFn: () => api<T>("GET", path!),
+    enabled: path != null && opts.enabled !== false,
+    refetchInterval: opts.refetchInterval,
+  })
+}
+
+// invalidate refetches every query whose path starts with prefix
+// ("/sites" refreshes the list and every site's details).
+export const invalidate = (prefix: string) =>
+  queryClient.invalidateQueries({
+    predicate: (q) => typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith(prefix),
+  })
+
+export const useSites = () => useApi<Site[]>("/sites")
+
+export function useSite(id: string | undefined) {
+  const q = useSites()
+  return { ...q, site: id ? q.data?.find((s) => s.id === id) : undefined }
+}
+
+// Nodes of a cluster ([] on a single server, or for users who can't see them).
+export function useNodes() {
+  return useQuery<Node[]>({
+    queryKey: ["/nodes"],
+    queryFn: () => api<Node[]>("GET", "/nodes").catch(() => []),
+    staleTime: 60_000,
+  })
+}
+
+export function useClustered() {
+  const { data } = useNodes()
+  return (data?.length ?? 0) > 1
+}

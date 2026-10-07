@@ -1,0 +1,1 @@
+import{R as e}from"./button-CMXT4Ezc.js";import{t}from"./legacy-fallback-C5PvoWvz.js";var n=e();function r(){return(0,n.jsx)(t,{path:`support`,title:`Support`})}export{r as default};

@@ -1,0 +1,1 @@
+import{R as e}from"./button-CMXT4Ezc.js";import{t}from"./section-fallback-Bo3xTUdp.js";var n=e();function r({site:e}){return(0,n.jsx)(t,{site:e,section:`uploads`})}export{r as default};
