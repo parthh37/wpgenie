@@ -391,6 +391,8 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) error {
 			return errLastAdmin
 		}
 	}
+	// Their grants cascade; the SFTP logins they added to shared sites wouldn't.
+	s.dropSharedAccess(r.Context(), u.ID)
 	if err := s.Store.DeleteUser(r.Context(), u.ID); err != nil { // sessions cascade
 		return err
 	}

@@ -468,6 +468,7 @@ func serve(cfg *config.Config, node bool) error {
 			log.Error("sftp: logins of a site moved here", "err", err)
 		}
 	}
+	svc.DropSFTPAddedBy = sftpSvc.DeleteAddedBy
 	svc.SiteRemoved = func(ctx context.Context, id string) {
 		sftpSvc.SiteRemoved(ctx, id)
 		pmaSvc.SiteRemoved(ctx, id)

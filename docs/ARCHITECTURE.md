@@ -297,6 +297,29 @@ plans' definitions, billing settings, audit log, self-update, branding. `TestEve
 walks the whole route table as a customer and a reseller (tokens and sessions): every staff-only route
 answers 403 and every route on another account's site, account or job 404.
 
+**Sharing a site** (`internal/api/sharing.go`, `site_grants`). A site's owners (its account's users, its
+reseller's, and staff from operator up) can share it with an existing user of *another* account at a level:
+*viewer* (reads: stats, health, settings, activity; not its files, backups' downloads or WordPress users),
+*developer* (also changes: files, SFTP, database, backups and restores, staging, caches, plugins, updates)
+or *manager* (also its domains, certificate, CDN, mail, protection, and resources that cost the owner:
+scaling, autoscaling, burst). Owners alone see and change who it's shared with and delete the live site; a
+developer may delete staging copies. A staging copy is shared with whoever its live site is, at the same
+level, while both belong to the same account: there are no grants of its own to forget when the live
+site's is taken away. A shared site goes through the same central check as an owned one: `siteAccess`
+finds the grant when the site isn't in the tenant's scope, and the route needs a level, `siteAccessRules`
+or by default viewer for reads and developer for changes (an analyser fix needs the level of the route it
+does the work of, `fixRoutes`). So every route a tenant has on a site works for those
+it is shared with, under the owner's plan and suspension, and `TestEveryLevelIsHeldToItsRoutes` walks the
+route table at each level. Staff and the owner's own users can't be given access (they have it); an unknown
+name and a staff one get the same answer, so the form can't be used to find staff usernames. Shared sites
+are listed with `access` and their jobs and security events are visible; the owner's account, usage and
+its other sites aren't (a shared site's burst balance names only that site). Grants live on the panel and
+go with the site's ownership: deleting the site, making it staff-only or giving it to another account
+removes them, as does deleting the user. SFTP logins record who added them (`added_by`, kept across moves),
+and when someone's access ends, drops to viewer or their user is deleted, the logins they added to the site
+and its staging copies are deleted too, on whichever server they live (`DELETE /cluster/v1/sites/{id}/sftp`).
+Files they changed, keys added to others' logins and WordPress accounts they made stay; the panel says so.
+
 **Plans.** Per account: sites (staging copies included), disk (site files plus databases) and bandwidth per
 UTC calendar month; per site: replicas, memory and CPUs per replica, domains; features; the backup
 destinations tenants may choose; and what happens past the bandwidth: *notify* (default) or *suspend*.

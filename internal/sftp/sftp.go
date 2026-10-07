@@ -163,6 +163,9 @@ type UserInput struct {
 	Suffix     string   `json:"suffix"`
 	Password   bool     `json:"password"` // generate a password (shown once)
 	PublicKeys []string `json:"public_keys"`
+	// Who adds it (store.SFTPUser.AddedBy, AddedByName): set by the API.
+	AddedBy     string `json:"-"`
+	AddedByName string `json:"-"`
 }
 
 func (s *Service) Users(ctx context.Context, siteID string) ([]*store.SFTPUser, error) {
@@ -195,7 +198,7 @@ func (s *Service) Add(ctx context.Context, siteID string, in UserInput) (*store.
 	if _, err := s.Store.GetSFTPUser(ctx, name); err == nil {
 		return nil, "", fmt.Errorf("%w: login %s exists", ErrConflict, name)
 	}
-	u := &store.SFTPUser{Username: name, SiteID: siteID, PublicKeys: keys}
+	u := &store.SFTPUser{Username: name, SiteID: siteID, PublicKeys: keys, AddedBy: in.AddedBy, AddedByName: in.AddedByName}
 	var pw string
 	if in.Password {
 		pw = newPassword()
@@ -283,6 +286,34 @@ func (s *Service) Delete(ctx context.Context, siteID, name string) error {
 		return err
 	}
 	return s.reconcileLocked(ctx, []string{name})
+}
+
+// DeleteAddedBy removes the logins of a site that addedBy added (and ends
+// their sessions): their access to the site ended. It returns how many.
+func (s *Service) DeleteAddedBy(ctx context.Context, siteID, addedBy string) (int, error) {
+	if addedBy == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	users, err := s.Store.SFTPUsers(ctx, siteID)
+	if err != nil {
+		return 0, err
+	}
+	var gone []string
+	for _, u := range users {
+		if u.AddedBy != addedBy {
+			continue
+		}
+		if err := s.Store.DeleteSFTPUser(ctx, u.Username); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return len(gone), err
+		}
+		gone = append(gone, u.Username)
+	}
+	if len(gone) == 0 {
+		return 0, nil
+	}
+	return len(gone), s.reconcileLocked(ctx, gone)
 }
 
 // SiteRemoved drops a deleted site's logins (the store already did) from

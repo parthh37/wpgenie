@@ -89,7 +89,7 @@ function CreateStaging({ site }: { site: Site }) {
       title="Create a staging site"
       description="A full copy of this site (files and database) on its own domain, to try updates, themes and changes safely. Point the domain's DNS at this server first."
     >
-      {s.canChange ? (
+      {s.canChangeSite(site) ? (
         <form
           className="flex flex-wrap items-end gap-3"
           onSubmit={(e) => {
@@ -148,9 +148,9 @@ function HasStaging({ site, staging }: { site: Site; staging: Site }) {
           </Button>
           <Button variant="tinted" onClick={() => navigate(sitePath(staging.id, "staging"))}>
             <ArrowUpFromLineIcon data-icon="inline-start" />
-            {s.canChange ? "Push to live…" : "Open"}
+            {s.canChangeSite(site) && s.canChangeSite(staging) ? "Push to live…" : "Open"}
           </Button>
-          {s.canChange && (
+          {s.canChangeSite(staging) && (
             <Button
               variant="destructive"
               onClick={async () => {
@@ -220,7 +220,7 @@ function StagingCopy({ site, parent }: { site: Site; parent?: Site }) {
         </p>
       </Section>
 
-      {s.canChange && (
+      {s.canChangeSite(site) && parent && s.canChangeSite(parent) && (
         <Section
           icon={ArrowUpFromLineIcon}
           tint="teal"
@@ -293,7 +293,7 @@ function StagingCopy({ site, parent }: { site: Site; parent?: Site }) {
         </Section>
       )}
 
-      {s.canChange && (
+      {s.canChangeSite(site) && (
         <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-danger/30 bg-danger-fill/5 p-4">
           <div className="min-w-0 flex-1">
             <h3 className="text-[0.9375rem] font-semibold">Delete this staging site</h3>

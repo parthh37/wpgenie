@@ -48,7 +48,7 @@ export default function PluginsSection({ site }: SectionProps) {
       title="Plugin check"
       description="Checks each plugin against wordpress.org (closed or abandoned), compares its files with the published release (modified or nulled copies) and measures what it costs to load the front page. Runs nightly; takes 10–30 seconds."
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button variant="tinted" size="sm" disabled={busy} onClick={analyse}>
             <ScanSearchIcon data-icon="inline-start" />
             {busy ? "Analysing… (up to a minute)" : "Analyse now"}

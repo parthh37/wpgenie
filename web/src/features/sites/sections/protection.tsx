@@ -42,7 +42,7 @@ export default function ProtectionSection({ site }: SectionProps) {
     staleTime: Infinity,
   })
   const level = levels.data ? levelOf(site, levels.data) : undefined
-  const off = !active || busy || !s.canChange
+  const off = !active || busy || !s.canChangeSite(site, "manager")
 
   const put = async (change: ShieldChange, msg: string) => {
     setBusy(true)
@@ -190,7 +190,7 @@ function AttackBanner({ site }: SectionProps) {
       icon={ShieldAlertIcon}
       title="Under attack"
       actions={
-        s.canChange && (
+        s.canChangeSite(site, "manager") && (
           <Button variant="tinted" size="sm" disabled={busy} onClick={over}>
             It's over
           </Button>

@@ -478,15 +478,34 @@ type SiteOwner struct {
 	Suspended bool   `json:"suspended"`
 }
 
-// AssignSite makes an account own a site (moving it if another did).
+// AssignSite makes an account own a site (moving it if another did). A
+// site moving to another account stops being shared: its new owners
+// decide who else reaches it.
 func (s *Store) AssignSite(ctx context.Context, siteID string, accountID int64) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO site_accounts (site_id, account_id, created_at) VALUES (?, ?, ?)
-		ON CONFLICT (site_id) DO UPDATE SET account_id = excluded.account_id`, siteID, accountID, time.Now().Unix())
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var prev int64
+	err = tx.QueryRowContext(ctx, `SELECT account_id FROM site_accounts WHERE site_id = ?`, siteID).Scan(&prev)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO site_accounts (site_id, account_id, created_at) VALUES (?, ?, ?)
+		ON CONFLICT (site_id) DO UPDATE SET account_id = excluded.account_id`, siteID, accountID, time.Now().Unix()); err != nil {
+		return err
+	}
+	if prev != accountID {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM site_grants WHERE site_id = ?`, siteID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// UnassignSite forgets a site's owner (and its measured usage): for sites
-// removed some other way than DeleteSite, e.g. on another node.
+// UnassignSite forgets a site's owner (and its measured usage and grants):
+// for sites removed some other way than DeleteSite, e.g. on another node.
 func (s *Store) UnassignSite(ctx context.Context, siteID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -500,7 +519,8 @@ func (s *Store) UnassignSite(ctx context.Context, siteID string) error {
 }
 
 func deleteSiteOwnership(ctx context.Context, tx *Tx, siteID string) error {
-	for _, q := range []string{`DELETE FROM site_accounts WHERE site_id = ?`, `DELETE FROM site_usage WHERE site_id = ?`} {
+	for _, q := range []string{`DELETE FROM site_accounts WHERE site_id = ?`, `DELETE FROM site_usage WHERE site_id = ?`,
+		`DELETE FROM site_grants WHERE site_id = ?`} {
 		if _, err := tx.ExecContext(ctx, q, siteID); err != nil {
 			return err
 		}

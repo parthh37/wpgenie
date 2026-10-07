@@ -108,7 +108,7 @@ function Schedule({ site, policy, repos, summary }: { site: Site; policy: Backup
     keep_weekly: String(p.keep_weekly),
     keep_monthly: String(p.keep_monthly),
   })
-  const ro = !s.canChange
+  const ro = !s.canChangeSite(site)
   const id = (k: string) => `bk-${k}-${site.id}`
 
   const save = async () => {
@@ -151,7 +151,7 @@ function Schedule({ site, policy, repos, summary }: { site: Site; policy: Backup
       title="Schedule"
       description={<>Now: {summary}.</>}
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <ActionButton run={save} variant="default">
             Save schedule
           </ActionButton>
@@ -214,7 +214,7 @@ function BackupList({ site, data, repoName }: { site: Site; data: SiteBackups; r
       tint="orange"
       title="Backups"
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button onClick={now} disabled={backup.running}>
             <HardDriveIcon data-icon="inline-start" />
             {backup.running ? "Backing up…" : "Back up now"}
@@ -250,7 +250,7 @@ function BackupList({ site, data, repoName }: { site: Site; data: SiteBackups; r
         }))}
         empty={
           <p className="py-2 text-sm text-muted-foreground">
-            No backups yet.{s.canChange && " Back up now, or choose a destination and a schedule above."}
+            No backups yet.{s.canChangeSite(site) && " Back up now, or choose a destination and a schedule above."}
           </p>
         }
       />
@@ -270,7 +270,7 @@ function BackupActions({ site, b }: { site: Site; b: BackupInfo }) {
   const [restoring, setRestoring] = useState(false)
   const [what, setWhat] = useState<What>("both")
   const restore = useSiteJob(site.id, ["restore"])
-  if (!s.canChange) return null
+  if (!s.canChangeSite(site)) return null
   const base = `/sites/${site.id}/backups/${encodeURIComponent(b.repo_id)}/${b.id}`
 
   const restoreAsNew = async () => {

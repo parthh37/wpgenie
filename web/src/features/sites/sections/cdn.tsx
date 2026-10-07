@@ -154,7 +154,7 @@ function CDNForm({ site, st, show }: { site: Site; st: CDNStatus | undefined; sh
     }
   }
 
-  const locked = !active || !s.canChange
+  const locked = !active || !s.canChangeSite(site, "manager")
   const cf = provider === "cloudflare"
   const bunny = provider === "bunny"
   const same = provider === current
@@ -279,17 +279,19 @@ function CDNForm({ site, st, show }: { site: Site; st: CDNStatus | undefined; sh
           </div>
         )}
 
-        {s.canChange && (
+        {s.canChangeSite(site) && (
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={!active || saving}>
-              {saving ? "Checking…" : "Save"}
-            </Button>
+            {s.canChangeSite(site, "manager") && (
+              <Button type="submit" disabled={!active || saving}>
+                {saving ? "Checking…" : "Save"}
+              </Button>
+            )}
             {on && current !== "generic" && (
               <FlashButton done="Purged ✓" disabled={!active} run={() => api("POST", `/sites/${site.id}/cdn/purge`)}>
                 Purge CDN
               </FlashButton>
             )}
-            {on && (
+            {on && s.canChangeSite(site, "manager") && (
               <Button type="button" variant="destructive" disabled={!active} onClick={off}>
                 Turn off
               </Button>

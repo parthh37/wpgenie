@@ -87,7 +87,7 @@ function Sftp({ site, info }: { site: Site; info: SFTPInfo }) {
       title="SFTP"
       description="Logins only see this site's directory (the WordPress install in public/) and can't run commands. Files they upload belong to the site, like WordPress's own."
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button onClick={() => setAdding(true)}>
             <PlusIcon data-icon="inline-start" />
             Add login
@@ -125,10 +125,13 @@ function Sftp({ site, info }: { site: Site; info: SFTPInfo }) {
           rows={info.users.map((u) => ({
             key: u.username,
             cells: [
-              <code>{u.username}</code>,
+              <div className="flex flex-col">
+                <code>{u.username}</code>
+                {u.added_by && <span className="text-xs text-muted-foreground">added by {u.added_by}</span>}
+              </div>,
               u.password ? "yes" : "no",
               String(u.public_keys.length),
-              s.canChange && (
+              s.canChangeSite(site) && (
                 <div className="flex flex-wrap justify-end gap-1.5">
                   <ActionButton run={() => newPassword(u)} size="sm">
                     {u.password ? "New password" : "Add password"}
@@ -277,7 +280,7 @@ function Database({ site, info }: { site: Site; info: SFTPInfo }) {
         "The link works once, within 2 minutes; the session ends after 15 minutes idle or an hour."
       }
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button onClick={open} disabled={busy}>
             <ExternalLinkIcon data-icon="inline-start" />
             Open phpMyAdmin

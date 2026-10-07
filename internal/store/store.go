@@ -669,6 +669,8 @@ var migrations = []string{
 	supportSchema,
 	// Log shipping to object storage: see logship.go.
 	logshipSchema,
+	// Sites shared with users of other accounts: see grants.go.
+	grantsSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

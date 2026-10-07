@@ -50,7 +50,7 @@ function PhpForm({ site, versions }: { site: Site; versions: string[] }) {
       max_input_vars: String(p.max_input_vars || 0),
     }
   })
-  const ro = !s.canChange || job.running
+  const ro = !s.canChangeSite(site) || job.running
   // The site's version may be one this server no longer offers.
   const options = versions.includes(site.php_version) ? versions : [site.php_version, ...versions]
 
@@ -121,7 +121,7 @@ function PhpForm({ site, versions }: { site: Site; versions: string[] }) {
             )
           })}
         </div>
-        {s.canChange && (
+        {s.canChangeSite(site) && (
           <div>
             <Button type="submit" disabled={job.running}>
               {job.running ? "Applying…" : "Apply"}

@@ -24,7 +24,8 @@ import (
 // path has a site ({id} under /sites/), an account ({id} under
 // /accounts/) or a job ({id} under /jobs/) is only served when the tenant
 // owns it: their own account's, or for a reseller also their customers'.
-// Anything else answers 404, as if it didn't exist. Other path values
+// A site may also have been shared with them, at a level each route checks
+// (sharing.go). Anything else answers 404, as if it didn't exist. Other path values
 // ({user}, {domain}, {repo}, {backup}) are parts of that site or account,
 // and the handlers look them up within it. A tenant route with a path
 // value of unknown ownership makes the server refuse to start.
@@ -164,7 +165,7 @@ var tenantRoutes = map[string]tenantRule{
 	"POST /api/v1/sites/{id}/plugins":                         anyTenant,
 	"GET /api/v1/sites/{id}/plugins":                          anyTenant,
 	"GET /api/v1/sites/{id}/analysis":                         anyTenant,
-	"POST /api/v1/sites/{id}/analysis/fix":                    anyTenant, // each fix is a route tenants have
+	"POST /api/v1/sites/{id}/analysis/fix":                    anyTenant, // each fix is a route tenants have (and a level: fixRoutes)
 	"GET /api/v1/sites/{id}/wp-admin/users":                   anyTenant,
 	"POST /api/v1/sites/{id}/wp-admin/users":                  anyTenant,
 	"DELETE /api/v1/sites/{id}/wp-admin/users/{user}":         anyTenant,
@@ -269,6 +270,9 @@ func checkTenantRoute(pattern string) {
 	if rule.feature != "" && sc != scopeSite {
 		panic("api: tenant route " + pattern + " needs a plan feature but has no site")
 	}
+	if _, ok := siteAccessRules[pattern]; ok && sc != scopeSite {
+		panic("api: tenant route " + pattern + " has a site access level but no site")
+	}
 }
 
 // tenant is what the route wrapper resolved for a tenant request.
@@ -278,9 +282,13 @@ type tenant struct {
 	// Suspended: the account (or its reseller) is suspended.
 	Suspended bool
 	// For routes on a site: the account owning it (the tenant's own or,
-	// for a reseller, a customer's) and that account's limits.
+	// for a reseller, a customer's, or another account's that shared it)
+	// and that account's limits.
 	SiteAccount *store.Account
 	SiteLimits  billing.Limits
+	// Access is the level the site is shared with the tenant at (see
+	// sharing.go); "" when it is in their scope.
+	Access string
 }
 
 type tenantKey struct{}
@@ -330,16 +338,22 @@ func (s *Server) authorizeTenant(r *http.Request, pattern string, p *Principal) 
 	notFound := fmt.Errorf("%w", store.ErrNotFound)
 	switch sc {
 	case scopeSite:
-		owner, ok := s.siteOwnerInScope(ctx, p, r.PathValue("id"))
+		owner, access, ok := s.siteAccess(ctx, p, r.PathValue("id"))
 		if !ok {
 			return nil, http.StatusNotFound, notFound
 		}
-		t.SiteAccount = owner
+		if need := requiredAccess(pattern); !accessAllows(access, need) {
+			if need == accessOwner {
+				return nil, http.StatusForbidden, errors.New("forbidden: only the site's owner can do this")
+			}
+			return nil, http.StatusForbidden, fmt.Errorf("forbidden: this needs %s access to the site; you have %s", need, access)
+		}
+		t.SiteAccount, t.Access = owner, access
 		if t.SiteLimits, err = s.Billing.LimitsFor(ctx, owner); err != nil {
 			return nil, http.StatusForbidden, errTenantForbidden
 		}
-		// A reseller's customer may be suspended while the reseller isn't:
-		// its sites stay frozen for the reseller too.
+		// A reseller's customer (or an account sharing the site) may be
+		// suspended while the tenant isn't: its sites stay frozen for them too.
 		if owner.ID != acct.ID && mutating {
 			if suspended, err := s.Billing.Suspended(ctx, owner); err != nil || suspended {
 				return nil, http.StatusForbidden, errors.New("forbidden: the account owning this site is suspended")
@@ -461,14 +475,15 @@ func (s *Server) ownedSites(ctx context.Context, p *Principal) (map[string]int64
 	return out, nil
 }
 
-// jobVisible: a tenant sees jobs of their sites, and jobs they started
-// (a failed create's site is gone, its job isn't).
+// jobVisible: a tenant sees jobs of their sites and of sites shared with
+// them, and jobs they started (a failed create's site is gone, its job
+// isn't).
 func (s *Server) jobVisible(ctx context.Context, p *Principal, id int64) bool {
 	j, err := s.Store.GetJob(ctx, id)
 	if err != nil {
 		return false
 	}
-	if _, ok := s.siteOwnerInScope(ctx, p, j.SiteID); ok {
+	if _, _, ok := s.siteAccess(ctx, p, j.SiteID); ok {
 		return true
 	}
 	owner, err := s.Store.JobOwner(ctx, id)

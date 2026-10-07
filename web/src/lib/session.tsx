@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { api, onAuthEvent } from "@/lib/api"
 import { queryClient } from "@/lib/query"
 import { navigate } from "@/lib/router"
-import type { AuthState, User } from "@/lib/types"
+import type { AuthState, Site, SiteAccess, User } from "@/lib/types"
 
 // The signed-in user and what their role may do. Roles: admin, operator,
 // viewer (staff); customer and reseller (tenants: users of an account).
@@ -18,6 +18,9 @@ export interface Session {
   isReseller: boolean
   // Not a viewer: may change things.
   canChange: boolean
+  // May change this site at this level (default developer): canChange, and
+  // for a site shared with them, shared at least at it.
+  canChangeSite: (site: Pick<Site, "access">, level?: Exclude<SiteAccess, "viewer">) => boolean
   // Admins and tenants create (and delete) sites.
   canCreate: boolean
   // Staff of at least this role (viewer < operator < admin); never tenants.
@@ -29,6 +32,13 @@ export interface Session {
 }
 
 const RANK: Record<string, number> = { viewer: 0, operator: 1, admin: 2 }
+const ACCESS_RANK: Record<string, number> = { viewer: 1, developer: 2, manager: 3 }
+
+// accessAllows: whether a site's access (absent: you own it) reaches level.
+export const accessAllows = (access: SiteAccess | undefined, level: SiteAccess) =>
+  !access || (ACCESS_RANK[access] ?? 0) >= ACCESS_RANK[level]
+
+export const ACCESS_LABELS: Record<SiteAccess, string> = { viewer: "Viewer", developer: "Developer", manager: "Manager" }
 const Ctx = createContext<Session | null>(null)
 const KEY = ["auth-state"]
 
@@ -55,6 +65,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const me = q.data?.user ?? null
     const role = me?.role
     const isTenant = role === "customer" || role === "reseller"
+    const canChange = !!me && role !== "viewer"
     return {
       state: q.data,
       loading: q.isLoading,
@@ -63,7 +74,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       isTenant,
       isStaff: !!me && !isTenant,
       isReseller: role === "reseller",
-      canChange: !!me && role !== "viewer",
+      canChange,
+      canChangeSite: (site, level = "developer") => canChange && accessAllows(site.access, level),
       canCreate: role === "admin" || isTenant,
       atLeast: (r) => !!me && !isTenant && (RANK[role ?? ""] ?? -1) >= RANK[r],
       mustSetup2FA: !!me && !!q.data?.require_2fa && !me.totp_enabled,

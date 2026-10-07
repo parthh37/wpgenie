@@ -289,7 +289,8 @@ func panelOnly(pattern string) bool {
 			return true
 		}
 	}
-	return pattern == "PUT /api/v1/sites/{id}/smtp"
+	// Who a site is shared with is the panel's too (sharing.go).
+	return pattern == "PUT /api/v1/sites/{id}/smtp" || strings.HasPrefix(path, "/api/v1/sites/{id}/access")
 }
 
 // setRemoteSMTP turns a remote site's WordPress mail on or off: the mail
@@ -752,6 +753,9 @@ func (s *Server) deleteRemoteSite(w http.ResponseWriter, r *http.Request, node s
 	tenant := tenantOf(r) != nil
 	if cs.Site.ParentID == "" && !tenant && auth.Level(principalFrom(r.Context()).Role) < auth.Level(admin) {
 		return errForbidden
+	}
+	if t := tenantOf(r); cs.Site.ParentID == "" && t != nil && t.Access != "" {
+		return errOwnerDeletes
 	}
 	var acctID int64
 	if o, err := s.Store.SiteOwnerOf(r.Context(), cs.SiteID); err == nil {

@@ -79,6 +79,18 @@ func (s *Service) ClusterHandler() http.Handler {
 		}
 		writeClusterJSON(w, http.StatusOK, st)
 	})
+	mux.HandleFunc("DELETE /cluster/v1/sites/{id}/sftp", func(w http.ResponseWriter, r *http.Request) {
+		if s.DropSFTPAddedBy == nil {
+			writeClusterJSON(w, http.StatusOK, map[string]int{"deleted": 0})
+			return
+		}
+		n, err := s.DropSFTPAddedBy(r.Context(), r.PathValue("id"), r.URL.Query().Get("added_by"))
+		if err != nil {
+			clusterError(w, err)
+			return
+		}
+		writeClusterJSON(w, http.StatusOK, map[string]int{"deleted": n})
+	})
 	mux.HandleFunc("PUT /cluster/v1/repos/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var in RepoRecord
 		if err := decodeCluster(w, r, &in); err != nil {

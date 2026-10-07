@@ -18,13 +18,17 @@ type SFTPUser struct {
 	HasPass    bool      `json:"password"`
 	PublicKeys []string  `json:"public_keys"`
 	CreatedAt  time.Time `json:"created_at"`
+	// AddedBy is who added the login ("user:<id>", as job owners; "" for
+	// logins older than the field), AddedByName their name then.
+	AddedBy     string `json:"-"`
+	AddedByName string `json:"added_by,omitempty"`
 }
 
 func scanSFTPUser(row interface{ Scan(...any) error }) (*SFTPUser, error) {
 	var u SFTPUser
 	var keys string
 	var created int64
-	err := row.Scan(&u.Username, &u.SiteID, &u.Password, &keys, &created)
+	err := row.Scan(&u.Username, &u.SiteID, &u.Password, &keys, &created, &u.AddedBy, &u.AddedByName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -40,11 +44,11 @@ func scanSFTPUser(row interface{ Scan(...any) error }) (*SFTPUser, error) {
 	return &u, nil
 }
 
-const sftpCols = `username, site_id, password, public_keys, created_at`
+const sftpCols = `username, site_id, password, public_keys, created_at, added_by, added_by_name`
 
 func (s *Store) CreateSFTPUser(ctx context.Context, u *SFTPUser) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sftp_users (`+sftpCols+`) VALUES (?, ?, ?, ?, ?)`,
-		u.Username, u.SiteID, u.Password, strings.Join(u.PublicKeys, "\n"), time.Now().Unix())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sftp_users (`+sftpCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		u.Username, u.SiteID, u.Password, strings.Join(u.PublicKeys, "\n"), time.Now().Unix(), u.AddedBy, u.AddedByName)
 	return err
 }
 

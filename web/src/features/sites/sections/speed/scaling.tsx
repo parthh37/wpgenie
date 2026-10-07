@@ -52,7 +52,7 @@ function SizeForm({ site }: { site: Site }) {
   const [memory, setMemory] = useState(String(site.memory_mb))
   const [cpus, setCpus] = useState(String(site.cpus))
   const [busy, setBusy] = useState(false)
-  const locked = !active || !s.canChange || busy
+  const locked = !active || !s.canChangeSite(site, "manager") || busy
 
   const apply = async (e: FormEvent) => {
     e.preventDefault()
@@ -100,7 +100,7 @@ function SizeForm({ site }: { site: Site }) {
             ))}
           </NativeSelect>
         </Field>
-        {s.canChange && (
+        {s.canChangeSite(site, "manager") && (
           <Button type="submit" disabled={locked}>
             {busy ? "Scaling…" : "Apply"}
           </Button>
@@ -125,7 +125,7 @@ function AutoscaleForm({ site }: { site: Site }) {
   const [workers, setWorkers] = useState(String(site.target_workers || 0))
   const [ms, setMs] = useState(String(site.target_response_ms || 0))
   const [busy, setBusy] = useState(false)
-  const locked = !active || !s.canChange || busy
+  const locked = !active || !s.canChangeSite(site, "manager") || busy
 
   const save = async (e: FormEvent) => {
     e.preventDefault()
@@ -181,7 +181,7 @@ function AutoscaleForm({ site }: { site: Site }) {
           setMs,
           { min: 0, max: 30000, step: 50 }
         )}
-        {s.canChange && (
+        {s.canChangeSite(site, "manager") && (
           <Button type="submit" variant="tinted" disabled={locked}>
             Save
           </Button>

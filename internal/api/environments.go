@@ -40,9 +40,10 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) error {
 	}
 	siteID, active := r.URL.Query().Get("site"), r.URL.Query().Get("active") == "1"
 	if tenantOf(r) != nil {
-		// Their sites' jobs, and those they started (a failed create).
+		// Their sites' jobs (shared sites' too), and those they started (a
+		// failed create).
 		p := principalFrom(r.Context())
-		owned, err := s.ownedSites(r.Context(), p)
+		owned, _, err := s.visibleSites(r.Context(), p)
 		if err != nil {
 			return err
 		}
@@ -343,13 +344,19 @@ func (s *Server) createStaging(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	// The copy is the owner's, like the live site, and shared like it
+	// (siteAccess).
+	view := siteView{Site: st, AccountID: acctID}
+	if t := tenantOf(r); t != nil {
+		view.Access = t.Access
+	}
 	if acctID != 0 {
 		if err := s.assignNewSite(ctx, st.ID, acctID); err != nil {
 			return err
 		}
 	}
 	s.announceSite(id, st.ID, acctID)
-	return jobAccepted(w, id, map[string]any{"site": siteView{st, acctID}})
+	return jobAccepted(w, id, map[string]any{"site": view})
 }
 
 func (s *Server) pushStaging(w http.ResponseWriter, r *http.Request) error {
@@ -364,7 +371,9 @@ func (s *Server) pushStaging(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if _, ok := s.siteOwnerInScope(r.Context(), principalFrom(r.Context()), stg.ParentID); !ok {
+		// Shared with them, it needs the level the push needs here.
+		_, access, ok := s.siteAccess(r.Context(), principalFrom(r.Context()), stg.ParentID)
+		if !ok || !accessAllows(access, requiredAccess("POST /api/v1/sites/{id}/push")) {
 			return fmt.Errorf("%w: the live site isn't yours", errForbidden)
 		}
 	}
@@ -599,6 +608,10 @@ func (s *Server) addSFTP(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
+	// Recorded so a login goes with its adder's access to a shared site
+	// (sharing.go); on a node, the panel's user it forwarded for.
+	p := principalFrom(r.Context())
+	in.AddedBy, in.AddedByName = p.owner(), p.Name
 	u, pw, err := s.SFTP.Add(r.Context(), r.PathValue("id"), in)
 	if err != nil {
 		return err

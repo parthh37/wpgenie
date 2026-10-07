@@ -35,7 +35,7 @@ export function CacheCard({ site }: { site: Site }) {
     setCache(saved)
   }
 
-  const locked = !active || !s.canChange || busy
+  const locked = !active || !s.canChangeSite(site) || busy
   const change = async (next: CacheState) => {
     setCache(next)
     setBusy(true)
@@ -55,7 +55,7 @@ export function CacheCard({ site }: { site: Site }) {
       tint="blue"
       title="Speed"
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <FlashButton
             done="Purged ✓"
             disabled={!active}
@@ -137,13 +137,13 @@ export function ImagesCard({ site }: { site: Site }) {
             <FieldLabel htmlFor={`images-${site.id}`} className="sr-only">
               Images
             </FieldLabel>
-            <NativeSelect id={`images-${site.id}`} value={value} disabled={!active || !s.canChange || busy} onChange={(e) => change(e.target.value)}>
+            <NativeSelect id={`images-${site.id}`} value={value} disabled={!active || !s.canChangeSite(site) || busy} onChange={(e) => change(e.target.value)}>
               <NativeSelectOption value="">Originals only</NativeSelectOption>
               <NativeSelectOption value="webp">WebP</NativeSelectOption>
               <NativeSelectOption value="avif,webp">AVIF, else WebP</NativeSelectOption>
             </NativeSelect>
           </Field>
-          {s.canChange && value && (
+          {s.canChangeSite(site) && value && (
             <Button type="button" variant="tinted" disabled={!active || converting} onClick={convert}>
               Convert now
             </Button>

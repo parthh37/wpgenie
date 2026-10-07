@@ -93,7 +93,7 @@ export default function WordpressSection({ site }: SectionProps) {
         description="Sign in to wp-admin as any administrator without their password: a one-time link on the site's own domain opens a normal WordPress session (listed in that user's sessions, ended by logging out). Resetting a password ends all of that user's sessions; WordPress sends no e-mail about it."
       >
         <div className="flex flex-wrap gap-2">
-          {s.canChange ? (
+          {s.canChangeSite(site) ? (
             <Button disabled={busy} onClick={signIn} title="Sign in to wp-admin (no WordPress password needed)">
               <LogInIcon data-icon="inline-start" />
               Sign in to wp-admin
@@ -140,7 +140,7 @@ function Users({ site }: { site: Site }) {
           : undefined
       }
       action={
-        s.canChange && (
+        s.canChangeSite(site) && (
           <Button onClick={() => setAdding(true)}>
             <PlusIcon data-icon="inline-start" />
             Add user
@@ -174,7 +174,7 @@ function Users({ site }: { site: Site }) {
               {u.name && u.name !== u.login && <span className="text-sm font-normal text-muted-foreground">{u.name}</span>}
             </div>,
             u.email,
-            s.canChange ? (
+            s.canChangeSite(site) ? (
               <div className="flex flex-wrap justify-end gap-2">
                 {u.role === "administrator" && (
                   <Button variant="tinted" size="sm" onClick={() => wpLogin(site, u.id)}>

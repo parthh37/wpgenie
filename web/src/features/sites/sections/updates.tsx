@@ -79,7 +79,7 @@ function Settings({ site }: { site: Site }) {
             id={`${id}-policy`}
             className="w-full"
             value={site.auto_update}
-            disabled={!s.canChange || busy === "policy"}
+            disabled={!s.canChangeSite(site) || busy === "policy"}
             onChange={(e) => setPolicy(e.target.value)}
           >
             <NativeSelectOption value="off">Off</NativeSelectOption>
@@ -89,7 +89,7 @@ function Settings({ site }: { site: Site }) {
           <FieldDescription>Every update takes a snapshot first; if the site stops working afterwards it is restored automatically.</FieldDescription>
         </Field>
         <Label className="items-start font-normal">
-          <Switch className="mt-0.5" checked={site.smtp} disabled={!s.canChange || busy === "smtp"} onCheckedChange={setSMTP} />
+          <Switch className="mt-0.5" checked={site.smtp} disabled={!s.canChangeSite(site, "manager") || busy === "smtp"} onCheckedChange={setSMTP} />
           <span className="flex items-center gap-1.5">
             <MailIcon className="size-4 text-muted-foreground" />
             Send WordPress mail through the mail server
@@ -136,7 +136,7 @@ function Available({ site }: { site: Site }) {
       ) : started ? (
         <Note>Update running: snapshot, update, health check. The result appears below.</Note>
       ) : inv ? (
-        <Pending key={JSON.stringify(inv)} site={site} inv={inv} canChange={s.canChange} onStarted={() => setStarted(true)} />
+        <Pending key={JSON.stringify(inv)} site={site} inv={inv} canChange={s.canChangeSite(site)} onStarted={() => setStarted(true)} />
       ) : (
         <Note>Check to see what WordPress, its plugins and themes can be updated to.</Note>
       )}

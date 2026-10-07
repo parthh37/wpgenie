@@ -59,7 +59,7 @@ export function AdvancedProtection({ site }: { site: Site }) {
   const [f, setF] = useState(() => formOf(site))
   const [busy, setBusy] = useState(false)
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }))
-  const off = !s.canChange || busy
+  const off = !s.canChangeSite(site, "manager") || busy
 
   const save = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -163,7 +163,7 @@ export function AdvancedProtection({ site }: { site: Site }) {
         </Note>
       </div>
 
-      {s.canChange && (
+      {s.canChangeSite(site, "manager") && (
         <div>
           <Button type="submit" variant="tinted" disabled={busy}>
             {busy ? "Saving…" : "Save advanced settings"}
