@@ -1,1 +1,0 @@
-import{z as e}from"./button-D2r7ZwBn.js";import{t}from"./section-fallback-D4VEIe5r.js";var n=e();function r({site:e}){return(0,n.jsx)(t,{site:e,section:`domains`})}export{r as default};

@@ -1,1 +1,0 @@
-import{z as e}from"./button-D2r7ZwBn.js";import{t}from"./legacy-fallback-BkvmBF5m.js";var n=e();function r(){return(0,n.jsx)(t,{path:`billing`,title:`Billing`})}export{r as default};
