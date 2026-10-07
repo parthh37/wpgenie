@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/parthh37/wpgenie/internal/site"
@@ -92,12 +93,36 @@ func (s *Server) siteAnalysis(w http.ResponseWriter, r *http.Request) error {
 }
 
 // analysisFix applies one of the analyser's fixes.
+// fixRoutes: the route each analyser fix does the work of. Someone a site
+// is shared with needs that route's level for the fix (the WordPress
+// settings ones, which have no route, need the fix route's own).
+var fixRoutes = map[string]string{
+	site.FixPageCache:      "PUT /api/v1/sites/{id}/cache",
+	site.FixObjectCache:    "PUT /api/v1/sites/{id}/cache",
+	site.FixImages:         "PUT /api/v1/sites/{id}/images",
+	site.FixOptimize:       "PUT /api/v1/sites/{id}/optimize",
+	site.FixDBCleanup:      "POST /api/v1/sites/{id}/optimize/cleanup",
+	site.FixScan:           "POST /api/v1/sites/{id}/scan",
+	site.FixUpdateSecurity: "POST /api/v1/sites/{id}/updates",
+	site.FixUpdateAll:      "POST /api/v1/sites/{id}/updates",
+	site.FixAutoUpdate:     "PUT /api/v1/sites/{id}/auto-update",
+	site.FixShield:         "PUT /api/v1/sites/{id}/shield",
+	site.FixWAF:            "PUT /api/v1/sites/{id}/shield",
+}
+
 func (s *Server) analysisFix(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		Fix string `json:"fix"`
 	}
 	if err := decode(w, r, &in); err != nil {
 		return err
+	}
+	if t := tenantOf(r); t != nil && t.Access != "" {
+		if route, ok := fixRoutes[in.Fix]; ok {
+			if need := requiredAccess(route); !accessAllows(t.Access, need) {
+				return fmt.Errorf("%w: this fix needs %s access to the site; you have %s", errForbidden, need, t.Access)
+			}
+		}
 	}
 	res, err := s.Sites.ApplyFix(r.Context(), r.PathValue("id"), in.Fix)
 	if err != nil {

@@ -102,6 +102,10 @@ type Service struct {
 	Images  ImageBuilder
 	// Version is WPGenie's version, recorded in backups.
 	Version string
+	// DropSFTPAddedBy removes the SFTP logins of a site someone added (their
+	// access to it ended; see the panel's sharing), returning how many: the
+	// panel asks a node through ClusterHandler.
+	DropSFTPAddedBy func(ctx context.Context, siteID, addedBy string) (int, error)
 	// SiteRemoved is told about deleted sites (SFTP logins, phpMyAdmin
 	// sessions).
 	SiteRemoved func(ctx context.Context, id string)

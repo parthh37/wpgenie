@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/parthh37/wpgenie/internal/auth"
 	"github.com/parthh37/wpgenie/internal/billing"
+	"github.com/parthh37/wpgenie/internal/sftp"
 	"github.com/parthh37/wpgenie/internal/store"
 )
 
@@ -255,9 +257,10 @@ func TestSharingRules(t *testing.T) {
 	}
 }
 
-// TestSharedStagingPush: pushing a shared staging copy into its live site
-// needs the live site at the push's level too.
-func TestSharedStagingPush(t *testing.T) {
+// TestSharedStagingCopies: a live site's staging copies are shared with it,
+// at its level, and stop being when it does; pushing into the live site
+// needs the push's level.
+func TestSharedStagingCopies(t *testing.T) {
 	e := newTenancyEnv(t)
 	ctx := context.Background()
 	nextPort++
@@ -268,14 +271,118 @@ func TestSharedStagingPush(t *testing.T) {
 	if err := e.st.AssignSite(ctx, "sbstg", e.acct["B"].ID); err != nil {
 		t.Fatal(err)
 	}
-	e.share("bob", "sbstg", "alice", auth.AccessDeveloper)
-	var out map[string]string
-	if c := e.as("alice", "POST", "/api/v1/sites/sbstg/push", `{}`, &out); c != 403 || !strings.Contains(out["error"], "live site") {
-		t.Fatalf("push into a live site not shared: %d %v", c, out)
-	}
 	e.share("bob", "sb", "alice", auth.AccessViewer)
-	if c := e.as("alice", "POST", "/api/v1/sites/sbstg/push", `{}`, &out); c != 403 || !strings.Contains(out["error"], "live site") {
-		t.Fatalf("push into a live site shared to view: %d %v", c, out)
+	var sites []siteView
+	if e.as("alice", "GET", "/api/v1/sites", "", &sites); fmt.Sprint(ids(sites)) != "[sa sb sbstg]" || siteIn(sites, "sbstg").Access != "viewer" {
+		t.Fatalf("alice's sites: %v", ids(sites))
+	}
+	var out map[string]string
+	if c := e.as("alice", "POST", "/api/v1/sites/sbstg/push", `{}`, &out); c != 403 || !strings.Contains(out["error"], "developer") {
+		t.Fatalf("a viewer pushing: %d %v", c, out)
+	}
+	// Its own owner's sharing only: given to another account, it isn't.
+	if err := e.st.AssignSite(ctx, "sbstg", e.acct["C"].ID); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.as("alice", "GET", "/api/v1/sites/sbstg", "", nil); c != 404 {
+		t.Fatalf("a copy another account owns: %d", c)
+	}
+	if err := e.st.AssignSite(ctx, "sbstg", e.acct["B"].ID); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.as("alice", "GET", "/api/v1/sites/sbstg", "", nil); c != 200 {
+		t.Fatalf("back with its live site's account: %d", c)
+	}
+	// Revoked on the live site: the copy goes too.
+	if c := e.as("bob", "DELETE", e.grantPath("sb", "alice"), "", nil); c != 204 {
+		t.Fatalf("revoking: %d", c)
+	}
+	if c := e.as("alice", "GET", "/api/v1/sites/sbstg", "", nil); c != 404 {
+		t.Fatalf("the copy of a revoked site: %d", c)
+	}
+}
+
+// TestSharedFixesNeedTheirRoutesLevel: an analyser fix needs the level of
+// the route it does the work of.
+func TestSharedFixesNeedTheirRoutesLevel(t *testing.T) {
+	e := newTenancyEnv(t)
+	e.share("bob", "sb", "alice", auth.AccessDeveloper)
+	for _, fix := range []string{"shield", "waf"} {
+		var out map[string]string
+		if c := e.as("alice", "POST", "/api/v1/sites/sb/analysis/fix", `{"fix":"`+fix+`"}`, &out); c != 403 || !strings.Contains(out["error"], "manager") {
+			t.Errorf("developer applying %s: %d %v", fix, c, out)
+		}
+	}
+	registered := map[string]bool{}
+	for _, rt := range e.api.routes {
+		registered[rt.Pattern] = true
+	}
+	for fix, route := range fixRoutes {
+		if !registered[route] {
+			t.Errorf("fix %s stands in for %s, which isn't a route", fix, route)
+		}
+	}
+}
+
+// fakeDocker lets the SFTP service render logins without a container.
+type fakeDocker struct{}
+
+func (fakeDocker) Run(context.Context, io.Reader, ...string) ([]byte, error) { return nil, nil }
+func (fakeDocker) EnsureBuilt(context.Context, string, string) (string, error) {
+	return "img", nil
+}
+
+// TestSFTPLoginsGoWithAccess: the SFTP logins someone added to a shared
+// site are deleted when they drop to viewer, lose access or are deleted;
+// the owner's stay.
+func TestSFTPLoginsGoWithAccess(t *testing.T) {
+	e := newTenancyEnv(t)
+	e.api.SFTP = &sftp.Service{Cfg: sftp.Config{DataDir: t.TempDir(), SitesDir: t.TempDir()}, Store: e.st,
+		Docker: fakeDocker{}, Log: e.api.Log}
+	logins := func() map[string]string {
+		var info struct {
+			Users []store.SFTPUser `json:"users"`
+		}
+		if c := e.as("bob", "GET", "/api/v1/sites/sb/sftp", "", &info); c != 200 {
+			t.Fatalf("listing logins: %d", c)
+		}
+		out := map[string]string{}
+		for _, u := range info.Users {
+			out[u.Username] = u.AddedByName
+		}
+		return out
+	}
+	add := func(who, suffix string) {
+		var out map[string]any
+		if c := e.as(who, "POST", "/api/v1/sites/sb/sftp", `{"suffix":"`+suffix+`","password":true}`, &out); c != 201 {
+			t.Fatalf("%s adding a login: %d %v", who, c, out)
+		}
+	}
+	e.share("bob", "sb", "alice", auth.AccessDeveloper)
+	add("bob", "own")
+	add("alice", "dev")
+	if l := logins(); len(l) != 2 || l["sb-own"] != "bob" || l["sb-dev"] != "alice" {
+		t.Fatalf("logins %v", l)
+	}
+	e.as("bob", "PUT", e.grantPath("sb", "alice"), `{"access":"viewer"}`, nil)
+	if l := logins(); len(l) != 1 || l["sb-own"] == "" {
+		t.Fatalf("after dropping to viewer: %v", l)
+	}
+	e.as("bob", "PUT", e.grantPath("sb", "alice"), `{"access":"developer"}`, nil)
+	add("alice", "dev")
+	if c := e.as("bob", "DELETE", e.grantPath("sb", "alice"), "", nil); c != 204 {
+		t.Fatalf("revoking: %d", c)
+	}
+	if l := logins(); len(l) != 1 {
+		t.Fatalf("after revoking: %v", l)
+	}
+	e.share("bob", "sb", "alice", auth.AccessDeveloper)
+	add("alice", "dev")
+	if c := e.as("tok", "DELETE", fmt.Sprintf("/api/v1/accounts/%d/users/alice", e.acct["A"].ID), "", nil); c != 204 {
+		t.Fatalf("deleting the user: %d", c)
+	}
+	if l := logins(); len(l) != 1 {
+		t.Fatalf("after deleting the user: %v", l)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -124,11 +125,24 @@ func (s *Server) siteAccess(ctx context.Context, p *Principal, siteID string) (*
 	if siteID == "" || p.UserID == 0 {
 		return nil, "", false
 	}
-	g, err := s.Store.SiteGrant(ctx, siteID, p.UserID)
+	o, err := s.Store.SiteOwnerOf(ctx, siteID)
 	if err != nil {
 		return nil, "", false
 	}
-	o, err := s.Store.SiteOwnerOf(ctx, siteID)
+	g, err := s.Store.SiteGrant(ctx, siteID, p.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		// A staging copy is shared with whoever its live site is, at the
+		// same level, while both are the same account's: so taking the live
+		// site's access away takes its copies' too.
+		st, err2 := s.siteRecord(ctx, siteID)
+		if err2 != nil || st.ParentID == "" {
+			return nil, "", false
+		}
+		if po, err2 := s.Store.SiteOwnerOf(ctx, st.ParentID); err2 != nil || po.AccountID != o.AccountID {
+			return nil, "", false
+		}
+		g, err = s.Store.SiteGrant(ctx, st.ParentID, p.UserID)
+	}
 	if err != nil {
 		return nil, "", false
 	}
@@ -137,6 +151,24 @@ func (s *Server) siteAccess(ctx context.Context, p *Principal, siteID string) (*
 		return nil, "", false
 	}
 	return a, g.Access, true
+}
+
+// stagingCopies are the staging copies of a site that its account owns.
+func (s *Server) stagingCopies(ctx context.Context, siteID string, accountID int64) ([]string, error) {
+	owned, err := s.Store.SiteOwners(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, o := range owned {
+		if o.SiteID == siteID {
+			continue
+		}
+		if st, err := s.siteRecord(ctx, o.SiteID); err == nil && st.ParentID == siteID {
+			out = append(out, o.SiteID)
+		}
+	}
+	return out, nil
 }
 
 // visibleSites maps the sites a tenant reaches to their owning account:
@@ -156,11 +188,84 @@ func (s *Server) visibleSites(ctx context.Context, p *Principal) (owners map[str
 		return nil, nil, err
 	}
 	for _, g := range grants {
-		if _, mine := owners[g.SiteID]; !mine {
-			owners[g.SiteID], shared[g.SiteID] = g.AccountID, g.Access
+		if _, mine := owners[g.SiteID]; mine {
+			continue
+		}
+		owners[g.SiteID], shared[g.SiteID] = g.AccountID, g.Access
+		// Its staging copies come with it (siteAccess).
+		copies, err := s.stagingCopies(ctx, g.SiteID, g.AccountID)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, id := range copies {
+			if _, seen := owners[id]; !seen {
+				owners[id], shared[id] = g.AccountID, g.Access
+			}
 		}
 	}
 	return owners, shared, nil
+}
+
+// dropAccess removes what a user whose access to a shared site ended (or
+// dropped to viewer) still holds there without the panel: the SFTP logins
+// they added to it and its staging copies, wherever those live. (Files they
+// changed, keys they added to others' logins and WordPress accounts they
+// made stay: the owner checks those.)
+func (s *Server) dropAccess(ctx context.Context, siteID string, userID int64) error {
+	ctx = context.WithoutCancel(ctx)
+	ids := []string{siteID}
+	if o, err := s.Store.SiteOwnerOf(ctx, siteID); err == nil {
+		copies, err := s.stagingCopies(ctx, siteID, o.AccountID)
+		if err != nil {
+			return err
+		}
+		ids = append(ids, copies...)
+	}
+	who := (&Principal{UserID: userID}).owner()
+	var errs []error
+	for _, id := range ids {
+		if s.Cluster != nil {
+			node, remote, err := s.Cluster.SiteNode(ctx, id)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if remote {
+				path := "/cluster/v1/sites/" + url.PathEscape(id) + "/sftp?added_by=" + url.QueryEscape(who)
+				if err := s.Cluster.Call(ctx, node, http.MethodDelete, path, nil, nil); err != nil {
+					errs = append(errs, fmt.Errorf("site %s: %w", id, err))
+				}
+				continue
+			}
+		}
+		if s.SFTP != nil {
+			if _, err := s.SFTP.DeleteAddedBy(ctx, id, who); err != nil {
+				errs = append(errs, fmt.Errorf("site %s: %w", id, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// dropSharedAccess is dropAccess for every site shared with a user, before
+// the user is deleted (their grants go with them).
+func (s *Server) dropSharedAccess(ctx context.Context, userID int64) {
+	grants, err := s.Store.UserSiteGrants(ctx, userID)
+	if err != nil {
+		s.Log.Error("listing a deleted user's shared sites", "user", userID, "err", err)
+		return
+	}
+	for _, g := range grants {
+		if err := s.dropAccess(ctx, g.SiteID, userID); err != nil {
+			s.Log.Error("removing a deleted user's SFTP logins", "site", g.SiteID, "user", userID, "err", err)
+		}
+	}
+}
+
+// errAccessLeft: access ended, but what the user held there couldn't all
+// be removed.
+func errAccessLeft(err error) error {
+	return fmt.Errorf("their access is removed, but removing the SFTP logins they added failed (delete them under SFTP): %w", err)
 }
 
 // ---- Handlers (the site's owners and staff) ----
@@ -259,6 +364,12 @@ func (s *Server) setSiteGrant(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Store.SetSiteGrantAccess(ctx, id, uid, in.Access); err != nil {
 		return err
 	}
+	// A viewer holds no SFTP logins.
+	if !accessAllows(in.Access, auth.AccessDeveloper) {
+		if err := s.dropAccess(ctx, id, uid); err != nil {
+			return errAccessLeft(err)
+		}
+	}
 	g, err := s.Store.SiteGrant(ctx, id, uid)
 	if err != nil {
 		return err
@@ -273,6 +384,9 @@ func (s *Server) unshareSite(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err := s.Store.DeleteSiteGrant(r.Context(), r.PathValue("id"), uid); err != nil {
 		return err
+	}
+	if err := s.dropAccess(r.Context(), r.PathValue("id"), uid); err != nil {
+		return errAccessLeft(err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil

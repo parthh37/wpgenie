@@ -626,6 +626,8 @@ func (s *Server) deleteAccountUser(w http.ResponseWriter, r *http.Request) error
 	if principalFrom(r.Context()).UserID == u.ID {
 		return fmt.Errorf("%w: you can't delete your own account", errBadRequest)
 	}
+	// Their grants cascade; the SFTP logins they added to shared sites wouldn't.
+	s.dropSharedAccess(r.Context(), u.ID)
 	if err := s.Store.DeleteUser(r.Context(), u.ID); err != nil { // sessions and tokens cascade
 		return err
 	}

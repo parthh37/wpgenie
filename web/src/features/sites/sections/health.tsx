@@ -168,7 +168,8 @@ function Report({ site, a }: { site: Site; a: Analysis }) {
 function FixButton({ site, f }: { site: Site; f: Finding }) {
   const s = useSession()
   const [busy, setBusy] = useState(false)
-  if (!s.canChangeSite(site) || !f.fix) return null
+  // Turning protection on is Protection's change: manager, on a shared site.
+  if (!f.fix || !s.canChangeSite(site, f.fix === "shield" || f.fix === "waf" ? "manager" : "developer")) return null
   const fix = async () => {
     if (
       (f.fix === "update_all" || f.fix === "update_security") &&

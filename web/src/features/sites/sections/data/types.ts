@@ -73,6 +73,7 @@ export interface SFTPUser {
   password: boolean // has a password
   public_keys: string[]
   created_at: string
+  added_by?: string // who added it (older logins: unknown)
 }
 
 // GET /sites/{id}/sftp

@@ -125,7 +125,10 @@ function Sftp({ site, info }: { site: Site; info: SFTPInfo }) {
           rows={info.users.map((u) => ({
             key: u.username,
             cells: [
-              <code>{u.username}</code>,
+              <div className="flex flex-col">
+                <code>{u.username}</code>
+                {u.added_by && <span className="text-xs text-muted-foreground">added by {u.added_by}</span>}
+              </div>,
               u.password ? "yes" : "no",
               String(u.public_keys.length),
               s.canChangeSite(site) && (

@@ -45,7 +45,12 @@ export default function SharingSection({ site }: SectionProps) {
   if (!grants) return <Skeleton className="h-64 rounded-2xl" />
 
   const remove = async (g: SiteGrant) => {
-    if (!(await ask(`Stop sharing ${site.primary_domain} with ${g.username}? They can’t reach it from now on.`))) return
+    if (
+      !(await ask(
+        `Stop sharing ${site.primary_domain} with ${g.username}? They can’t reach it or its staging copies from now on, and the SFTP logins they added are deleted. Files they changed and WordPress accounts they made stay: check them if you need to.`
+      ))
+    )
+      return
     await api("DELETE", `${path}/${g.user_id}`)
     notify(`${g.username} no longer has access`)
     await invalidate(path)
@@ -119,7 +124,11 @@ function AccessSelect({ site, grant }: { site: Site; grant: SiteGrant }) {
     setBusy(true)
     try {
       await api("PUT", `/sites/${site.id}/access/${grant.user_id}`, { access })
-      notify(`${grant.username} is now a ${ACCESS_LABELS[access]}`)
+      notify(
+        access === "viewer" && grant.access !== "viewer"
+          ? `${grant.username} is now a Viewer; the SFTP logins they added were deleted`
+          : `${grant.username} is now a ${ACCESS_LABELS[access]}`
+      )
       await invalidate(`/sites/${site.id}/access`)
     } catch (e) {
       showError(e)

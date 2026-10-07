@@ -204,8 +204,8 @@ function ProtectionControls({ site }: { site: Site }) {
 function DangerZone({ site }: { site: Site }) {
   const s = useSession()
   // Operators may delete staging sites; live ones need an admin (or tenant).
-  // A site shared with you is its owner's to delete.
-  if (site.access || (!s.canCreate && !(site.parent_id && s.canChange))) return null
+  // A site shared with you is its owner's to delete, staging copies aside.
+  if (site.access ? !(site.parent_id && s.canChangeSite(site)) : !s.canCreate && !(site.parent_id && s.canChange)) return null
   const del = async () => {
     const typed = await askText(
       `This permanently deletes ${site.primary_domain}, its files and database (its backups stay in their destinations and can be restored as a new site).`,

@@ -398,8 +398,9 @@ cancellation until then, and billing resumes as before. Staff can also cancel im
 panel (a developer, an agency: a user of another account) access to it as a *Viewer*, *Developer* or
 *Manager*. It shows up next to that person's own sites, marked *Shared*; everything they do counts
 towards the owner's plan, and the owner's suspension freezes it for them too. Only the owner (and you)
-see who it's shared with, and only the owner can delete the live site. Give a site to another account
-and its sharing is cleared.
+see who it's shared with, and only the owner can delete the live site. Staging copies are shared with
+the live site. Removing someone (or making them a Viewer) also deletes the SFTP logins they added. Give
+a site to another account and its sharing is cleared.
 
 **Your side** (**Billing**): the **Overview** shows monthly recurring revenue, income this month against
 last, outstanding and overdue amounts, pending orders, a 12-month income chart, recent payments,

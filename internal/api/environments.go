@@ -344,21 +344,15 @@ func (s *Server) createStaging(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	// The copy is the owner's, like the live site, and shared like it
+	// (siteAccess).
 	view := siteView{Site: st, AccountID: acctID}
+	if t := tenantOf(r); t != nil {
+		view.Access = t.Access
+	}
 	if acctID != 0 {
 		if err := s.assignNewSite(ctx, st.ID, acctID); err != nil {
 			return err
-		}
-		// The copy is the owner's, like the live site; someone the live
-		// site is shared with gets it at the same level, or they couldn't
-		// reach what they just made.
-		if t := tenantOf(r); t != nil && t.Access != "" {
-			p := principalFrom(ctx)
-			g := &store.SiteGrant{SiteID: st.ID, UserID: p.UserID, Access: t.Access, GrantedBy: p.Name}
-			if err := s.Store.CreateSiteGrant(ctx, g, maxSiteGrants); err != nil {
-				s.Log.Error("sharing a staging copy with who made it", "site", st.ID, "err", err)
-			}
-			view.Access = t.Access
 		}
 	}
 	s.announceSite(id, st.ID, acctID)
@@ -614,6 +608,10 @@ func (s *Server) addSFTP(w http.ResponseWriter, r *http.Request) error {
 	if err := decode(w, r, &in); err != nil {
 		return err
 	}
+	// Recorded so a login goes with its adder's access to a shared site
+	// (sharing.go); on a node, the panel's user it forwarded for.
+	p := principalFrom(r.Context())
+	in.AddedBy, in.AddedByName = p.owner(), p.Name
 	u, pw, err := s.SFTP.Add(r.Context(), r.PathValue("id"), in)
 	if err != nil {
 		return err

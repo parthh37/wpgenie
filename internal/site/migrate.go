@@ -80,6 +80,9 @@ type migratedSFTP struct {
 	Username   string   `json:"username"`
 	Password   string   `json:"password"` // SHA-512 crypt hash, as stored
 	PublicKeys []string `json:"public_keys"`
+	// Who added it (servers before sharing send neither).
+	AddedBy     string `json:"added_by,omitempty"`
+	AddedByName string `json:"added_by_name,omitempty"`
 }
 
 // ---- Source side ----
@@ -138,7 +141,8 @@ func (s *Service) ExportMeta(ctx context.Context, id string) (*MigrationMeta, er
 		return nil, err
 	}
 	for _, u := range users {
-		m.SFTP = append(m.SFTP, migratedSFTP{Username: u.Username, Password: u.Password, PublicKeys: u.PublicKeys})
+		m.SFTP = append(m.SFTP, migratedSFTP{Username: u.Username, Password: u.Password, PublicKeys: u.PublicKeys,
+			AddedBy: u.AddedBy, AddedByName: u.AddedByName})
 	}
 	if st.SMTP {
 		if b, err := os.ReadFile(filepath.Join(s.Cfg.SiteDir(id), smtpCredsFile)); err == nil {
@@ -677,7 +681,7 @@ func (s *Service) FinishImport(ctx context.Context, m *MigrationMeta, from strin
 			continue
 		}
 		if err := s.Store.CreateSFTPUser(ctx, &store.SFTPUser{Username: u.Username, SiteID: id, Password: u.Password,
-			PublicKeys: keys}); err != nil {
+			PublicKeys: keys, AddedBy: u.AddedBy, AddedByName: u.AddedByName}); err != nil {
 			return nil, fmt.Errorf("SFTP login %s: %w", u.Username, err)
 		}
 	}

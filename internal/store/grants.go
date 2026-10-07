@@ -12,6 +12,8 @@ import (
 // site keeps its owner: deleting the site, making it staff-only or giving
 // it to another account removes its grants (deleteSiteOwnership,
 // AssignSite), and deleting the user removes theirs (ON DELETE CASCADE).
+// SFTP logins record who added them, so the logins of someone whose access
+// ends can go with it.
 const grantsSchema = `CREATE TABLE site_grants (
 		site_id    TEXT NOT NULL,
 		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -20,7 +22,9 @@ const grantsSchema = `CREATE TABLE site_grants (
 		created_at INTEGER NOT NULL,
 		PRIMARY KEY (site_id, user_id)
 	);
-	CREATE INDEX site_grants_by_user ON site_grants (user_id);`
+	CREATE INDEX site_grants_by_user ON site_grants (user_id);
+	ALTER TABLE sftp_users ADD COLUMN added_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sftp_users ADD COLUMN added_by_name TEXT NOT NULL DEFAULT '';`
 
 // SiteGrant is a site shared with a user.
 type SiteGrant struct {
