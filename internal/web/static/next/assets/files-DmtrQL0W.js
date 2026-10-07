@@ -1,1 +1,0 @@
-import{B as e}from"./button-qasJ3BFb.js";import{t}from"./section-fallback-BXczX8R2.js";var n=e();function r({site:e}){return(0,n.jsx)(t,{site:e,section:`files`})}export{r as default};
