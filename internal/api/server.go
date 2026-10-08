@@ -158,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	s.supportRoutes(mux, r)
 	s.logshipRoutes(mux, r)
 	s.sharingRoutes(r)
+	s.edgeRoutes(r)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.

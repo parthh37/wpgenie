@@ -83,3 +83,26 @@ export interface SFTPInfo {
   host: string
   phpmyadmin_sessions: number
 }
+
+// GET/PUT /sites/{id}/redirects: from an exact path ("/old-page") or a
+// folder ("/old/*"), to a path of the site or an https address.
+export interface SiteRedirect {
+  from: string
+  to: string
+  code: 301 | 302 | 307 | 308
+  keep_query: boolean
+}
+
+export interface SiteRedirects {
+  rules: SiteRedirect[]
+  max: number
+}
+
+// GET /sites/{id}/redirects/test?path=: which rule answers (-1: none).
+export interface RedirectMatch {
+  path: string
+  query: string
+  rule: number
+  redirect?: SiteRedirect
+  location?: string
+}

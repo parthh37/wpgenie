@@ -644,6 +644,10 @@ func (s *Service) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	redirects, err := s.Store.AllSiteRedirects(ctx)
+	if err != nil {
+		return err
+	}
 	var ps []proxy.Site
 	settings := make(map[string]shield.SiteSettings, len(sites))
 	// A site that moved here is also served to visitors its old server
@@ -668,6 +672,7 @@ func (s *Service) Sync(ctx context.Context) error {
 			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
 			CustomCert: certs[st.ID] != nil, Staging: st.ParentID != "",
 			Images: st.ImageFormats, Forwarded: ingress[st.ID].From != "", Offload: offloadOf[st.ID],
+			Lock: proxyLock(st), PathRedirects: proxyRedirects(redirects[st.ID]),
 		})
 		if len(st.RemoteUpstreams) > 0 {
 			// Spread: every replica serves page views; writes stay home.

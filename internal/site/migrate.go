@@ -74,6 +74,10 @@ type MigrationMeta struct {
 	// removed exist only in the bucket, and the new server serves them
 	// from there as the old one did.
 	Offload *store.Offload `json:"offload,omitempty"`
+	// The site lock's password hash (the site's record never carries it)
+	// and the site's redirects.
+	LockHash  string           `json:"lock_hash,omitempty"`
+	Redirects []store.Redirect `json:"redirects,omitempty"`
 }
 
 type migratedSFTP struct {
@@ -107,7 +111,10 @@ func (s *Service) ExportMeta(ctx context.Context, id string) (*MigrationMeta, er
 	if len(st.SpreadNodes) > 0 || len(st.RemoteUpstreams) > 0 {
 		return nil, fmt.Errorf("%w: stop spreading this site over several servers first", ErrInvalidInput)
 	}
-	m := &MigrationMeta{Site: st}
+	m := &MigrationMeta{Site: st, LockHash: st.LockHash}
+	if m.Redirects, err = s.Store.SiteRedirects(ctx, id); err != nil {
+		return nil, err
+	}
 	if m.TablePrefix, err = s.tablePrefix(id); err != nil {
 		return nil, err
 	}
@@ -422,6 +429,13 @@ func (s *Service) ImportSite(ctx context.Context, m *MigrationMeta) (*store.Site
 	if err := s.sanitizeImport(&st); err != nil {
 		return nil, err
 	}
+	st.LockHash = m.LockHash
+	if err := checkImportedLock(&st); err != nil {
+		return nil, err
+	}
+	// Redirects are checked as typed here; ones that aren't valid here (from
+	// another version) stay behind rather than hold up the move.
+	redirects, redirErr := NormalizeRedirects(m.Redirects, siteHosts(&st))
 	st.Status, st.SMTP = StatusImporting, false
 	st.SpreadNodes, st.RemoteUpstreams, st.Node = nil, nil, ""
 	b, err := s.reserveAs(ctx, &st)
@@ -433,6 +447,13 @@ func (s *Service) ImportSite(ctx context.Context, m *MigrationMeta) (*store.Site
 		return nil, err
 	}
 	b.undo = nil // from here on, an abort deletes the site as a whole
+	if redirErr != nil {
+		s.event(st.ID, "redirects", "The site's redirects didn't carry over: "+redirErr.Error())
+	} else if len(redirects) > 0 {
+		if err := s.Store.SetSiteRedirects(ctx, st.ID, redirects); err != nil {
+			return nil, err
+		}
+	}
 	return s.Store.GetSite(ctx, st.ID)
 }
 

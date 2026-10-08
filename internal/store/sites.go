@@ -114,6 +114,15 @@ type Site struct {
 	// ParentID is the live site a staging site was cloned from ("" for
 	// live sites).
 	ParentID string `json:"parent_id"`
+	// The site lock: visitors need a username and password (HTTP basic
+	// authentication, at the edge) unless their address is in LockAllow
+	// (normalised prefixes). LockHash is the password's bcrypt hash: never
+	// sent to clients (nor in the cluster registry's copy). Turning the lock
+	// off keeps the username and password for turning it back on.
+	Lock      bool     `json:"site_lock"`
+	LockUser  string   `json:"site_lock_user"`
+	LockHash  string   `json:"-"`
+	LockAllow []string `json:"site_lock_allow"`
 	// PHP holds per-site PHP settings; zero values mean the image defaults.
 	PHP       PHPSettings `json:"php"`
 	CreatedAt time.Time   `json:"created_at"`
@@ -126,7 +135,7 @@ const siteCols = `id, name, primary_domain, php_version, fpm_port, db_name, stat
 	xmlrpc, rate_rps, rate_burst, login_per_min, challenge_bits, deny_ips, reputation,
 	country_mode, countries, country_action, body_waf, parent_id, php_settings,
 	cache_mobile, image_formats, target_workers, target_response_ms, optimize, burst_mode, burst_until, burst_paused,
-	created_at, updated_at`
+	lock_on, lock_user, lock_hash, lock_allow, created_at, updated_at`
 
 // PHPSettings are per-site PHP limits. Zero means the image default
 // (images/php/php.ini).
@@ -140,14 +149,14 @@ type PHPSettings struct {
 func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	var s Site
 	var created, updated, burstUntil int64
-	var adminAllow, trusted, deny, countries, php, images, optimize string
+	var adminAllow, trusted, deny, countries, php, images, optimize, lockAllow string
 	err := row.Scan(&s.ID, &s.Name, &s.PrimaryDomain, &s.PHPVersion, &s.FPMPort, &s.DBName,
 		&s.Status, &s.ShieldMode, &s.BlockAIBots, &s.MemoryMB, &s.CPUs, &s.Replicas, &s.PageCache, &s.ObjectCache,
 		&s.WAF, &adminAllow, &trusted, &s.Autoscale, &s.MinReplicas, &s.MaxReplicas, &s.TargetCPU, &s.AutoUpdate,
 		&s.SMTP, &s.XMLRPC, &s.RateRPS, &s.RateBurst, &s.LoginPerMin, &s.ChallengeBits, &deny, &s.Reputation,
 		&s.CountryMode, &countries, &s.CountryAction, &s.BodyWAF, &s.ParentID, &php,
 		&s.CacheMobile, &images, &s.TargetWorkers, &s.TargetResponseMS, &optimize, &s.BurstMode, &burstUntil,
-		&s.BurstPaused, &created, &updated)
+		&s.BurstPaused, &s.Lock, &s.LockUser, &s.LockHash, &lockAllow, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -158,6 +167,7 @@ func scanSite(row interface{ Scan(...any) error }) (*Site, error) {
 	s.Countries = splitList(countries)
 	s.ImageFormats = splitList(images)
 	s.Optimize = splitList(optimize)
+	s.LockAllow = splitList(lockAllow)
 	if err := json.Unmarshal([]byte(php), &s.PHP); err != nil {
 		return nil, err
 	}
@@ -213,7 +223,7 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 45)+`?)`,
+	_, err = tx.ExecContext(ctx, `INSERT INTO sites (`+siteCols+`) VALUES (`+strings.Repeat("?,", 49)+`?)`,
 		site.ID, site.Name, site.PrimaryDomain, site.PHPVersion, site.FPMPort, site.DBName,
 		site.Status, site.ShieldMode, site.BlockAIBots,
 		site.MemoryMB, site.CPUs, site.Replicas, site.PageCache, site.ObjectCache,
@@ -223,7 +233,8 @@ func (s *Store) CreateSite(ctx context.Context, site *Site) error {
 		strings.Join(site.DenyIPs, ","), site.Reputation, site.CountryMode, strings.Join(site.Countries, ","),
 		site.CountryAction, site.BodyWAF, site.ParentID, string(php),
 		site.CacheMobile, strings.Join(site.ImageFormats, ","), site.TargetWorkers, site.TargetResponseMS,
-		strings.Join(site.Optimize, ","), site.BurstMode, unixOrZero(site.BurstUntil), site.BurstPaused, now, now)
+		strings.Join(site.Optimize, ","), site.BurstMode, unixOrZero(site.BurstUntil), site.BurstPaused,
+		site.Lock, site.LockUser, site.LockHash, strings.Join(site.LockAllow, ","), now, now)
 	if err != nil {
 		return err
 	}

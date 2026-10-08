@@ -671,6 +671,8 @@ var migrations = []string{
 	logshipSchema,
 	// Sites shared with users of other accounts: see grants.go.
 	grantsSchema,
+	// Site locks and redirects: see edge.go.
+	edgeSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

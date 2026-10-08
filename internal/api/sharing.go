@@ -58,6 +58,9 @@ var siteAccessRules = map[string]string{
 	"PUT /api/v1/sites/{id}/smtp":                auth.AccessManager,
 	"PUT /api/v1/sites/{id}/shield":              auth.AccessManager,
 	"DELETE /api/v1/sites/{id}/attack":           auth.AccessManager,
+	// Who reaches it at all (its lock) and where its paths lead.
+	"PUT /api/v1/sites/{id}/lock":      auth.AccessManager,
+	"PUT /api/v1/sites/{id}/redirects": auth.AccessManager,
 
 	// Deleting it: their staging copies (deleteSite keeps live sites to
 	// their owners).
