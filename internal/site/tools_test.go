@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/jobs"
 	"github.com/parthh37/wpgenie/internal/store"
 )
@@ -625,5 +626,48 @@ func TestDeleteThemeKeepsActiveAndParent(t *testing.T) {
 	}
 	if _, err := h.svc.ActivateTheme(ctx, "s1", "old"); err != nil || !slices.Contains(*h.log, "wp theme activate old") {
 		t.Errorf("activate: %v %q", err, *h.log)
+	}
+}
+
+// A push or a restore replaces the site's files; its maintenance mode is
+// the site's own and stays as it was, whatever the files brought.
+func TestMaintenanceSurvivesReplacedFiles(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	s := &Service{Cfg: cfg}
+	if err := os.MkdirAll(s.Cfg.SiteRoot("live"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := func() Maintenance {
+		m, err := s.readMaintenance("live")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *m
+	}
+	// On, and the copy pushed over it wasn't: still on, same message.
+	if err := s.writeMaintenanceWrapper("live", true, "Back at noon"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.keepMaintenance("live", func() error { return s.writeMaintenanceWrapper("live", false, "") }); err != nil {
+		t.Fatal(err)
+	}
+	if m := state(); !m.On || m.Message != "Back at noon" {
+		t.Fatalf("after a push from a copy without maintenance: %+v", m)
+	}
+	// Off, and the backup restored was taken during maintenance: still off.
+	if err := s.writeMaintenanceWrapper("live", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.keepMaintenance("live", func() error { return s.writeMaintenanceWrapper("live", true, "old") }); err != nil {
+		t.Fatal(err)
+	}
+	if m := state(); m.On {
+		t.Fatalf("after restoring files from maintenance: %+v", m)
+	}
+	// A failed replace is reported and changes nothing more.
+	boom := errors.New("boom")
+	if err := s.keepMaintenance("live", func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("failed replace: %v", err)
 	}
 }

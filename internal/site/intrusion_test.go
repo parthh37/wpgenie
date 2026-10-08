@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/parthh37/wpgenie/internal/config"
 	"github.com/parthh37/wpgenie/internal/store"
 )
 
@@ -71,7 +73,8 @@ func TestDiffManifests(t *testing.T) {
 		"mu-plugins/loader.php":           hashB, // nothing updates mu-plugins
 	}}
 	explained := map[string]string{"plugin seo": "plugin seo updated 1.0 → 1.1"}
-	changes, total := diffManifests(prev, cur, explained)
+	trusted := map[string]bool{"mu-plugins/wpgenie-optimize.php": true}
+	changes, total := diffManifests(prev, cur, explained, trusted)
 	want := []FileChange{
 		{Path: "mu-plugins/loader.php", Change: ChangeChanged, Component: "must-use plugins"},
 		{Path: "plugins/forms/forms.php", Change: ChangeChanged, Component: "plugin forms"},
@@ -83,7 +86,7 @@ func TestDiffManifests(t *testing.T) {
 
 	// A manifest cut short can't tell a new file from one past the cut.
 	cur.Truncated = true
-	changes, total = diffManifests(prev, cur, explained)
+	changes, total = diffManifests(prev, cur, explained, trusted)
 	if total != 2 || slices.ContainsFunc(changes, func(c FileChange) bool { return c.Change == ChangeAdded }) {
 		t.Errorf("truncated: %d %+v", total, changes)
 	}
@@ -93,7 +96,7 @@ func TestDiffManifests(t *testing.T) {
 	for i := range maxListed + 20 {
 		big.Files[fmt.Sprintf("plugins/p/f%03d.php", i)] = hashA
 	}
-	changes, total = diffManifests(&manifest{Files: map[string]string{}}, big, nil)
+	changes, total = diffManifests(&manifest{Files: map[string]string{}}, big, nil, nil)
 	if len(changes) != maxListed || total != maxListed+20 {
 		t.Errorf("bounded: %d listed of %d", len(changes), total)
 	}
@@ -278,4 +281,36 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A wrapper is skipped only while it's WPGenie's: a file at the same path
+// that isn't (no marker, a symlink) is compared like any other, and the
+// comparison reports it.
+func TestTrustedManagedWrappers(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	s := &Service{Cfg: cfg}
+	dir := filepath.Join(s.Cfg.SiteRoot("s1"), "wp-content", "mu-plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("wpgenie-optimize.php", "<?php // "+managedMarker+"\n")
+	write("wpgenie-hardening.php", "<?php eval($_POST['x']);") // put back by PHP: no marker
+	if err := os.Symlink(filepath.Join(dir, "wpgenie-optimize.php"), filepath.Join(dir, "wpgenie-smtp.php")); err != nil {
+		t.Fatal(err)
+	}
+	got := s.trustedManaged("s1")
+	if !got["mu-plugins/wpgenie-optimize.php"] || len(got) != 1 {
+		t.Fatalf("trusted %v, want the optimize wrapper alone", got)
+	}
+	prev := &manifest{Files: map[string]string{"mu-plugins/wpgenie-hardening.php": "a", "mu-plugins/wpgenie-optimize.php": "a"}}
+	cur := &manifest{Files: map[string]string{"mu-plugins/wpgenie-hardening.php": "b", "mu-plugins/wpgenie-optimize.php": "b"}}
+	if changes, _ := diffManifests(prev, cur, nil, got); len(changes) != 1 || changes[0].Path != "mu-plugins/wpgenie-hardening.php" {
+		t.Errorf("changes %+v, want the hardening file", changes)
+	}
 }

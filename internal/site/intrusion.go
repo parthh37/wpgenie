@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/store"
@@ -32,10 +33,11 @@ import (
 
 // AdminAccount is a WordPress account with administrator powers: a role
 // that can manage users, settings or plugins, or a network administrator.
+// No e-mail address: scan reports are read at viewer level, and WordPress
+// users' addresses are for those who may work on the site (wp-admin/users).
 type AdminAccount struct {
 	ID         int    `json:"id"`
 	Login      string `json:"login"`
-	Email      string `json:"email,omitempty"`
 	Registered string `json:"registered,omitempty"` // as WordPress stores it (UTC)
 	Role       string `json:"role,omitempty"`
 	Super      bool   `json:"super,omitempty"` // a multisite network administrator
@@ -104,14 +106,14 @@ $out = array();
 $seen = array();
 foreach ( get_users( array( 'role__in' => array_values( array_unique( $roles ) ), 'orderby' => 'ID', 'order' => 'ASC', 'number' => 500 ) ) as $u ) {
 	$r = array_values( array_intersect( (array) $u->roles, $roles ) );
-	$out[] = array( 'id' => $u->ID, 'login' => $u->user_login, 'email' => $u->user_email, 'registered' => $u->user_registered, 'role' => $r ? $r[0] : '' );
+	$out[] = array( 'id' => $u->ID, 'login' => $u->user_login, 'registered' => $u->user_registered, 'role' => $r ? $r[0] : '' );
 	$seen[ $u->ID ] = true;
 }
 if ( is_multisite() && function_exists( 'get_super_admins' ) ) {
 	foreach ( get_super_admins() as $login ) {
 		$u = get_user_by( 'login', $login );
 		if ( $u && empty( $seen[ $u->ID ] ) ) {
-			$out[] = array( 'id' => $u->ID, 'login' => $u->user_login, 'email' => $u->user_email, 'registered' => $u->user_registered, 'super' => true );
+			$out[] = array( 'id' => $u->ID, 'login' => $u->user_login, 'registered' => $u->user_registered, 'super' => true );
 			$seen[ $u->ID ] = true;
 		}
 	}
@@ -123,7 +125,6 @@ func (s *Service) listAdmins(ctx context.Context, id string) ([]AdminAccount, er
 	var raw []struct {
 		ID         flexInt `json:"id"`
 		Login      string  `json:"login"`
-		Email      string  `json:"email"`
 		Registered string  `json:"registered"`
 		Role       string  `json:"role"`
 		Super      bool    `json:"super"`
@@ -133,7 +134,7 @@ func (s *Service) listAdmins(ctx context.Context, id string) ([]AdminAccount, er
 	}
 	out := make([]AdminAccount, 0, len(raw))
 	for _, u := range raw {
-		out = append(out, AdminAccount{ID: int(u.ID), Login: u.Login, Email: u.Email, Registered: u.Registered, Role: u.Role, Super: u.Super})
+		out = append(out, AdminAccount{ID: int(u.ID), Login: u.Login, Registered: u.Registered, Role: u.Role, Super: u.Super})
 	}
 	return out, nil
 }
@@ -267,12 +268,36 @@ func componentLabel(kind, slug string) string {
 }
 
 // managedFiles are WPGenie's own wrappers: rewritten whenever the panel's
-// settings change, so never a finding.
+// settings change, so not a finding while they're WPGenie's (trustedManaged).
 var managedFiles = []string{pageCacheWrapperPath, smtpWrapperPath, imagesWrapperPath, cdnWrapperPath,
-	offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath}
+	offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath, maintenanceWrapperPath}
 
-func managedFile(p string) bool {
-	return slices.Contains(managedFiles, "wp-content/"+p)
+// trustedManaged lists (relative to wp-content) the wrappers that are
+// WPGenie's as they are on disk: regular files owned by this daemon's user
+// (root; PHP runs as the site's user and can't make one) that carry the
+// marker. A wrapper PHP deleted and put back, a backdoor under a name the
+// scan would skip, is compared like any other file.
+func (s *Service) trustedManaged(id string) map[string]bool {
+	out := map[string]bool{}
+	root, err := os.OpenRoot(s.Cfg.SiteRoot(id))
+	if err != nil {
+		return out
+	}
+	defer root.Close()
+	for _, name := range managedFiles {
+		fi, err := root.Lstat(name)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Geteuid() {
+			continue
+		}
+		if b, err := readSmallFile(root, name, 64<<10); err != nil || !bytes.Contains(b, []byte(managedMarker)) {
+			continue
+		}
+		out[strings.TrimPrefix(name, "wp-content/")] = true
+	}
+	return out
 }
 
 // explainedChanges are the plugins and themes whose files were meant to
@@ -319,8 +344,9 @@ func explainedChanges(prev, cur *Inventory, updated []UpdateResult) map[string]s
 // diffManifests lists the files changed or added from prev to cur that
 // explained doesn't cover (at most maxListed; total counts them all), in
 // path order. Added files aren't reported when either manifest was cut
-// short: a file past the cut isn't new.
-func diffManifests(prev, cur *manifest, explained map[string]string) (changes []FileChange, total int) {
+// short: a file past the cut isn't new. Files in trusted (WPGenie's own
+// wrappers, as trustedManaged found them) are skipped.
+func diffManifests(prev, cur *manifest, explained map[string]string, trusted map[string]bool) (changes []FileChange, total int) {
 	changes = []FileChange{}
 	paths := make([]string, 0, len(cur.Files))
 	for p := range cur.Files {
@@ -328,7 +354,7 @@ func diffManifests(prev, cur *manifest, explained map[string]string) (changes []
 	}
 	slices.Sort(paths)
 	for _, p := range paths {
-		if managedFile(p) {
+		if trusted[p] {
 			continue
 		}
 		was, existed := prev.Files[p]
@@ -456,7 +482,7 @@ func (s *Service) checkIntrusion(ctx context.Context, st *store.Site, prev *Scan
 				prevInv = prev.Inventory
 			}
 			explained := explainedChanges(prevInv, inv, s.updatesSince(ctx, st.ID, old.ScannedAt))
-			in.FileChanges, in.FileChangesTotal = diffManifests(old, cur, explained)
+			in.FileChanges, in.FileChangesTotal = diffManifests(old, cur, explained, s.trustedManaged(st.ID))
 			for _, v := range explained {
 				in.Updated = append(in.Updated, v)
 			}

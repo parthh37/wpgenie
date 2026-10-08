@@ -36,13 +36,14 @@
 		-X-Powered-By
 	}
 	# Defaults a site may override with its own header (? = only if absent;
-	# one line each, or Caddy sets them only when both are absent): no
-	# camera or microphone, location for the site itself (store locators)
-	# but never an embedded frame, no interest-based ad topics (FLoC's
+	# one line each, or Caddy sets them only when both are absent): the
+	# camera, microphone and location for the site's own pages (QR scanners,
+	# store locators) but never for a frame another site embeds in it, no
+	# interest-based ad topics (FLoC's
 	# successor; browsers warn about interest-cohort); and windows the site
 	# opens keep working (payment and sign-in popups) while other sites
 	# lose their handle on it.
-	header ?Permissions-Policy "camera=(), microphone=(), geolocation=(self), browsing-topics=()"
+	header ?Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), browsing-topics=()"
 	header ?Cross-Origin-Opener-Policy "same-origin-allow-popups"
 	# Files that must never be served, and PHP where PHP should never run.
 	@wpg_forbidden {
@@ -280,10 +281,18 @@
 	}
 	{{- end}}
 	{{- with .Lock}}
-	# The site lock asks everyone for the password but Let's Encrypt and the
-	# allowed networks (client_ip: the visitor, also behind Cloudflare).
+	# The site lock asks everyone for the password but Let's Encrypt, the
+	# allowed networks (client_ip: the visitor, also behind Cloudflare) and
+	# the daemon's health checks (from this server itself, remote_ip being
+	# the connection's own peer), so a broken update on a locked site is
+	# still seen and rolled back. (Visitors the cluster passes on arrive
+	# over loopback too, but with their own address from the PROXY header.)
 	@wpg_locked {
 		not path /.well-known/acme-challenge/*
+		not {
+			remote_ip 127.0.0.1/32 ::1/128
+			query wpgenie-health=*
+		}
 		{{- if .Allow}}
 		not client_ip {{join .Allow " "}}
 		{{- end}}
@@ -354,6 +363,9 @@
 		basic_auth @wpg_locked bcrypt "Private site" {
 			{{.User}} {{.Hash}}
 		}
+		# The password is the lock's alone: PHP would see it (PHP_AUTH_PW),
+		# and the page cache skips requests that carry credentials.
+		request_header @wpg_locked -Authorization
 		{{- end}}
 		{{- if ne .BodyWAF "off"}}
 		# After the shield (bans and rate limits come first), before the page

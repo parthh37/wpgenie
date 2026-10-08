@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -254,7 +253,12 @@ func (s *Service) SignOutEveryone(ctx context.Context, id string) error {
 func (s *Service) rotateSiteSalts(id string) error {
 	s.opsMu.Lock()
 	defer s.opsMu.Unlock()
-	path := filepath.Join(s.Cfg.SiteDir(id), "wp-config.php")
+	// Debug mode edits the same file (debug.go): one edit at a time, or
+	// the other's write would bring the old salts back.
+	mu := s.wpConfigLock(id)
+	mu.Lock()
+	defer mu.Unlock()
+	path := s.wpConfigPath(id)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -263,21 +267,7 @@ func (s *Service) rotateSiteSalts(id string) error {
 	if err != nil {
 		return err
 	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
 	// WPGenie's file (root:82 0640, see prepareFiles): replaced whole, so
 	// PHP never reads half of it.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, fi.Mode().Perm()); err != nil {
-		return err
-	}
-	if os.Geteuid() == 0 {
-		if err := os.Chown(tmp, 0, wwwData); err != nil {
-			os.Remove(tmp)
-			return err
-		}
-	}
-	return os.Rename(tmp, path)
+	return replaceWPConfig(path, out)
 }

@@ -71,6 +71,13 @@ func (s *Service) SetLock(ctx context.Context, id string, in LockInput) (*store.
 	if err := s.Sync(ctx); err != nil {
 		return nil, err
 	}
+	if st.Lock != was {
+		// Locked, static files come from the site itself (assetCDNURL); the
+		// cached pages link to wherever they came from before.
+		if err := s.refreshAssetLinks(ctx, id); err != nil {
+			s.Log.Warn("switching the CDN's links after a lock change", "site", id, "err", err)
+		}
+	}
 	switch {
 	case st.Lock && !was:
 		s.event(id, "lock", fmt.Sprintf("Site lock on: visitors need the username %s and its password", st.LockUser))
@@ -80,6 +87,24 @@ func (s *Service) SetLock(ctx context.Context, id string, in LockInput) (*store.
 		s.event(id, "lock", fmt.Sprintf("Site lock changed: username %s", st.LockUser))
 	}
 	return s.Store.GetSite(ctx, id)
+}
+
+// refreshAssetLinks rewrites the CDN wrapper for the site as it is now and
+// purges the cached pages that link to the old place, if it changed.
+func (s *Service) refreshAssetLinks(ctx context.Context, id string) error {
+	if _, err := s.Store.GetCDN(ctx, id); errors.Is(err, store.ErrNotFound) {
+		return nil // no CDN: nothing links elsewhere
+	} else if err != nil {
+		return err
+	}
+	assetURL, err := s.assetCDNURL(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.writeCDNWrapper(id, assetURL); err != nil {
+		return err
+	}
+	return s.purgePageCacheFiles(id)
 }
 
 // applyLock checks a lock change and applies it to a site's record (the

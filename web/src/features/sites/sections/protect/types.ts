@@ -51,7 +51,6 @@ export interface ScanReport {
 export interface AdminAccount {
   id: number
   login: string
-  email?: string
   registered?: string
   role?: string
   super?: boolean

@@ -209,6 +209,22 @@ func (s *Service) writeMaintenanceWrapper(id string, on bool, msg string) error 
 	return ensureManaged(root, maintenanceWrapperPath, maintenanceWrapperFor(msg), on)
 }
 
+// keepMaintenance runs replace, which replaces the site's files with
+// others (a staging push, a backup restore), and leaves maintenance mode as
+// the site had it: it's a switch on the site, not something files carry
+// over (a copy made during maintenance would otherwise take the live site
+// down when pushed, and a restore would switch it on or off).
+func (s *Service) keepMaintenance(id string, replace func() error) error {
+	m, err := s.readMaintenance(id)
+	if err != nil {
+		return err
+	}
+	if err := replace(); err != nil {
+		return err
+	}
+	return s.writeMaintenanceWrapper(id, m.On, m.Message)
+}
+
 // rewriteMaintenanceWrapper puts back a root-owned wrapper with the same
 // message after something extracted the site's files (a restore or a
 // copy brings the file back owned by the site).

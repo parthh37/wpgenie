@@ -798,8 +798,10 @@ func (s *Service) restoreLocked(ctx context.Context, st *store.Site, repo *store
 	if files {
 		report(10, "Restoring files")
 		// Entries are backup/files/<path>: strip two components.
-		if err := s.replaceInstall(ctx, st.ID, 2, keepNone, func(w io.Writer) error {
-			return s.Backups.Dump(ctx, repo, snapID, backup.FilesPath, w)
+		if err := s.keepMaintenance(st.ID, func() error {
+			return s.replaceInstall(ctx, st.ID, 2, keepNone, func(w io.Writer) error {
+				return s.Backups.Dump(ctx, repo, snapID, backup.FilesPath, w)
+			})
 		}); err != nil {
 			return err
 		}
@@ -925,8 +927,10 @@ func (s *Service) StartRestoreAsNew(ctx context.Context, in RestoreAsNewInput) (
 			return err
 		}
 		t.Progress(20, "Restoring files")
-		if err := s.replaceInstall(ctx, st.ID, 2, keepNone, func(w io.Writer) error {
-			return s.Backups.Dump(ctx, repo, b.ID, backup.FilesPath, w)
+		if err := s.keepMaintenance(st.ID, func() error {
+			return s.replaceInstall(ctx, st.ID, 2, keepNone, func(w io.Writer) error {
+				return s.Backups.Dump(ctx, repo, b.ID, backup.FilesPath, w)
+			})
 		}); err != nil {
 			return err
 		}

@@ -182,7 +182,11 @@ func (s *Service) SetCDN(ctx context.Context, id string, in CDNInput) (*CDNStatu
 	if next != nil {
 		newHost = next.AssetHost
 	}
-	if err := s.writeCDNWrapper(id, cdnURL(newHost)); err != nil {
+	assetURL, err := s.assetCDNURL(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.writeCDNWrapper(id, assetURL); err != nil {
 		return nil, err
 	}
 	if oldHost != newHost {
@@ -317,7 +321,14 @@ func cdnURL(host string) string {
 }
 
 // assetCDNURL is the site's pull-zone URL, or "".
+// A locked site serves its own files: the pull zone can't fetch them
+// without the lock's password, so links to it would load no styles.
 func (s *Service) assetCDNURL(ctx context.Context, id string) (string, error) {
+	if st, err := s.Store.GetSite(ctx, id); err != nil {
+		return "", err
+	} else if st.Lock {
+		return "", nil
+	}
 	c, err := s.Store.GetCDN(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", nil

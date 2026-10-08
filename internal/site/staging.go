@@ -244,7 +244,9 @@ func (s *Service) push(ctx context.Context, liveID, stagingID string, in PushInp
 
 	if in.Files != PushFilesNone {
 		t.Progress(45, "Pushing files")
-		if err := s.copyInstall(ctx, stagingID, liveID, in.Files == PushFilesAll); err != nil {
+		if err := s.keepMaintenance(liveID, func() error {
+			return s.copyInstall(ctx, stagingID, liveID, in.Files == PushFilesAll)
+		}); err != nil {
 			return fail(err)
 		}
 	}

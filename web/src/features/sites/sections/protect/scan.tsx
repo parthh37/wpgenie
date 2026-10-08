@@ -138,13 +138,12 @@ function NewAdmins({ x }: { x: Intrusion }) {
         this panel
       </p>
       <SimpleTable
-        headers={["Username", "E-mail", "Created"]}
+        headers={["Username", "Created"]}
         rows={admins.map((a) => [
           <span className="flex flex-col">
             <span className="font-medium">{a.login}</span>
             <span className="text-xs text-muted-foreground">{a.super ? "network administrator" : humanize(a.role || "administrator")}</span>
           </span>,
-          <span className={WRAP}>{a.email || ""}</span>,
           registeredOn(a.registered),
         ])}
       />

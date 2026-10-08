@@ -47,8 +47,8 @@ check.
 ## Security model (defence in depth)
 
 **Edge**
-- Automatic TLS, HSTS, security headers, `Server`/`X-Powered-By` stripped. `Permissions-Policy` (no camera,
-  microphone or ad topics; location only for the site itself) and `Cross-Origin-Opener-Policy:
+- Automatic TLS, HSTS, security headers, `Server`/`X-Powered-By` stripped. `Permissions-Policy` (camera,
+  microphone and location only for the site's own pages, never a frame it embeds; no ad topics) and `Cross-Origin-Opener-Policy:
   same-origin-allow-popups` are defaults a site's own header overrides. Plugin and theme `readme.txt` /
   `changelog.txt` and `wlwmanifest.xml` (version fingerprints) answer 404.
 - Shield policy (`shield.Decide`, one pure function, tested as a table): attack evidence is blocked

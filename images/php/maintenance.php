@@ -43,6 +43,13 @@ function wpgenie_maintenance_passes(): bool {
 	if ( is_string( $path ) && str_starts_with( $path, '/_wpgenie/' ) ) {
 		return true;
 	}
+	// WPGenie's health checks (the shield checked their token) see the real
+	// site, so an update made during maintenance is still judged, and
+	// rolled back if it broke the site. Anyone could copy the marks and see
+	// the site too: maintenance hides it, the password lock protects it.
+	if ( isset( $_GET['wpgenie-health'] ) && ! empty( $_SERVER['HTTP_X_WPGENIE_HEALTH'] ) ) {
+		return true;
+	}
 	return is_user_logged_in() && current_user_can( 'edit_posts' );
 }
 

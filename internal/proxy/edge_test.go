@@ -79,7 +79,9 @@ func TestRenderLockAndRedirects(t *testing.T) {
 		last = i
 	}
 	for _, want := range []string{
-		"@wpg_locked {\n\t\tnot path /.well-known/acme-challenge/*\n\t\tnot client_ip 203.0.113.7/32 2001:db8::/48\n\t}",
+		"@wpg_locked {\n\t\tnot path /.well-known/acme-challenge/*\n\t\tnot {\n\t\t\tremote_ip 127.0.0.1/32 ::1/128\n\t\t\tquery wpgenie-health=*\n\t\t}\n\t\tnot client_ip 203.0.113.7/32 2001:db8::/48\n\t}",
+		// The lock's credentials never reach PHP (nor stop the page cache).
+		"request_header @wpg_locked -Authorization\n",
 		// Exact paths first (in the order made), then prefixes, longest first.
 		"@wpg_redirect_0 path /old/keep /old/keep/\n",
 		"@wpg_redirect_1 path / \n",
@@ -395,6 +397,12 @@ func TestLockAndRedirectsInRealCaddy(t *testing.T) {
 	}
 	if a := req("a.test", "/.well-known/acme-challenge/tok", false); a.code == 401 {
 		t.Errorf("ACME challenge: %+v", a)
+	}
+	// The daemon's health checks come from this server: they get through
+	// (to PHP: no upstream here, so 502). From anywhere else the same query
+	// is just another request. (Through Docker the peer isn't loopback.)
+	if a := req("a.test", "/?wpgenie-health=probe", false); (local == nil) == (a.code == 401) {
+		t.Errorf("a health check (local caddy: %v): %+v", local == nil, a)
 	}
 	// Allowed networks skip the lock: cached pages too.
 	if a := req("b.test", "/x/", false); a.code != 200 || a.body != "cached x page" {
