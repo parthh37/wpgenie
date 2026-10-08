@@ -238,6 +238,9 @@ type siteView struct {
 	// Access: the level the site is shared with the tenant asking at
 	// (sharing.go); "" for its owners and staff.
 	Access string `json:"access,omitempty"`
+	// SharedWith: how many people its owners shared it with; only for its
+	// owners and staff.
+	SharedWith int `json:"shared_with,omitempty"`
 }
 
 // setSiteAccount gives a site to an account (account_id 0: back to

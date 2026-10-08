@@ -5,7 +5,7 @@
    Apple's Human Interface Guidelines, for the web: the system font (SF on
    Apple devices), grouped backgrounds, translucent materials, semantic
    colours and one tint, systemIndigo. Text colours are Apple's
-   increased-contrast variants (AA on every surface); fills, rings and
+   increased-contrast variants (AA on every surface); fills, bars and
    switches use the vivid ones (--*-fill). */
 :root {
   --bg: #000; --side: rgba(28, 28, 30, .72); --panel: #1c1c1e; --panel-2: #1c1c1e; --raised: #2c2c2e;
@@ -22,8 +22,6 @@
   --shadow-lg: 0 22px 70px rgba(0, 0, 0, .65), 0 0 0 .5px rgba(255, 255, 255, .1);
   --glow: 0 0 0 4px var(--accent-soft);
   --ambient: none; --dots: transparent;
-  /* Activity rings: Move, Exercise and Stand. */
-  --ring-1a: #fa114f; --ring-1b: #ff5e9c; --ring-2a: #92e82a; --ring-2b: #c7ff4d; --ring-3a: #1eeaef; --ring-3b: #00c2ff;
   /* Settings-style icon tiles (the same in both appearances, as Apple's are). */
   --t-indigo: #5e5ce6; --t-blue: #0a84ff; --t-green: #30d158; --t-orange: #ff9f0a; --t-red: #ff453a; --t-pink: #ff375f;
   --t-purple: #bf5af2; --t-cyan: #32ade6; --t-teal: #30b0c7; --t-mint: #00c7be; --t-yellow: #ffcc00; --t-brown: #a2845e;
@@ -50,7 +48,6 @@
   --lit: none;
   --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 2px 8px rgba(0, 0, 0, .04);
   --shadow-lg: 0 22px 70px rgba(0, 0, 0, .18), 0 0 0 .5px rgba(0, 0, 0, .08);
-  --ring-1a: #e3004a; --ring-1b: #ff3d86; --ring-2a: #4cc21d; --ring-2b: #8edb1f; --ring-3a: #00b5c9; --ring-3b: #0095f0;
   --t-indigo: #5856d6; --t-blue: #007aff; --t-green: #34c759; --t-orange: #ff9500; --t-red: #ff3b30; --t-pink: #ff2d55;
   --t-purple: #af52de; --t-cyan: #32ade6; --t-teal: #30b0c7; --t-mint: #00c7be; --t-brown: #a2845e;
   color-scheme: light;
@@ -357,11 +354,11 @@ img.qr { display: block; margin: .75rem 0; background: #fff; border-radius: var(
 .health-strip .hs-staging { opacity: .45; }
 .fleet.attack .tile-shield { background: linear-gradient(180deg, var(--bad-soft), transparent 75%), var(--panel); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 45%, transparent); }
 .fleet.attack .tile-shield [data-f="attack"] { color: var(--bad); font-weight: 600; }
-/* The vitals widget: the fleet's rings, their legend beside them. */
+/* The vitals widget: the fleet's bars, their numbers beside them. */
 .tile-vitals { flex-direction: row; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; }
 .tile-vitals .tile-k { flex-basis: 100%; }
-.tile-vitals .rings { width: 84px; height: 84px; }
-.tile-vitals .ring-legend { flex: 1; min-width: 0; }
+.tile-vitals .tile-bars { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1rem; flex: 1; min-width: 0; }
+.tile-vitals .vbars { width: 100%; height: 72px; }
 
 /* Needs attention: sites that want a look, before the rest. */
 .attention { margin: 0 0 1.75rem; padding: .35rem; border-radius: var(--r-lg); background: var(--panel);
@@ -404,7 +401,7 @@ body.site-focus .sites { background: none; box-shadow: none; overflow: visible; 
 .site-initial { position: relative; }
 .site-avatar .health { position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border: 2.5px solid var(--panel); }
 
-/* A row per site: name and state, traffic, numbers, rings, open. */
+/* A row per site: name and state, traffic, numbers, vitals, open. */
 body:not(.site-focus) .site { position: relative; display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(110px, .9fr) minmax(0, 1.5fr) auto auto;
   grid-template-areas: "head spark stats vitals open"; align-items: center; gap: 1.5rem; margin: 0; padding: .9rem 1rem .9rem 1.1rem;
   background: none; border: 0; border-radius: 0; box-shadow: none; cursor: pointer; transition: background-color .15s; animation: rise .3s var(--ease) both; }
@@ -416,8 +413,8 @@ body:not(.site-focus) .site > .site-head { grid-area: head; display: grid; grid-
 body:not(.site-focus) .site .site-badges { padding-left: calc(40px + .75rem); }
 body:not(.site-focus) .site .spark { grid-area: spark; }
 body:not(.site-focus) .site .vitals { grid-area: vitals; }
-body:not(.site-focus) .site .vitals .ring-legend, body:not(.site-focus) .site .vitals h2 { display: none; }
-body:not(.site-focus) .site .vitals .rings { width: 38px; height: 38px; }
+body:not(.site-focus) .site .vitals .vital-legend, body:not(.site-focus) .site .vitals h2 { display: none; }
+body:not(.site-focus) .site .vitals .vbars { width: 52px; height: 22px; }
 body:not(.site-focus) .site .stats { grid-area: stats; margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
 body:not(.site-focus) .site .stats div { padding: 0; background: none; box-shadow: none; }
 body:not(.site-focus) .site .stats div:has(> [data-k="bytes_out"]),
@@ -449,33 +446,23 @@ body:not(.site-focus) .spark .spark-legend, body:not(.site-focus) .spark-readout
 .stats dd { margin: 0; font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stats div.cpu dd { color: var(--accent); }
 
-/* ---- Activity rings (rings() in ux.js) ----
-   Three goals, full when all is well: healthy responses, headroom,
-   protection. Each a gradient arc over a dim track of its colour, round
-   caps; they sweep in once. Unknown values show the track alone. */
-.rings { display: block; flex: none; overflow: visible; }
-.rings circle { fill: none; stroke-linecap: round; }
-.rings .track { opacity: .22; }
-.rings .r1 { stroke: var(--ring-1a); } .rings .arc.r1 { stroke: url(#ring-g1); }
-.rings .r2 { stroke: var(--ring-2a); } .rings .arc.r2 { stroke: url(#ring-g2); }
-.rings .r3 { stroke: var(--ring-3a); } .rings .arc.r3 { stroke: url(#ring-g3); }
-.rings .arc { animation: ring-in 1.1s var(--spring) both; }
-.rings .arc.r2 { animation-delay: .1s; } .rings .arc.r3 { animation-delay: .2s; }
-.rings .arc.none { display: none; }
-@keyframes ring-in { from { stroke-dasharray: 0 100; } }
-.rg-1a { stop-color: var(--ring-1a); } .rg-1b { stop-color: var(--ring-1b); }
-.rg-2a { stop-color: var(--ring-2a); } .rg-2b { stop-color: var(--ring-2b); }
-.rg-3a { stop-color: var(--ring-3a); } .rg-3b { stop-color: var(--ring-3b); }
-.ring-legend { display: grid; gap: .3rem; margin: 0; font-size: .8125rem; }
-.ring-legend div { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: .45rem; }
-.ring-legend dt { grid-row: span 2; width: 9px; height: 9px; margin-top: .3rem; border-radius: 50%; }
-.ring-legend dd { margin: 0; }
-.ring-legend .rl-v { font-family: var(--font-display); font-size: 1.0625rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.ring-legend .rl-k { color: var(--muted); font-size: .75rem; }
-.ring-legend .l1 dt { background: var(--ring-1a); } .ring-legend .l1 .rl-v { color: var(--ring-1a); }
-.ring-legend .l2 dt { background: var(--ring-2a); } .ring-legend .l2 .rl-v { color: var(--ring-2a); }
-.ring-legend .l3 dt { background: var(--ring-3a); } .ring-legend .l3 .rl-v { color: var(--ring-3a); }
-:root[data-theme="light"] .ring-legend .rl-v { color: var(--text); }
+/* ---- Vitals (vitalBars() in ux.js) ----
+   Three bars, full when all is well: healthy responses, headroom,
+   protection; green, orange or red by how they're doing. Unknown values
+   show the track alone. */
+.vbars { display: block; flex: none; overflow: visible; }
+.vbars .track { fill: var(--line); opacity: .7; }
+.vbars .bar.ok { fill: var(--ok-fill); }
+.vbars .bar.warn { fill: var(--warn-fill); }
+.vbars .bar.bad { fill: var(--bad-fill); }
+.vbars .bar.none { display: none; }
+.vital-legend { display: grid; gap: .3rem; margin: 0; font-size: .8125rem; }
+.vital-legend div { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: .5rem; }
+.vital-legend dd { margin: 0; }
+.vital-legend .vl-v { font-family: var(--font-display); font-size: 1.0625rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; min-width: 3.2rem; }
+.vital-legend .vl-k { color: var(--muted); font-size: .75rem; }
+.vital-legend .vl-v[data-tone="warn"] { color: var(--warn); }
+.vital-legend .vl-v[data-tone="bad"] { color: var(--bad); }
 
 /* Charts */
 .spark { position: relative; min-width: 0; }
@@ -520,7 +507,7 @@ body.site-focus .site:not(.is-open) { display: none; }
 .site-rail button[aria-current] { background: var(--panel); font-weight: 600; box-shadow: var(--lit), var(--shadow); }
 .rail-label { margin: .9rem 0 .2rem; padding: 0 .5rem; font-size: .6875rem; font-weight: 600; color: var(--muted); }
 .site.is-open > .site-body { grid-area: body; display: block; min-width: 0; container-type: inline-size; }
-/* The overview: numbers; rings beside traffic; tasks; protection. */
+/* The overview: numbers; vitals beside traffic; tasks; protection. */
 .site.is-open .overview { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(0, 2fr); gap: 1rem; }
 .site.is-open .overview > * { grid-column: 1 / -1; }
 .site.is-open .overview > :is(.vitals, .spark) { grid-column: auto; }
@@ -536,8 +523,8 @@ body.site-focus .site:not(.is-open) { display: none; }
   padding: 1.25rem 1.4rem; background: var(--panel); border-radius: var(--r-xl); box-shadow: var(--lit), var(--shadow); }
 .site.is-open .vitals { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.25rem; }
 .site.is-open .vitals h2 { flex-basis: 100%; margin: 0; font-size: .8125rem; font-weight: 600; color: var(--muted); }
-.site.is-open .vitals .rings { width: 104px; height: 104px; }
-.site.is-open .vitals .ring-legend { flex: 1; min-width: 7.5rem; gap: .55rem; }
+.site.is-open .vitals .vbars { flex: 1 1 10rem; height: 64px; }
+.site.is-open .vitals .vital-legend { flex: 0 1 auto; min-width: 9rem; gap: .55rem; }
 /* Deleting lives apart from the everyday controls. */
 .site.is-open .danger-zone { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1.5rem;
   padding: 1.1rem 1.4rem; border-radius: var(--r-lg); background: var(--panel); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 30%, transparent); }

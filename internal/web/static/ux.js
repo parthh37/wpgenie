@@ -273,42 +273,54 @@ function renderTasks(el, site, sections) {
       h('strong', {}, title), h('span', { class: 'task-sub' }, sub), icon('chevron'))));
 }
 
-// ---- Activity rings ----
-// Three goals per site, full when all is well, as on the Watch: responses
-// without a server error (24 h), CPU headroom (now) and protection (on or
-// off). A value not known yet draws the ring's track alone; the numbers
-// are written beside the rings too, so nothing depends on colour.
-const RING_R = [44, 32, 20];
-const RING_NAMES = ['Healthy responses', 'CPU headroom', 'Protection'];
+// ---- Vitals ----
+// Three numbers per site, each a bar that's full when all is well:
+// responses without a server error (24 h), CPU headroom (now) and
+// protection (on or off). A bar is coloured by how it's doing (green,
+// orange, red) and its number is written beside it, so nothing depends on
+// colour. A value not known yet draws the track alone.
+const VITAL_NAMES = ['Healthy responses', 'CPU headroom', 'Protection'];
+const BAR_Y = [1, 13, 25];
 
-function rings() {
-  const svg = svgEl('svg', { class: 'rings', viewBox: '0 0 100 100', role: 'img' });
-  RING_R.forEach((r, i) => {
-    const c = { cx: 50, cy: 50, r, 'stroke-width': 10.5 };
-    svg.append(svgEl('circle', { ...c, class: `track r${i + 1}` }),
-      svgEl('circle', { ...c, class: `arc r${i + 1} none`, pathLength: 100, 'stroke-dasharray': '0 100', transform: 'rotate(-90 50 50)' }));
+// vitalTone: below 99% healthy responses some visitors see errors; below
+// 30% headroom the site is busy; protection off is worth a second look.
+function vitalTone(i, v) {
+  if (v == null) return 'none';
+  if (i === 0) return v >= 99 ? 'ok' : v >= 95 ? 'warn' : 'bad';
+  if (i === 1) return v >= 30 ? 'ok' : v >= 10 ? 'warn' : 'bad';
+  return v >= 100 ? 'ok' : 'warn';
+}
+
+function vitalBars() {
+  const svg = svgEl('svg', { class: 'vbars', viewBox: '0 0 100 32', preserveAspectRatio: 'none', role: 'img' });
+  BAR_Y.forEach((y) => {
+    const r = { x: 0, y, height: 6, rx: 3 };
+    svg.append(svgEl('rect', { ...r, width: 100, class: 'track' }), svgEl('rect', { ...r, width: 0, class: 'bar none' }));
   });
   return svg;
 }
 
 const fmtPct = (v) => (v == null ? '–' : v >= 99.95 ? '100%' : v >= 99 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`);
 
-// setRings shows values ([healthy, headroom, protection], each 0–100 or
-// null) on rings() and its legend.
-function setRings(svg, legend, values) {
-  const arcs = svg.querySelectorAll('.arc');
+// setVitalBars shows values ([healthy, headroom, protection], each 0–100
+// or null) on vitalBars() and its legend.
+function setVitalBars(svg, legend, values) {
+  const bars = svg.querySelectorAll('.bar');
   const said = values.map((v, i) => (i === 2 ? (v == null ? '–' : v ? 'On' : 'Off') : fmtPct(v)));
   values.forEach((v, i) => {
-    arcs[i].classList.toggle('none', v == null);
-    arcs[i].setAttribute('stroke-dasharray', `${v == null ? 0 : Math.max(0, Math.min(100, v))} 100`);
+    bars[i].setAttribute('class', 'bar ' + vitalTone(i, v));
+    bars[i].setAttribute('width', v == null ? 0 : Math.max(0, Math.min(100, v)));
   });
-  svg.setAttribute('aria-label', RING_NAMES.map((n, i) => `${n}: ${said[i] === '–' ? 'not known yet' : said[i]}`).join(', '));
-  if (legend) legend.querySelectorAll('.rl-v').forEach((el, i) => { el.textContent = said[i]; });
+  svg.setAttribute('aria-label', VITAL_NAMES.map((n, i) => `${n}: ${said[i] === '–' ? 'not known yet' : said[i]}`).join(', '));
+  if (legend) legend.querySelectorAll('.vl-v').forEach((el, i) => {
+    el.textContent = said[i];
+    el.dataset.tone = vitalTone(i, values[i]);
+  });
 }
 
-function ringLegend() {
-  return h('dl', { class: 'ring-legend', 'aria-hidden': 'true' }, ...RING_NAMES.map((name, i) =>
-    h('div', { class: `l${i + 1}` }, h('dt', {}), h('dd', { class: 'rl-v' }, '–'), h('dd', { class: 'rl-k' }, name))));
+function vitalLegend() {
+  return h('dl', { class: 'vital-legend', 'aria-hidden': 'true' }, ...VITAL_NAMES.map((name) =>
+    h('div', {}, h('dd', { class: 'vl-v' }, '–'), h('dd', { class: 'vl-k' }, name))));
 }
 
 // VITALS: site ID -> {healthy, headroom, protection}, filled in as the
@@ -320,7 +332,7 @@ function setVitals(id, part) {
   VITALS.set(id, v);
   const el = document.querySelector(`#sites > .site[data-id="${CSS.escape(id)}"]`);
   const box = el && $('.vitals', el);
-  if (box && box.firstElementChild) setRings($('.rings', box), $('.ring-legend', box), [v.healthy, v.headroom, v.protection]);
+  if (box && box.firstElementChild) setVitalBars($('.vbars', box), $('.vital-legend', box), [v.healthy, v.headroom, v.protection]);
   updateFleetVitals();
 }
 
@@ -328,17 +340,17 @@ const vitalsTraffic = (id, s) => setVitals(id, { healthy: s.totals.requests ? 10
 const vitalsCPU = (id, c) => setVitals(id, { headroom: c ? Math.max(0, 100 - c.percent) : null });
 const vitalsMode = (id, mode) => setVitals(id, { protection: mode === 'off' ? 0 : 100 });
 
-// The fleet's rings: the average of what's known, and the share of sites protected.
+// The fleet's vitals: the average of what's known, and the share of sites protected.
 function updateFleetVitals() {
-  const box = document.querySelector('#fleet [data-f="rings"]');
+  const box = document.querySelector('#fleet [data-f="vitals"]');
   if (!box) return;
-  if (!box.firstElementChild) box.replaceChildren(rings(), ringLegend());
+  if (!box.firstElementChild) box.replaceChildren(vitalBars(), vitalLegend());
   const vs = [...SITES.keys()].map((id) => VITALS.get(id)).filter(Boolean);
   const avg = (k) => { const xs = vs.map((v) => v[k]).filter((x) => x != null); return xs.length ? sum(xs) / xs.length : null; };
   const prot = avg('protection');
-  setRings($('.rings', box), $('.ring-legend', box), [avg('healthy'), avg('headroom'), prot]);
+  setVitalBars($('.vbars', box), $('.vital-legend', box), [avg('healthy'), avg('headroom'), prot]);
   // The fleet's protection is a share, not on/off.
-  const third = $('.l3 .rl-v', box);
+  const third = $('.vital-legend div:nth-child(3) .vl-v', box);
   if (third && prot != null) third.textContent = `${Math.round(prot)}%`;
 }
 
@@ -356,7 +368,7 @@ function decorateSite(el, site) {
   shieldChip(el, site.shield_mode);
   const mode = $('.mode', el);
   mode.addEventListener('change', () => { shieldChip(el, mode.value); vitalsMode(site.id, mode.value); });
-  $('.vitals', el).replaceChildren(h('h2', {}, 'Vitals'), rings(), ringLegend());
+  $('.vitals', el).replaceChildren(h('h2', {}, 'Vitals'), vitalBars(), vitalLegend());
   const url = 'https://' + site.primary_domain;
   $('.visit', el).href = url;
   $('.wp-admin', el).href = url + '/wp-admin/';

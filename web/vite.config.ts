@@ -3,8 +3,8 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
-// The panel is served by the Go binary from internal/web/static (embedded),
-// at /next/ while it replaces the legacy dashboard screen by screen. Its CSP
+// The panel is served by the Go binary from internal/web/static (embedded):
+// its files under /next/, its page at / (internal/api/server.go). Its CSP
 // is default-src 'self': no inline scripts or <style> elements, so nothing
 // here may inject either (CSSOM element.style is fine).
 export default defineConfig({

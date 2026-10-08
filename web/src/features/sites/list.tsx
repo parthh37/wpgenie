@@ -15,7 +15,7 @@ import { Page, PageHeader } from "@/components/app/page"
 import { StatusPill } from "@/components/app/status"
 import { VitalBars, VitalMeter, type VitalValues } from "@/components/app/vitals"
 import { api } from "@/lib/api"
-import { fmtBytes, fmtNum, sum } from "@/lib/format"
+import { fmtBytes, fmtNum, plural, sum } from "@/lib/format"
 import { useClustered, useNodes, useSites } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
 import { ACCESS_LABELS, useSession } from "@/lib/session"
@@ -337,6 +337,12 @@ function SiteRow({ site, sites, underAttack }: { site: Site; sites: Site[]; unde
               </Badge>
             ) : (
               site.account_id != null && s.me?.account_id !== site.account_id && <Badge variant="secondary">account #{site.account_id}</Badge>
+            )}
+            {!!site.shared_with && (
+              <Badge variant="secondary" className="bg-primary/12 text-primary" title={`Shared with ${plural(site.shared_with, "person", "people")}`}>
+                <UsersIcon />
+                {site.shared_with}
+              </Badge>
             )}
           </div>
         </div>

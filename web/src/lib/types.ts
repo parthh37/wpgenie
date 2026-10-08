@@ -90,6 +90,8 @@ export interface Site {
   // The level another account shared this site with you at; absent when
   // it's yours (or you're staff).
   access?: SiteAccess
+  // How many people its owners shared it with (for its owners and staff).
+  shared_with?: number
   php: { memory_limit_mb: number; upload_max_mb: number; max_execution_time: number; max_input_vars: number }
   created_at: string
   updated_at: string

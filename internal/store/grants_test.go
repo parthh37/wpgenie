@@ -72,6 +72,9 @@ func TestSiteGrants(t *testing.T) {
 		if err != nil || len(mine) != 3 || mine[0].SiteID != "s1" || mine[0].AccountID != a.ID {
 			t.Fatalf("bob's grants %+v %v", mine, err)
 		}
+		if n, err := s.SiteGrantCounts(ctx); err != nil || len(n) != 3 || n["s1"] != 2 || n["s2"] != 1 || n["s3"] != 1 {
+			t.Fatalf("grant counts %v %v", n, err)
+		}
 
 		// Reassigning to the same account keeps grants; to another clears them.
 		if err := s.AssignSite(ctx, "s1", a.ID); err != nil {

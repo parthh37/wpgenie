@@ -421,3 +421,57 @@ func TestSiteAccessRulesAreTenantSiteRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestSharingIsVisibleToOwners: the site list tells owners and staff how
+// many people a site is shared with (never the people it's shared with),
+// and staff get the list of whom they could share it with.
+func TestSharingIsVisibleToOwners(t *testing.T) {
+	e := newTenancyEnv(t)
+	e.share("bob", "sb", "alice", auth.AccessViewer)
+	e.share("bob", "sb", "carl", auth.AccessDeveloper)
+	for _, c := range []struct {
+		who  string
+		want int
+	}{{"bob", 2}, {"tok", 2}, {"alice", 0}} {
+		var sites []siteView
+		if code := e.as(c.who, "GET", "/api/v1/sites", "", &sites); code != 200 {
+			t.Fatalf("%s's sites: %d", c.who, code)
+		}
+		if got := siteIn(sites, "sb").SharedWith; got != c.want {
+			t.Errorf("%s sees sb shared with %d, want %d", c.who, got, c.want)
+		}
+		var one siteView
+		if code := e.as(c.who, "GET", "/api/v1/sites/sb", "", &one); code != 200 || one.SharedWith != c.want {
+			t.Errorf("%s GET sb: %d shared_with %d, want %d", c.who, code, one.SharedWith, c.want)
+		}
+	}
+
+	// Staff: users of other open accounts who don't reach it yet. Bob owns
+	// it, alice and carl have it; rita (a reseller of another account) is
+	// the one left.
+	var cands []shareCandidate
+	if c := e.as("tok", "GET", "/api/v1/sites/sb/access/candidates", "", &cands); c != 200 {
+		t.Fatalf("candidates: %d", c)
+	}
+	if len(cands) != 1 || cands[0].Username != "rita" || cands[0].AccountName != "R" {
+		t.Fatalf("candidates for sb: %+v", cands)
+	}
+	// Rita's customer's site: she reaches it already, carl owns it.
+	cands = nil
+	if c := e.as("tok", "GET", "/api/v1/sites/sc/access/candidates", "", &cands); c != 200 {
+		t.Fatalf("candidates: %d", c)
+	}
+	var names []string
+	for _, x := range cands {
+		names = append(names, x.Username)
+	}
+	if fmt.Sprint(names) != "[alice bob]" {
+		t.Fatalf("candidates for sc: %v", names)
+	}
+	// Tenants, the owner included, can't list the panel's users.
+	for _, who := range []string{"bob", "alice"} {
+		if c := e.as(who, "GET", "/api/v1/sites/sb/access/candidates", "", nil); c != http.StatusForbidden {
+			t.Errorf("%s listing candidates: %d", who, c)
+		}
+	}
+}

@@ -82,7 +82,8 @@ func init() {
 	})
 	// Grants are the panel's, like accounts: never a site's server's.
 	for _, p := range []string{"GET /api/v1/sites/{id}/access", "POST /api/v1/sites/{id}/access",
-		"PUT /api/v1/sites/{id}/access/{user}", "DELETE /api/v1/sites/{id}/access/{user}"} {
+		"PUT /api/v1/sites/{id}/access/{user}", "DELETE /api/v1/sites/{id}/access/{user}",
+		"GET /api/v1/sites/{id}/access/candidates"} {
 		notForwarded[p] = true
 	}
 }
@@ -92,6 +93,8 @@ func (s *Server) sharingRoutes(r func(pattern, role string, h handlerFunc)) {
 	r("POST /api/v1/sites/{id}/access", operator, s.shareSite)
 	r("PUT /api/v1/sites/{id}/access/{user}", operator, s.setSiteGrant)
 	r("DELETE /api/v1/sites/{id}/access/{user}", operator, s.unshareSite)
+	// Staff only (not a tenant route): who a site could be shared with.
+	r("GET /api/v1/sites/{id}/access/candidates", operator, s.shareCandidates)
 }
 
 // requiredAccess is the level a tenant route on a site needs from a user
@@ -390,4 +393,67 @@ func (s *Server) unshareSite(w http.ResponseWriter, r *http.Request) error {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// shareCandidate is someone staff could share a site with.
+type shareCandidate struct {
+	UserID      int64  `json:"user_id"`
+	Username    string `json:"username"`
+	AccountID   int64  `json:"account_id"`
+	AccountName string `json:"account_name"`
+}
+
+// maxShareCandidates bounds the list; past it, staff type the username.
+const maxShareCandidates = 500
+
+// shareCandidates lists, for staff, the users a site can be shared with:
+// users of other accounts that are still open, who don't already reach it
+// through their account or a grant. Tenants never see it: who has a login
+// on the panel is staff's to know.
+func (s *Server) shareCandidates(w http.ResponseWriter, r *http.Request) error {
+	ctx, id := r.Context(), r.PathValue("id")
+	if _, err := s.siteRecord(ctx, id); err != nil {
+		return err
+	}
+	users, err := s.Store.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	grants, err := s.Store.SiteGrants(ctx, id)
+	if err != nil {
+		return err
+	}
+	has := map[int64]bool{}
+	for _, g := range grants {
+		has[g.UserID] = true
+	}
+	accounts := map[int64]*store.Account{}
+	out := []shareCandidate{}
+	for _, u := range users {
+		if u.AccountID == 0 || has[u.ID] {
+			continue
+		}
+		a, seen := accounts[u.AccountID]
+		if !seen {
+			if a, err = s.Store.GetAccount(ctx, u.AccountID); err != nil {
+				a = nil
+			}
+			accounts[u.AccountID] = a
+		}
+		if a == nil || a.Status == store.AccountTerminated {
+			continue
+		}
+		p, err := s.principalFor(ctx, u)
+		if err != nil {
+			continue
+		}
+		if _, mine := s.siteOwnerInScope(ctx, p, id); mine {
+			continue
+		}
+		out = append(out, shareCandidate{UserID: u.ID, Username: u.Username, AccountID: a.ID, AccountName: a.Name})
+		if len(out) == maxShareCandidates {
+			break
+		}
+	}
+	return writeJSON(w, http.StatusOK, out)
 }
