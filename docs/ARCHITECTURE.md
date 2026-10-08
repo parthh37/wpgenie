@@ -319,6 +319,11 @@ removes them, as does deleting the user. SFTP logins record who added them (`add
 and when someone's access ends, drops to viewer or their user is deleted, the logins they added to the site
 and its staging copies are deleted too, on whichever server they live (`DELETE /cluster/v1/sites/{id}/sftp`).
 Files they changed, keys added to others' logins and WordPress accounts they made stay; the panel says so.
+In the panel, Share sits in every site's header and Sharing near the top of its sections; owners and
+staff see how many people a site is shared with (`shared_with` on the site, never who). Staff pick from
+the users a site could be shared with (`GET /sites/{id}/access/candidates`, staff only: tenants type a
+username, as browsing who has a login is staff's), and give a staff-only site its account in the same
+place (the Owner card, `PUT /sites/{id}/account`), since a site is shared under the account it belongs to.
 
 **Plans.** Per account: sites (staging copies included), disk (site files plus databases) and bandwidth per
 UTC calendar month; per site: replicas, memory and CPUs per replica, domains; features; the backup
