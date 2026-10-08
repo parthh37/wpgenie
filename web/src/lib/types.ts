@@ -121,6 +121,8 @@ export interface Job {
   progress: number
   step?: string
   error?: string
+  // JSON the job left (never secrets), e.g. a search & replace's counts.
+  result?: string
   created_at?: string
   finished_at?: string
 }

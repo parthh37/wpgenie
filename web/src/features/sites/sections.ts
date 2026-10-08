@@ -2,7 +2,7 @@ import { lazy, type ComponentType, type LazyExoticComponent } from "react"
 import {
   ArchiveIcon, ChartColumnIcon, CloudIcon, CodeIcon, DatabaseIcon, FolderIcon, GaugeIcon, GitBranchIcon,
   HeartPulseIcon, HistoryIcon, KeyRoundIcon, LayoutDashboardIcon, LinkIcon, PlugIcon, RefreshCwIcon,
-  ServerIcon, ShieldIcon, UploadCloudIcon, UsersIcon, type LucideIcon,
+  ServerIcon, ShieldIcon, UploadCloudIcon, UsersIcon, WrenchIcon, type LucideIcon,
 } from "lucide-react"
 import type { Tint } from "@/components/app/icon-tile"
 import { accessAllows } from "@/lib/session"
@@ -54,6 +54,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "files", label: "Files", group: "Data", icon: FolderIcon, tint: "blue", when: (s) => s.status === "active" || s.status === "suspended", access: "developer", component: lazy(() => import("./sections/files")) },
   { key: "sftp", label: "SFTP & database", group: "Data", icon: DatabaseIcon, tint: "graphite", when: active, component: lazy(() => import("./sections/sftp")) },
   { key: "domains", label: "Domains & SSL", group: "Settings", icon: LinkIcon, tint: "blue", when: active, component: lazy(() => import("./sections/domains")) },
+  { key: "tools", label: "Tools", group: "Settings", icon: WrenchIcon, tint: "orange", when: active, access: "developer", component: lazy(() => import("./sections/tools")) },
   { key: "php", label: "PHP", group: "Settings", icon: CodeIcon, tint: "indigo", when: active, component: lazy(() => import("./sections/php")) },
   { key: "server", label: "Server", group: "Settings", icon: ServerIcon, tint: "graphite", when: (_s, c) => c.clustered, component: lazy(() => import("./sections/server")) },
   { key: "sharing", label: "Sharing", group: "Settings", icon: UsersIcon, tint: "indigo", when: owned, component: lazy(() => import("./sections/sharing")) },

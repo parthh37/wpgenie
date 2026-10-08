@@ -226,6 +226,7 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/optimizations", viewer, s.optimizations)
 	r("PUT /api/v1/sites/{id}/optimize", operator, s.setOptimize)
 	r("POST /api/v1/sites/{id}/optimize/cleanup", operator, s.cleanupDB)
+	s.toolsRoutes(r)
 	r("GET /api/v1/settings/branding", viewer, s.branding)
 	r("PUT /api/v1/settings/branding", admin, s.setBranding)
 	r("GET /api/v1/settings/branding/logo", viewer, s.brandLogo)

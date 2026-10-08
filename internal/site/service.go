@@ -169,6 +169,11 @@ type Service struct {
 	repoMu sync.Map
 	// phpLogLocks: site ID -> *sync.Mutex, one error log read at a time.
 	phpLogLocks sync.Map
+	// wpConfigLocks: site ID -> *sync.Mutex, one wp-config.php edit at a
+	// time (debug mode). cronRuns: site ID -> cronRun, the last WP-Cron
+	// run of the every-minute loop.
+	wpConfigLocks sync.Map
+	cronRuns      sync.Map
 	// certWarnDay: the day expiring certificates were last reported (the
 	// backup scheduler's goroutine only).
 	certWarnDay string

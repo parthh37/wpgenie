@@ -324,6 +324,7 @@ func (s *Service) maintenanceTick(ctx context.Context, now time.Time) {
 		if st.Status != store.StatusActive {
 			continue
 		}
+		s.expireDebug(st.ID, now)
 		// The nightly job (scan + auto-update) is tracked separately from the
 		// last scan: a manual scan during the day must not skip the night's
 		// security updates. A site never scanned gets a first scan at once,
