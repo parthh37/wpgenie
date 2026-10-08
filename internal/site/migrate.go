@@ -546,6 +546,10 @@ func (s *Service) sanitizeImport(st *store.Site) error {
 		_, err := normalizeOptimizations([]string{k})
 		return err != nil
 	})
+	st.Harden = slices.DeleteFunc(slices.Clone(st.Harden), func(k string) bool {
+		_, err := normalizeHardening([]string{k})
+		return err != nil
+	})
 	if !slices.Contains([]string{"off", "security", "all"}, st.AutoUpdate) {
 		st.AutoUpdate = "security"
 	}

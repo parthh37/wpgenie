@@ -26,7 +26,8 @@ check.
 
 1. Client connects to Caddy (`network_mode: host`, so it sees real client IPs), directly or through
    Cloudflare (see *CDN*).
-2. Hardening rules run first: `wp-config.php`, dotfiles, backups, and PHP inside `uploads/` → 404;
+2. Hardening rules run first: `wp-config.php`, dotfiles, backups, version-revealing readmes, and PHP
+   inside `uploads/` → 404;
    `xmlrpc.php` → 403 unless the site allows XML-RPC (Jetpack, the mobile apps).
 3. Static assets (`*.css`, images, fonts, …) are served directly from disk by Caddy.
 4. Dynamic requests hit `forward_auth` → `wpgenie /_shield/check`. The shield classifies the client
@@ -46,7 +47,10 @@ check.
 ## Security model (defence in depth)
 
 **Edge**
-- Automatic TLS, HSTS, security headers, `Server`/`X-Powered-By` stripped.
+- Automatic TLS, HSTS, security headers, `Server`/`X-Powered-By` stripped. `Permissions-Policy` (no camera,
+  microphone or ad topics; location only for the site itself) and `Cross-Origin-Opener-Policy:
+  same-origin-allow-popups` are defaults a site's own header overrides. Plugin and theme `readme.txt` /
+  `changelog.txt` and `wlwmanifest.xml` (version fingerprints) answer 404.
 - Shield policy (`shield.Decide`, one pure function, tested as a table): attack evidence is blocked
   outright (a solved challenge never excuses it); a pass skips challenges but never rate limits;
   clients that can't run JavaScript (search crawlers, monitors, webhooks) are throttled rather than
@@ -1026,8 +1030,20 @@ the page cache hit rate, the slowest URLs and PHP errors.
 
 Nightly (in the maintenance window, `maintenance_hour`, default 03:00 server time) every site is
 scanned: installed versions against WPVulnerability.net (PHP `version_compare` semantics, answers
-cached), `wp core verify-checksums`, `wp plugin verify-checksums`, and PHP files under uploads. The
-default auto-update policy, `security`, applies only updates that the database confirms fix a known
+cached), `wp core verify-checksums`, `wp plugin verify-checksums`, and PHP files under uploads.
+
+Each scan also compares the site with the previous one (`site/intrusion.go`): **administrator accounts**
+(any role that can manage options, users or plugins, and network administrators) that appeared since,
+except those added from the panel; and **PHP files in plugins, themes and mu-plugins** changed or added
+without an update. The files are hashed in the container (busybox `find` + `sha256sum`, under 2 MB each, at
+most 60,000) into a manifest kept next to `wp-config.php` (root-only, outside the docroot, deleted with the
+site; not in the panel database: it is megabytes and rewritten nightly). Changes in a plugin or theme whose
+version changed since the last scan, that is new, or that WPGenie updated are explained and not reported;
+WPGenie's own wrappers never are; added files aren't judged when the manifest hit its bound. The first
+scan, and the first after a restore or a staging push, only records. Findings are in the activity log, the
+analyser (critical / warning) and the Protection page.
+
+The default auto-update policy, `security`, applies only updates that the database confirms fix a known
 vulnerability; `all` applies everything; both go through the snapshot/rollback path. Premium plugins
 whose updater only runs with plugins loaded are invisible to WP-CLI in this mode: update them from
 wp-admin.
@@ -1109,6 +1125,25 @@ metadata and counts stay consistent). A root-owned `wpgenie-optimize.php` wrappe
 to install, update or switch off from wp-admin. New sites get all but jQuery Migrate; sites that existed
 before keep none until they're turned on (by hand, or by the analyser's fix). Changing them purges the page
 cache.
+
+**WordPress hardening** (`site/hardening.go`, `images/php/hardening.php`, `PUT /sites/{id}/hardening`). What
+security plugins do inside WordPress, where the shield can't see: usernames hidden from visitors (`?author=`
+redirects, the REST users endpoints for people who can't write, author sitemaps, oEmbed author data), one
+vague sign-in error and a password reset that doesn't say whether a user exists, no application passwords,
+administrator cookies of 12 h (3 days remembered) instead of 14 days, strong passwords (12+ characters, two
+character classes, not common, not the username or site name) for people who can write, and no pingbacks or
+trackbacks (on by default for new sites). Two change how people work and are off by default: the
+**administrator lock** (whatever writes a user's capabilities, wp-admin or a vulnerable plugin calling
+`update_user_meta`, loses the administrator powers it adds; existing roles can't be raised to them; the
+default role can't be one; multisite network administrators can't be added; each refusal goes to the PHP
+error log) and **no file changes from wp-admin** (`file_mod_allowed`; WordPress's background security updates
+still run). WP-CLI, which the panel uses with plugins skipped, is exempt from both, so administrators added and
+updates run from the panel work; cron runs through `wp-cron.php` and gets no pass. A root-owned
+`wpgenie-hardening.php` wrapper names the ones on; sites that existed before keep none until chosen (the
+analyser suggests them). **Sign everyone out** (`POST /sites/{id}/hardening/sign-out`) replaces the eight
+salts in WPGenie's part of `wp-config.php` (the rest, and everything below the marked line, byte for byte)
+and forgets every session, so every cookie, reset link and nonce stops working; a spread site's other servers
+get the new file. Both need manager access from someone a site is shared with.
 
 **Site analyser** (`site/analysis.go`, `GET /sites/{id}/analysis`). A live look inside WordPress through one
 WP-CLI call (version, debug display, search-engine visibility, open registration and its role, administrators,

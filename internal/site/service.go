@@ -231,7 +231,7 @@ func newSite(domain, name string) *store.Site {
 		ShieldMode: string(shield.ModeAuto), BlockAIBots: true, WAF: true,
 		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
-		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(),
+		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(), Harden: DefaultHardening(),
 	}
 }
 

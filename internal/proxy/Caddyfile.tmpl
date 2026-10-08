@@ -35,6 +35,15 @@
 		-Server
 		-X-Powered-By
 	}
+	# Defaults a site may override with its own header (? = only if absent;
+	# one line each, or Caddy sets them only when both are absent): no
+	# camera or microphone, location for the site itself (store locators)
+	# but never an embedded frame, no interest-based ad topics (FLoC's
+	# successor; browsers warn about interest-cohort); and windows the site
+	# opens keep working (payment and sign-in popups) while other sites
+	# lose their handle on it.
+	header ?Permissions-Policy "camera=(), microphone=(), geolocation=(self), browsing-topics=()"
+	header ?Cross-Origin-Opener-Policy "same-origin-allow-popups"
 	# Files that must never be served, and PHP where PHP should never run.
 	@wpg_forbidden {
 		path /wp-config.php /wp-config-sample.php /readme.html /license.txt
@@ -42,6 +51,11 @@
 		path /wp-content/uploads/*.php /wp-content/uploads/*.phtml /wp-content/uploads/*.phar
 		path *.sql *.sql.gz *.bak *.old *.orig *.swp *.log *.ini
 		path /wp-content/cache/wpgenie/* /wp-content/cache/wpgenie.*
+		# What tells a scanner which versions (and so which vulnerabilities)
+		# a site has.
+		path /wp-content/plugins/*/readme.txt /wp-content/themes/*/readme.txt
+		path /wp-content/plugins/*/changelog.txt /wp-content/themes/*/changelog.txt
+		path /wp-includes/wlwmanifest.xml
 	}
 	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode|wpgenie-restore)
 }

@@ -34,7 +34,11 @@ type ScanReport struct {
 	Inventory  *Inventory `json:"inventory"`
 	Integrity  Integrity  `json:"integrity"`
 	Vulnerable int        `json:"vulnerable"` // components with at least one known vulnerability
-	Errors     []string   `json:"errors,omitempty"`
+	// Intrusion compares the site with the previous scan: new
+	// administrators, PHP files changed without an update (see
+	// intrusion.go). Absent in reports from before it existed.
+	Intrusion *Intrusion `json:"intrusion,omitempty"`
+	Errors    []string   `json:"errors,omitempty"`
 }
 
 const maxListed = 100
@@ -67,6 +71,10 @@ func (s *Service) LastScan(ctx context.Context, id string) (*ScanReport, error) 
 }
 
 func (s *Service) scanLocked(ctx context.Context, st *store.Site) (*ScanReport, error) {
+	prev, err := s.LastScan(ctx, st.ID)
+	if err != nil {
+		prev = nil // never scanned (or unreadable): this scan is the baseline
+	}
 	rep := &ScanReport{ScannedAt: time.Now().UTC()}
 	inv, err := s.Inventory(ctx, st.ID)
 	if err != nil {
@@ -80,6 +88,10 @@ func (s *Service) scanLocked(ctx context.Context, st *store.Site) (*ScanReport, 
 		}
 	}
 	rep.Integrity, err = s.checkIntegrity(ctx, st)
+	if err != nil {
+		rep.Errors = append(rep.Errors, err.Error())
+	}
+	rep.Intrusion, err = s.checkIntrusion(ctx, st, prev, inv)
 	if err != nil {
 		rep.Errors = append(rep.Errors, err.Error())
 	}
@@ -233,6 +245,18 @@ func (r *ScanReport) headline() string {
 	}
 	if n := len(r.Integrity.UploadsPHP); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d PHP file(s) in uploads", n))
+	}
+	if in := r.Intrusion; in != nil {
+		if len(in.NewAdmins) > 0 {
+			var logins []string
+			for _, a := range in.NewAdmins {
+				logins = append(logins, a.Login)
+			}
+			parts = append(parts, fmt.Sprintf("%d new administrator(s): %s", len(in.NewAdmins), strings.Join(logins, ", ")))
+		}
+		if in.FileChangesTotal > 0 {
+			parts = append(parts, fmt.Sprintf("%d PHP file(s) changed without an update", in.FileChangesTotal))
+		}
 	}
 	if len(parts) == 0 {
 		return ""

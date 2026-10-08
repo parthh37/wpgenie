@@ -596,7 +596,7 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 		return err
 	}
 	for _, name := range []string{pageCacheWrapperPath, objectCacheDropIn, smtpWrapperPath, imagesWrapperPath, cdnWrapperPath,
-		offloadWrapperPath, optimizeWrapperPath, brandWrapperPath} {
+		offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath} {
 		if b, err := root.ReadFile(name); err == nil && bytes.Contains(b, []byte(managedMarker)) {
 			if err := root.Remove(name); err != nil {
 				root.Close()
@@ -612,6 +612,9 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 		return err
 	}
 	if err := s.writeOptimizeWrapper(st.ID, st.Optimize); err != nil {
+		return err
+	}
+	if err := s.writeHardeningWrapper(st.ID, st.Harden); err != nil {
 		return err
 	}
 	if err := s.writeBrandWrapper(ctx, st.ID); err != nil {
