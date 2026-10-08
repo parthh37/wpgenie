@@ -324,6 +324,10 @@ func (s *Server) createStaging(w http.ResponseWriter, r *http.Request) error {
 	if err := s.checkTenantDomain(r, in.Domain); err != nil {
 		return err
 	}
+	// Locking the copy is deciding who reaches it, like PUT .../lock.
+	if t := tenantOf(r); t != nil && in.Lock != nil && !accessAllows(t.Access, requiredAccess("PUT /api/v1/sites/{id}/lock")) {
+		return fmt.Errorf("%w: locking the copy needs manager access to the site", errForbidden)
+	}
 	var acctID int64
 	if o, err := s.Store.SiteOwnerOf(ctx, r.PathValue("id")); err == nil && s.Billing != nil {
 		acctID = o.AccountID

@@ -224,8 +224,21 @@
 		not path_regexp (?i)\.php
 		file
 	}
+	{{- if .Lock}}
+	# Locked: only for browsers that have the password, never a CDN or other
+	# shared cache. Deferred, so the lock's own 401 doesn't get them.
+	header @wpg_static_long {
+		Cache-Control "private, max-age=2592000"
+		defer
+	}
+	header @wpg_static_short {
+		Cache-Control "private, max-age=604800"
+		defer
+	}
+	{{- else}}
 	header @wpg_static_long Cache-Control "public, max-age=2592000"
 	header @wpg_static_short Cache-Control "public, max-age=604800"
+	{{- end}}
 	{{- if .AssetCDN}}
 	# A pull-zone CDN serves static files from its own hostname: browsers
 	# only use fonts from another origin with CORS.
@@ -265,6 +278,19 @@
 		not path_regexp (?i)(?:\.php|/\.)
 		not file
 	}
+	{{- end}}
+	{{- with .Lock}}
+	# The site lock asks everyone for the password but Let's Encrypt and the
+	# allowed networks (client_ip: the visitor, also behind Cloudflare).
+	@wpg_locked {
+		not path /.well-known/acme-challenge/*
+		{{- if .Allow}}
+		not client_ip {{join .Allow " "}}
+		{{- end}}
+	}
+	{{- end}}
+	{{- range $i, $r := .RedirectRules}}
+	@wpg_redirect_{{$i}} path {{join $r.Paths " "}}
 	{{- end}}
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
@@ -320,6 +346,15 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
+		{{- with .Lock}}
+		# After the shield (its bans and rate limits count password guesses
+		# too), before the WAF and everything that serves the site: cached
+		# pages, files, uploads and PHP. The panel's own paths (/_wpgenie/*,
+		# /_shield/*) are routed above it.
+		basic_auth @wpg_locked bcrypt "Private site" {
+			{{.User}} {{.Hash}}
+		}
+		{{- end}}
 		{{- if ne .BodyWAF "off"}}
 		# After the shield (bans and rate limits come first), before the page
 		# cache and PHP.
@@ -329,6 +364,13 @@
 		respond @wpg_dotfiles 404
 		{{- if .BlockXMLRPC}}
 		respond @wpg_xmlrpc 403
+		{{- end}}
+		{{- if .RedirectRules}}
+		# Redirects, the most specific first: before cached pages, uploads
+		# and PHP.
+		{{- end}}
+		{{- range $i, $r := .RedirectRules}}
+		redir @wpg_redirect_{{$i}} {{$r.Location}} {{$r.Code}}
 		{{- end}}
 		{{- range .Images}}
 		rewrite @wpg_img_{{.}} {path}.{{.}}

@@ -70,6 +70,11 @@ type Site struct {
 	// every domain (redirect domains included): no PHP, no shield, no
 	// access log. Their files and database are untouched.
 	Suspended bool
+	// Lock asks every visitor of a WordPress site for a username and
+	// password (edge.go); nil: open. PathRedirects send requests for paths
+	// of the site elsewhere.
+	Lock          *Lock
+	PathRedirects []PathRedirect
 
 	// Multi-server. HomeUpstreams are the replicas on the site's own server
 	// when others also run on other servers (Upstreams has all of them):
@@ -97,6 +102,8 @@ type siteView struct {
 	IngressView *siteView
 	// OffloadTo is the parsed Offload URL (nil: uploads only on disk).
 	OffloadTo *offloadTarget
+	// RedirectRules are PathRedirects in the order Caddy tries them.
+	RedirectRules []redirectView
 }
 
 // CacheBypassCookies are the cookies (name prefixes) that mean the visitor
@@ -299,6 +306,9 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 				return nil, fmt.Errorf("site %s: %w", s.ID, err)
 			}
 		}
+		if err := checkEdge(s); err != nil {
+			return nil, err
+		}
 	}
 	adminListen := "localhost:2019"
 	if u, err := url.Parse(c.cfg.AdminURL); err == nil && u.Host != "" {
@@ -325,6 +335,12 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 			if slices.Contains(s.Images, f) && !s.AssetCDN && s.Proxy == "" {
 				sites[i].Images = append(sites[i].Images, f)
 			}
+		}
+		// A locked site's pages are for those with the password: never
+		// offered to a CDN (an allowed network's visitor gets cached pages
+		// without credentials, and the CDN would pass them on to anyone).
+		if s.Lock != nil {
+			sites[i].EdgeHTML = false
 		}
 		switch {
 		case s.BodyWAF == "" || s.BodyWAF == WAFOff || s.Proxy != "" || s.Suspended:
@@ -395,7 +411,7 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 	views := make([]*siteView, len(sites))
 	anyIngress := false
 	for i, st := range sites {
-		v := &siteView{Site: st, Cfg: root, Address: strings.Join(st.Domains, ", ")}
+		v := &siteView{Site: st, Cfg: root, Address: strings.Join(st.Domains, ", "), RedirectRules: redirectViews(st.PathRedirects)}
 		if st.Offload != "" && st.Proxy == "" && st.Forward == "" {
 			if t, err := parseOffload(st.Offload); err == nil { // checked above
 				v.OffloadTo = &t
@@ -409,6 +425,7 @@ func (c *Caddy) RenderWAF(sites []Site, waf bool) ([]byte, error) {
 				Address: "http://" + strings.Join(st.Domains, ":"+ingressPort+", http://") + ":" + ingressPort}
 			iv.CustomCert = false
 			iv.OffloadTo = v.OffloadTo
+			iv.RedirectRules = v.RedirectRules
 			v.IngressView = iv
 			anyIngress = true
 		}

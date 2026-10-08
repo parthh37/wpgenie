@@ -88,6 +88,11 @@ export interface Site {
   auto_update: string
   smtp: boolean
   parent_id: string
+  // The site lock: visitors need this username and its password (never
+  // sent to the panel). Absent from servers without it.
+  site_lock?: boolean
+  site_lock_user?: string
+  site_lock_allow?: string[]
   account_id?: number
   // The level another account shared this site with you at; absent when
   // it's yours (or you're staff).

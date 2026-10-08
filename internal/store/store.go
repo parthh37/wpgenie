@@ -677,6 +677,8 @@ var migrations = []string{
 	// passwords or shortening sessions under a live site could break an
 	// integration nobody here knows about. New sites get the defaults.
 	`ALTER TABLE sites ADD COLUMN harden TEXT NOT NULL DEFAULT '';`,
+	// Site locks and redirects: see edge.go.
+	edgeSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the
