@@ -3,6 +3,7 @@ package site
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,9 @@ func (s *Service) RunCron(ctx context.Context) {
 				out, err := s.Runtime.RunCron(c, runtime.SiteSpec{
 					ID: st.ID, Dir: s.Cfg.SiteDir(st.ID), Docroot: s.Cfg.SiteRoot(st.ID), Domain: st.PrimaryDomain,
 				})
+				if ctx.Err() == nil {
+					s.recordCronRun(st.ID, err, out)
+				}
 				switch {
 				case errors.Is(err, runtime.ErrNoJail):
 					if _, seen := noJail.LoadOrStore(st.ID, true); !seen {
@@ -64,6 +68,21 @@ func (s *Service) RunCron(ctx context.Context) {
 			}(st)
 		}
 	}
+}
+
+// cronRun is the outcome of a site's last WP-Cron run (Tools shows it).
+type cronRun struct {
+	At     time.Time
+	Err    string
+	NoJail bool // the site runs an image without the cron jail
+}
+
+func (s *Service) recordCronRun(id string, err error, out []byte) {
+	r := cronRun{At: time.Now().UTC(), NoJail: errors.Is(err, runtime.ErrNoJail)}
+	if err != nil && !r.NoJail {
+		r.Err = truncate(strings.TrimSpace(err.Error()+" "+string(out)), 300)
+	}
+	s.cronRuns.Store(id, r)
 }
 
 func truncate(s string, n int) string {

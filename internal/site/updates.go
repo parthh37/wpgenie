@@ -633,7 +633,12 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 	if err := s.writeOffloadWrapper(st.ID, offloaded); err != nil {
 		return err
 	}
-	return s.writeCacheFiles(st.ID, st.PageCache, st.ObjectCache, st.CacheMobile)
+	if err := s.writeCacheFiles(st.ID, st.PageCache, st.ObjectCache, st.CacheMobile); err != nil {
+		return err
+	}
+	// Maintenance mode is its wrapper (maintenance.go): kept as the files
+	// had it, root-owned again.
+	return s.rewriteMaintenanceWrapper(st.ID)
 }
 
 // pruneSnapshots keeps the newest keepSnapshots of a site.
