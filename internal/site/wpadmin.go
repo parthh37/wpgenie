@@ -390,6 +390,10 @@ func (s *Service) CreateUser(ctx context.Context, id string, in NewUserInput) (*
 			res.User = users[i]
 		}
 	}
+	// Made here: not an intruder for the next scan.
+	if in.Role == RoleAdministrator && res.User.ID > 0 {
+		s.noteAdmin(ctx, id, AdminAccount{ID: res.User.ID, Login: res.User.Login, Email: res.User.Email, Role: RoleAdministrator})
+	}
 	return res, nil
 }
 

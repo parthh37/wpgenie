@@ -43,6 +43,9 @@ func (w *fakeWP) exec(args []string, stdin io.Reader, stdout io.Writer) error {
 		fmt.Fprint(stdout, strings.Join(w.uploads, "\n"))
 		return nil
 	case "sh":
+		if args[2] == manifestScript { // intrusion detection: no plugin files here
+			return nil
+		}
 		if strings.Contains(args[2], "tar -xzf -") { // restoreScript
 			var snap fakeWP
 			if err := json.NewDecoder(stdin).Decode(&snap); err != nil {
@@ -108,6 +111,8 @@ func (w *fakeWP) wp(args []string, out io.Writer) error {
 			}
 		}
 		return json.NewEncoder(out).Encode(res)
+	case "eval " + listAdminsPHP:
+		fmt.Fprint(out, `[{"id":1,"login":"owner"}]`)
 	case "plugin verify-checksums":
 		fmt.Fprint(out, `[{"plugin_name":"akismet","file":"akismet.php","message":"Checksum does not match"}]`)
 		return errors.New("exit status 1: Error: Only verified 1 of 2 plugins (1 failed).")

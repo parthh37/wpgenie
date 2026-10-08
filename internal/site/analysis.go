@@ -108,6 +108,7 @@ const (
 	FixSearchVisible  = "search_visible"
 	FixShield         = "shield"
 	FixWAF            = "waf"
+	FixHardening      = "hardening"
 )
 
 // Finding is one thing the analyser noticed.
@@ -307,6 +308,24 @@ func analyse(st *store.Site, f *SiteFacts, scan *ScanReport, plugins *PluginRepo
 			add("plugins-modified", SevWarning, CatSecurity, "Plugin files differ from their wordpress.org release",
 				listSome(in.PluginsModified, 5)+". A modified or nulled copy is how many sites get backdoored.", "")
 		}
+		if x := scan.Intrusion; x != nil {
+			if len(x.NewAdmins) > 0 {
+				var logins []string
+				for _, a := range x.NewAdmins {
+					logins = append(logins, a.Login)
+				}
+				add("new-admins", SevCritical, CatSecurity, "New administrators appeared",
+					"Not added from this panel: "+listSome(logins, 5)+". If nobody you know made them, delete them, sign everyone out and change your passwords.", "")
+			}
+			if x.FileChangesTotal > 0 {
+				var files []string
+				for _, f := range x.FileChanges {
+					files = append(files, f.Path)
+				}
+				add("files-changed", SevWarning, CatSecurity, fmt.Sprintf("%d PHP file%s changed without an update", x.FileChangesTotal, plural(x.FileChangesTotal, "", "s")),
+					listSome(files, 5)+". If nobody you know changed them, restore a backup.", "")
+			}
+		}
 	}
 	if plugins != nil {
 		for _, p := range plugins.Plugins {
@@ -341,6 +360,20 @@ func analyse(st *store.Site, f *SiteFacts, scan *ScanReport, plugins *PluginRepo
 	if !st.WAF {
 		add("waf-off", SevWarning, CatSecurity, "The firewall is off",
 			"Requests aren't checked for SQL injection, path traversal and other attacks.", FixWAF)
+	}
+	var unhardened []string
+	for _, k := range DefaultHardening() {
+		if !slices.Contains(st.Harden, k) {
+			unhardened = append(unhardened, k)
+		}
+	}
+	if len(unhardened) > 0 {
+		sev := SevInfo
+		if len(st.Harden) == 0 {
+			sev = SevWarning
+		}
+		add("hardening", sev, CatSecurity, "WordPress hardening not applied",
+			"Recommended: "+strings.Join(unhardened, ", ")+" (hidden usernames, vague sign-in errors, shorter administrator sign-ins, strong passwords).", FixHardening)
 	}
 	if st.AutoUpdate == AutoUpdateOff && live {
 		add("auto-update-off", SevWarning, CatSecurity, "Automatic security updates are off",
@@ -531,6 +564,17 @@ func (s *Service) ApplyFix(ctx context.Context, id, fix string) (*FixResult, err
 			return nil, err
 		}
 		return &FixResult{Message: "Recommended performance tweaks applied"}, nil
+	case FixHardening:
+		keys := slices.Clone(st.Harden)
+		for _, k := range DefaultHardening() {
+			if !slices.Contains(keys, k) {
+				keys = append(keys, k)
+			}
+		}
+		if _, err := s.SetHardening(ctx, id, HardeningInput{Hardening: keys}); err != nil {
+			return nil, err
+		}
+		return &FixResult{Message: "Recommended WordPress hardening applied"}, nil
 	case FixDBCleanup:
 		r, err := s.CleanupDatabase(ctx, id)
 		if err != nil {

@@ -60,6 +60,8 @@ export interface Site {
   node?: string
   image_formats: string[]
   optimize: string[]
+  // WordPress hardening on (the /hardening catalogue's keys).
+  harden?: string[]
   waf: boolean
   admin_allow: string[]
   trusted_ips: string[]
