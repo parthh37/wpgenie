@@ -2,20 +2,33 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* WPGenie's panel: shadcn/ui's components, Apple's Human Interface
-   Guidelines for the look. The system font (SF on Apple devices), grouped
-   backgrounds, Liquid Glass materials over a soft wash of colour, one tint
-   (systemIndigo) and Apple's semantic colours. Text colours are the increased-contrast variants (AA on
-   every surface); fills, gauges and switches use the vivid ones.
+/* WPGenie's panel: shadcn/ui's components in the visual language of
+   Cloudflare's dashboard (its open-source design system, Kumo). Flat, solid
+   surfaces with hairline rings, a neutral grey scale, one blue for actions
+   and links, Cloudflare orange only as the brand accent, a 14px base and
+   dense tables. The values below are Kumo's own tokens (theme-kumo.css),
+   mapped onto shadcn's variable names so every component and feature keeps
+   working. Status text colours are AA on every surface; the *-fill ones are
+   for bars, dots and switches.
    CSP: default-src 'self'. No web fonts, no data: URIs, no <style> elements
    or style attributes (React's style prop is CSSOM, which is allowed). */
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --font-heading: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro", system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Kumo's type scale: 12 / 13 / 14 / 16. */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: calc(16 / 12);
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: calc(18 / 13);
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.5;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5;
 
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -43,6 +56,7 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -50,17 +64,26 @@
   --color-foreground: var(--foreground);
   --color-background: var(--background);
 
-  /* Status: text colours (AA) and the vivid fills behind them. */
+  /* Kumo's surfaces and lines, for the panel's own components. */
+  --color-recessed: var(--recessed);
+  --color-hairline: var(--hairline);
+  --color-fill: var(--fill);
+  --color-line: var(--border);
+  --color-brand: var(--brand-orange);
+
+  /* Status: text colours (AA) and the fills behind them. */
   --color-success: var(--success);
   --color-success-fill: var(--success-fill);
   --color-warning: var(--warning);
   --color-warning-fill: var(--warning-fill);
   --color-danger: var(--danger);
   --color-danger-fill: var(--danger-fill);
+  --color-info: var(--info);
   --color-faint: var(--faint);
   --color-link: var(--link);
 
-  /* Settings-style icon tiles. */
+  /* Category colours (Kumo's badge hues, muted). IconTile no longer uses
+     them; site avatars and charts may. */
   --color-tint-indigo: var(--t-indigo);
   --color-tint-blue: var(--t-blue);
   --color-tint-green: var(--t-green);
@@ -76,160 +99,160 @@
   --color-tint-graphite: var(--t-graphite);
   --color-tint-gray: var(--t-gray);
 
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  /* Kumo's corners: 4 / 6 / 8. The larger steps (left from the old,
+     rounder theme, and used across the features) stay close to that. */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: 0.75rem;
+  --radius-4xl: 0.75rem;
 
   --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
-  /* A spring that settles past its mark once, like UIKit's default. */
-  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
-  --animate-island-in: island-in 0.42s var(--ease-spring) both;
-  --animate-island-out: island-out 0.3s var(--ease-apple) forwards;
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-toast-in: toast-in 0.2s var(--ease-spring) both;
+  --animate-toast-out: toast-out 0.15s var(--ease-apple) forwards;
+  /* The old names, kept for anything still using them. */
+  --animate-island-in: toast-in 0.2s var(--ease-spring) both;
+  --animate-island-out: toast-out 0.15s var(--ease-apple) forwards;
 
-  @keyframes island-in {
-    from { opacity: 0; transform: translateY(-8px) scale(0.6, 0.75); filter: blur(4px); }
-    to { opacity: 1; transform: none; filter: none; }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(16px); }
+    to { opacity: 1; transform: none; }
   }
-  @keyframes island-out {
-    to { opacity: 0; transform: translateY(-6px) scale(0.7, 0.8); filter: blur(4px); }
+  @keyframes toast-out {
+    to { opacity: 0; transform: translateX(16px); }
   }
 }
 
-/* Light: grouped background #f2f2f7 under a pastel wash, frosted white
-   glass for cards. --card-solid and --popover-solid are the opaque fallbacks
-   (Reduce Transparency, or no backdrop-filter). */
+/* Light: Kumo's canvas (98.75% grey) under white cards with a 10% black
+   ring; neutral greys; Cloudflare blue for actions. */
 :root {
-  --background: #f2f2f7;
-  --foreground: #000;
+  --background: oklch(98.75% 0 0);
+  --foreground: oklch(21% 0.006 285.885);
+  --recessed: oklch(96% 0 0);
+  --hairline: oklch(93.5% 0 0);
+  --fill: oklch(92.2% 0 0);
   --card-solid: #fff;
-  --card: rgba(255, 255, 255, 0.56);
-  --card-foreground: #000;
+  --card: #fff;
+  --card-foreground: oklch(21% 0.006 285.885);
   --popover-solid: #fff;
-  --popover: rgba(255, 255, 255, 0.76);
-  --popover-foreground: #000;
-  --primary: #5856d6;
+  --popover: #fff;
+  --popover-foreground: oklch(21% 0.006 285.885);
+  --primary: oklch(0.5772 0.2324 260);
+  --primary-hover: oklch(48.8% 0.243 264.376);
   --primary-foreground: #fff;
-  --secondary: rgba(118, 118, 128, 0.12);
-  --secondary-foreground: #000;
-  --muted: rgba(118, 118, 128, 0.12);
-  --muted-foreground: #6e6e73;
-  --faint: #8e8e93;
-  --accent: rgba(118, 118, 128, 0.1);
-  --accent-foreground: #000;
-  --destructive: #d70015;
+  --secondary: oklch(97% 0 0);
+  --secondary-foreground: oklch(21% 0.006 285.885);
+  --muted: oklch(96% 0 0);
+  --muted-foreground: oklch(55.6% 0 0);
+  --faint: oklch(70.8% 0 0);
+  --accent: oklch(96% 0 0);
+  --accent-foreground: oklch(14.5% 0 0);
+  --destructive: oklch(50.5% 0.213 27.518);
   --destructive-foreground: #fff;
-  --border: rgba(60, 60, 67, 0.16);
-  --input: rgba(60, 60, 67, 0.22);
-  --ring: #5856d6;
-  --link: #5856d6;
-  --success: #248a3d;
-  --success-fill: #34c759;
-  --warning: #c93400;
-  --warning-fill: #ff9500;
-  --danger: #d70015;
-  --danger-fill: #ff3b30;
-  --chart-1: #5856d6;
-  --chart-2: #ff3b30;
-  --chart-3: #34c759;
-  --chart-4: #ff9500;
-  --chart-5: #32ade6;
-  --radius: 0.75rem;
-  --sidebar-solid: #f6f6f8;
-  --sidebar: rgba(250, 250, 252, 0.55);
-  --sidebar-foreground: #000;
-  --sidebar-primary: #5856d6;
+  --border: oklch(14.5% 0 0 / 0.1);
+  --input: oklch(14.5% 0 0 / 0.14);
+  --ring: oklch(0.5772 0.2324 260);
+  --link: oklch(42.4% 0.199 265.638);
+  --info: oklch(42.4% 0.199 265.638);
+  --success: oklch(50.8% 0.118 165.612);
+  --success-fill: oklch(59.6% 0.145 163.225);
+  --warning: oklch(55.5% 0.163 48.998);
+  --warning-fill: oklch(73.9% 0.177 58.2);
+  --danger: oklch(50.5% 0.213 27.518);
+  --danger-fill: oklch(63.7% 0.237 25.331);
+  --chart-1: oklch(0.5772 0.2324 260);
+  --chart-2: oklch(63.7% 0.237 25.331);
+  --chart-3: oklch(59.6% 0.145 163.225);
+  --chart-4: #f6821f;
+  --chart-5: oklch(55.8% 0.288 302.321);
+  --radius: 0.5rem;
+  --sidebar-solid: #fff;
+  --sidebar: #fff;
+  --sidebar-foreground: oklch(21% 0.006 285.885);
+  --sidebar-primary: oklch(0.5772 0.2324 260);
   --sidebar-primary-foreground: #fff;
-  --sidebar-accent: rgba(118, 118, 128, 0.12);
-  --sidebar-accent-foreground: #000;
-  --sidebar-border: rgba(60, 60, 67, 0.29);
-  --sidebar-ring: #5856d6;
-  --brand: linear-gradient(135deg, #5b6cff, #a78bfa 55%, #f0abfc);
-  /* Glass: a lit top edge, a hairline rim, a soft lift, and a sheen that
-     catches the light from the top left. */
-  --shadow-card:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 0 0 0.5px rgba(255, 255, 255, 0.6), 0 0 0 0.5px rgba(0, 0, 0, 0.06),
-    0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(40, 40, 90, 0.07);
-  --shadow-card-raised:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 0 0 0.5px rgba(255, 255, 255, 0.6), 0 0 0 0.5px rgba(0, 0, 0, 0.06),
-    0 2px 4px rgba(0, 0, 0, 0.05), 0 16px 40px rgba(40, 40, 90, 0.13);
-  --glass-sheen: linear-gradient(160deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 42%);
-  /* The wash of colour behind everything, for the glass to bend. */
-  --aurora:
-    radial-gradient(60vmax 50vmax at 0% 0%, rgba(88, 86, 214, 0.3), transparent 62%),
-    radial-gradient(50vmax 42vmax at 100% 0%, rgba(255, 45, 85, 0.17), transparent 62%),
-    radial-gradient(55vmax 48vmax at 85% 100%, rgba(50, 173, 230, 0.24), transparent 62%),
-    radial-gradient(44vmax 40vmax at 25% 100%, rgba(175, 82, 222, 0.14), transparent 62%);
-  /* Icon tiles (as Apple's: the same vivid colours in both appearances). */
-  --t-indigo: #5856d6; --t-blue: #007aff; --t-green: #34c759; --t-orange: #ff9500; --t-red: #ff3b30; --t-pink: #ff2d55;
-  --t-purple: #af52de; --t-cyan: #32ade6; --t-teal: #30b0c7; --t-mint: #00c7be; --t-yellow: #ffcc00; --t-brown: #a2845e;
-  --t-graphite: #636366; --t-gray: #8e8e93;
+  --sidebar-accent: oklch(96% 0 0);
+  --sidebar-accent-foreground: oklch(14.5% 0 0);
+  --sidebar-border: oklch(14.5% 0 0 / 0.1);
+  --sidebar-ring: oklch(0.5772 0.2324 260);
+  /* Cloudflare orange: the logo and the odd highlight, never a button. */
+  --brand-orange: #f6821f;
+  --brand: #f6821f;
+  /* Kumo's card: shadow-xs and a 1px ring of the line colour. */
+  --shadow-card: 0 0 0 1px var(--border), 0 1px 2px 0 oklch(0% 0 0 / 0.05);
+  --shadow-card-raised: 0 0 0 1px oklch(14.5% 0 0 / 0.16), 0 4px 12px -2px oklch(0% 0 0 / 0.08);
+  --glass-sheen: none;
+  --aurora: none;
+  /* Category hues (Kumo's badge colours). */
+  --t-indigo: oklch(54.6% 0.245 262.881); --t-blue: oklch(54.6% 0.245 262.881); --t-green: oklch(59.6% 0.145 163.225);
+  --t-orange: #f6821f; --t-red: oklch(57.7% 0.245 27.325); --t-pink: oklch(59.2% 0.249 0.584);
+  --t-purple: oklch(55.8% 0.288 302.321); --t-cyan: oklch(60.9% 0.126 221.723); --t-teal: oklch(54.9% 0.096 184.565);
+  --t-mint: oklch(59.6% 0.145 163.225); --t-yellow: oklch(76.9% 0.188 70.08); --t-brown: oklch(55.3% 0.064 56);
+  --t-graphite: oklch(43.9% 0 0); --t-gray: oklch(55.6% 0 0);
   color-scheme: light;
 }
 
-/* Dark: true black under a deep glow, smoked glass for cards. */
+/* Dark: Kumo's 10% canvas, 17% cards ringed in 32% grey, the blue mixed
+   10% toward black. */
 .dark {
-  --background: #000;
-  --foreground: #fff;
-  --card-solid: #1c1c1e;
-  --card: rgba(30, 30, 34, 0.5);
-  --card-foreground: #fff;
-  --popover-solid: #2c2c2e;
-  --popover: rgba(44, 44, 48, 0.72);
-  --popover-foreground: #fff;
-  --primary: #5e5ce6;
+  --background: oklch(10% 0 0);
+  --foreground: oklch(97% 0 0);
+  --recessed: oklch(15% 0 0);
+  --hairline: oklch(26.9% 0 0);
+  --fill: oklch(26.9% 0 0);
+  --card-solid: oklch(17% 0 0);
+  --card: oklch(17% 0 0);
+  --card-foreground: oklch(97% 0 0);
+  --popover-solid: oklch(20% 0 0);
+  --popover: oklch(20% 0 0);
+  --popover-foreground: oklch(97% 0 0);
+  --primary: color-mix(in oklch, oklch(0.5772 0.2324 260), black 10%);
+  --primary-hover: oklch(48.8% 0.243 264.376);
   --primary-foreground: #fff;
-  --secondary: rgba(118, 118, 128, 0.24);
-  --secondary-foreground: #fff;
-  --muted: rgba(118, 118, 128, 0.24);
-  --muted-foreground: #98989f;
-  --faint: #636366;
-  --accent: rgba(118, 118, 128, 0.2);
-  --accent-foreground: #fff;
-  --destructive: #ff6961;
+  --secondary: oklch(26.9% 0 0);
+  --secondary-foreground: oklch(97% 0 0);
+  --muted: oklch(23% 0 0);
+  --muted-foreground: oklch(70.8% 0 0);
+  --faint: oklch(55.6% 0 0);
+  --accent: oklch(26.9% 0 0);
+  --accent-foreground: oklch(98.5% 0 0);
+  --destructive: oklch(70.4% 0.191 22.216);
   --destructive-foreground: #fff;
-  --border: rgba(84, 84, 88, 0.48);
-  --input: rgba(84, 84, 88, 0.65);
-  --ring: #7d7aff;
-  --link: #7d7aff;
-  --success: #30d158;
-  --success-fill: #30d158;
-  --warning: #ff9f0a;
-  --warning-fill: #ff9f0a;
-  --danger: #ff6961;
-  --danger-fill: #ff453a;
-  --chart-1: #7d7aff;
-  --chart-2: #ff453a;
-  --chart-3: #30d158;
-  --chart-4: #ff9f0a;
-  --chart-5: #64d2ff;
-  --sidebar-solid: #1c1c1e;
-  --sidebar: rgba(22, 22, 26, 0.5);
-  --sidebar-foreground: #fff;
-  --sidebar-primary: #5e5ce6;
+  --border: oklch(32% 0 0);
+  --input: oklch(37.1% 0 0);
+  --ring: oklch(70.7% 0.165 254.624);
+  --link: oklch(70.7% 0.165 254.624);
+  --info: oklch(70.7% 0.165 254.624);
+  --success: oklch(76.5% 0.177 163.223);
+  --success-fill: oklch(69.6% 0.17 162.48);
+  --warning: oklch(75% 0.183 55.934);
+  --warning-fill: oklch(64.5% 0.168 50);
+  --danger: oklch(70.4% 0.191 22.216);
+  --danger-fill: oklch(57.7% 0.245 27.325);
+  --chart-1: oklch(62.3% 0.214 259.815);
+  --chart-2: oklch(63.7% 0.237 25.331);
+  --chart-3: oklch(69.6% 0.17 162.48);
+  --chart-4: #f6821f;
+  --chart-5: oklch(62.7% 0.265 303.9);
+  --sidebar-solid: oklch(17% 0 0);
+  --sidebar: oklch(17% 0 0);
+  --sidebar-foreground: oklch(97% 0 0);
+  --sidebar-primary: color-mix(in oklch, oklch(0.5772 0.2324 260), black 10%);
   --sidebar-primary-foreground: #fff;
-  --sidebar-accent: rgba(118, 118, 128, 0.24);
-  --sidebar-accent-foreground: #fff;
-  --sidebar-border: rgba(84, 84, 88, 0.75);
-  --sidebar-ring: #7d7aff;
-  --shadow-card:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.5),
-    0 1px 3px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.3);
-  --shadow-card-raised:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.5),
-    0 2px 6px rgba(0, 0, 0, 0.45), 0 18px 44px rgba(0, 0, 0, 0.45);
-  --glass-sheen: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 40%);
-  --aurora:
-    radial-gradient(60vmax 50vmax at 0% 0%, rgba(94, 92, 230, 0.5), transparent 62%),
-    radial-gradient(50vmax 42vmax at 100% 0%, rgba(255, 55, 95, 0.26), transparent 62%),
-    radial-gradient(55vmax 48vmax at 85% 100%, rgba(100, 210, 255, 0.26), transparent 62%),
-    radial-gradient(44vmax 40vmax at 25% 100%, rgba(191, 90, 242, 0.24), transparent 62%);
-  --t-indigo: #5e5ce6; --t-blue: #0a84ff; --t-green: #30d158; --t-orange: #ff9f0a; --t-red: #ff453a; --t-pink: #ff375f;
-  --t-purple: #bf5af2; --t-cyan: #32ade6; --t-teal: #30b0c7; --t-mint: #00c7be; --t-yellow: #ffcc00; --t-brown: #a2845e;
-  --t-graphite: #636366; --t-gray: #8e8e93;
+  --sidebar-accent: oklch(26.9% 0 0);
+  --sidebar-accent-foreground: oklch(98.5% 0 0);
+  --sidebar-border: oklch(32% 0 0);
+  --sidebar-ring: oklch(70.7% 0.165 254.624);
+  --shadow-card: 0 0 0 1px var(--border), 0 1px 2px 0 oklch(0% 0 0 / 0.3);
+  --shadow-card-raised: 0 0 0 1px oklch(40% 0 0), 0 4px 12px -2px oklch(0% 0 0 / 0.4);
+  --t-indigo: oklch(62.3% 0.214 259.815); --t-blue: oklch(62.3% 0.214 259.815); --t-green: oklch(69.6% 0.17 162.48);
+  --t-orange: #f6821f; --t-red: oklch(63.7% 0.237 25.331); --t-pink: oklch(65.6% 0.241 354.308);
+  --t-purple: oklch(62.7% 0.265 303.9); --t-cyan: oklch(71.5% 0.143 215.221); --t-teal: oklch(70.4% 0.14 182.503);
+  --t-mint: oklch(69.6% 0.17 162.48); --t-yellow: oklch(79.5% 0.184 86.047); --t-brown: oklch(62% 0.06 56);
+  --t-graphite: oklch(55.6% 0 0); --t-gray: oklch(70.8% 0 0);
   color-scheme: dark;
 }
 
@@ -242,75 +265,44 @@
     -webkit-text-size-adjust: 100%;
   }
   body {
-    @apply bg-background text-foreground antialiased;
-    letter-spacing: -0.008em;
-  }
-  /* The wash of colour, fixed behind the page (static: anything moving
-     here would make every pane of glass re-blur on each frame). */
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    background: var(--aurora);
+    @apply bg-background text-base text-foreground antialiased;
   }
   h1, h2, h3 {
     font-family: var(--font-heading);
   }
   ::selection {
-    background: color-mix(in srgb, var(--primary) 35%, transparent);
+    background: color-mix(in oklch, var(--primary) 25%, transparent);
   }
   a {
     @apply text-link underline-offset-2 hover:underline;
   }
   code {
-    @apply rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.86em];
+    @apply rounded-sm bg-muted px-1 py-0.5 font-mono text-[0.9em];
   }
 }
 
 @layer components {
-  /* An icon on a lit, coloured rounded square, as in Settings. */
+  /* An icon in a small neutral square (Kumo's recessed surface). */
   .icon-tile {
-    @apply inline-flex shrink-0 items-center justify-center text-white;
-    background: linear-gradient(180deg, color-mix(in srgb, #fff 16%, var(--tile, var(--t-gray))), var(--tile, var(--t-gray)));
-    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18), 0 1px 2px rgba(0, 0, 0, 0.18);
+    @apply inline-flex shrink-0 items-center justify-center bg-muted text-muted-foreground;
+    box-shadow: inset 0 0 0 1px var(--border);
   }
+  /* The brand colour, solid (the name is older than the look). */
   .brand-gradient {
     background: var(--brand);
   }
 }
 
-/* The translucent material Apple puts under sidebars, bars and menus. */
+/* Once frosted glass; the panel is flat now, so menus and bars are solid
+   and this only keeps the class name valid. */
 @utility material {
-  -webkit-backdrop-filter: saturate(180%) blur(30px);
-  backdrop-filter: saturate(180%) blur(30px);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
-/* A pane of glass: every card surface (bg-card + card-shadow). It frosts
-   what's behind it, catches the light on its top edge, and lifts a little. */
+/* Every card surface (bg-card + card-shadow): Kumo's 1px ring and xs
+   shadow. */
 @utility card-shadow {
   box-shadow: var(--shadow-card);
-  background-image: var(--glass-sheen);
-  -webkit-backdrop-filter: saturate(170%) blur(24px);
-  backdrop-filter: saturate(170%) blur(24px);
-}
-
-/* Reduce Transparency (or no backdrop-filter at all): solid surfaces, no
-   wash, as Apple does. */
-@media (prefers-reduced-transparency: reduce) {
-  :root, .dark {
-    --card: var(--card-solid);
-    --popover: var(--popover-solid);
-    --sidebar: var(--sidebar-solid);
-  }
-  body::before { display: none; }
-}
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root, .dark {
-    --card: var(--card-solid);
-    --popover: var(--popover-solid);
-    --sidebar: var(--sidebar-solid);
-  }
 }
 
 /* Base UI renders this rule in a <style> element; the CSP forbids those, so
@@ -331,22 +323,22 @@
   }
 }
 
-/* ---- Vitals (components/app/vitals.tsx): gauges fill in from the left. */
+/* ---- Vitals (components/app/vitals.tsx): bars fill in from the left. */
 .vital-fill {
-  animation: vital-in 0.9s var(--ease-spring) backwards;
+  animation: vital-in 0.6s var(--ease-spring) backwards;
   transition: width 0.6s var(--ease-apple);
 }
 @keyframes vital-in { from { clip-path: inset(0 100% 0 0 round 999px); } }
 
 /* ---- Charts (components/app/chart.tsx) ---- */
 .chart { display: block; width: 100%; overflow: visible; }
-.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .line { fill: none; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 .chart .line.c1 { stroke: var(--chart-1); }
-.chart .area.c1 { fill: var(--chart-1); fill-opacity: 0.16; }
+.chart .area.c1 { fill: var(--chart-1); fill-opacity: 0.1; }
 .chart .line.c2 { stroke: var(--chart-2); stroke-width: 1.5; stroke-dasharray: 3 3; }
-.chart .area.c2 { fill: var(--chart-2); fill-opacity: 0.12; }
+.chart .area.c2 { fill: var(--chart-2); fill-opacity: 0.08; }
 .chart .line.c3 { stroke: var(--chart-3); }
-.chart .area.c3 { fill: var(--chart-3); fill-opacity: 0.14; }
+.chart .area.c3 { fill: var(--chart-3); fill-opacity: 0.1; }
 .chart .line.c4 { stroke: var(--chart-4); }
 .chart .line.c5 { stroke: var(--chart-5); }
 .chart .cursor { stroke: var(--muted-foreground); stroke-width: 1; opacity: 0; }

@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from "react"
-import { CheckIcon, TriangleAlertIcon, XIcon } from "lucide-react"
+import { CircleCheckIcon, TriangleAlertIcon, XIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// Dynamic Island toasts: a black pill at the top centre. Errors stay until
+// Toasts: cards stacked in the top-right corner. Errors stay until
 // dismissed (they matter, and may be long); the rest go on their own, not
 // while the pointer is on them. Callable from anywhere: toast(), notify(),
 // showError().
@@ -66,7 +66,11 @@ export function Toaster({ withSidebar = false }: { withSidebar?: boolean }) {
   return (
     <div
       aria-live="polite"
-      className={cn("pointer-events-none fixed top-2.5 left-1/2 z-[100] flex w-max max-w-[min(520px,calc(100vw-1.5rem))] -translate-x-1/2 flex-col items-center gap-1.5", withSidebar && "md:left-[calc(50%+8rem)]")}
+      className={cn(
+        "pointer-events-none fixed right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2",
+        // In the panel, under the top bar; signed out, the top corner.
+        withSidebar ? "top-[4.375rem]" : "top-4"
+      )}
     >
       {list.map((t) => (
         <div
@@ -75,27 +79,24 @@ export function Toaster({ withSidebar = false }: { withSidebar?: boolean }) {
           onPointerEnter={() => t.kind !== "error" && clearTimeout(timers.get(t.id))}
           onPointerLeave={() => t.kind !== "error" && !t.leaving && arm(t.id, TOAST_MS / 2)}
           className={cn(
-            "pointer-events-auto flex min-h-11 max-w-full items-center gap-2.5 rounded-full bg-black py-2 pr-2 pl-3.5 text-white shadow-[0_10px_40px_rgba(0,0,0,.35),0_0_0_.5px_rgba(255,255,255,.12)]",
-            t.leaving ? "animate-island-out" : "animate-island-in"
+            "pointer-events-auto flex w-full items-start gap-2.5 rounded-lg bg-popover py-3 pr-2 pl-3.5 text-popover-foreground shadow-lg ring-1 ring-border",
+            t.kind === "error" && "ring-danger-fill/40",
+            t.leaving ? "animate-toast-out" : "animate-toast-in"
           )}
         >
-          <span
-            aria-hidden
-            className={cn(
-              "flex size-[22px] shrink-0 items-center justify-center rounded-full",
-              t.kind === "error" ? "bg-[#ff453a] text-white" : "bg-[#30d158] text-black"
-            )}
-          >
-            {t.kind === "error" ? <TriangleAlertIcon className="size-3.5" strokeWidth={2.5} /> : <CheckIcon className="size-3.5" strokeWidth={3} />}
-          </span>
-          <p className="m-0 flex-1 text-[0.9375rem] font-medium tracking-[-0.01em] [overflow-wrap:anywhere]">{t.message}</p>
+          {t.kind === "error" ? (
+            <TriangleAlertIcon aria-hidden className="mt-px size-[18px] shrink-0 text-danger" />
+          ) : (
+            <CircleCheckIcon aria-hidden className="mt-px size-[18px] shrink-0 text-success" />
+          )}
+          <p className="m-0 min-w-0 flex-1 text-base font-medium [overflow-wrap:anywhere]">{t.message}</p>
           <button
             type="button"
             aria-label="Dismiss"
             onClick={() => dismiss(t.id)}
-            className="flex size-7 shrink-0 items-center justify-center rounded-full bg-white/12 text-white/55 transition-colors hover:bg-white/22 hover:text-white"
+            className="-my-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
           >
-            <XIcon className="size-3.5" strokeWidth={2.5} />
+            <XIcon className="size-4" />
           </button>
         </div>
       ))}

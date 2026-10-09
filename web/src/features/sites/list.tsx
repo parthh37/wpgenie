@@ -110,8 +110,8 @@ export function SitesList() {
         <section
           aria-labelledby="attention-title"
           className={cn(
-            "mb-6 rounded-2xl p-4 sm:p-5",
-            attention.some((x) => x.a!.level === "bad") ? "bg-danger-fill/10" : "bg-warning-fill/10"
+            "mb-6 rounded-lg bg-card p-4 ring-1 ring-border sm:p-5",
+            attention.some((x) => x.a!.level === "bad") ? "border-l-2 border-l-danger-fill" : "border-l-2 border-l-warning-fill"
           )}
         >
           <h2 id="attention-title" className="mb-3 flex items-center gap-2 text-[1.0625rem] font-semibold">
@@ -197,7 +197,7 @@ function ListSkeleton() {
 function Tile({ icon: Icon, label, children, className }: { icon: typeof GlobeIcon; label: string; children: React.ReactNode; className?: string }) {
   return (
     <div className={cn("flex min-w-0 flex-col gap-1 rounded-2xl bg-card p-4 card-shadow", className)}>
-      <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <Icon className="size-3.5" />
         {label}
       </span>
@@ -207,7 +207,7 @@ function Tile({ icon: Icon, label, children, className }: { icon: typeof GlobeIc
 }
 
 const TileValue = ({ children }: { children: React.ReactNode }) => (
-  <span className="font-heading text-[1.75rem] leading-tight font-bold tracking-[-0.02em] tabular-nums">{children}</span>
+  <span className="font-heading text-2xl leading-tight font-semibold tabular-nums">{children}</span>
 )
 
 function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]; vitals: VitalValues[] }) {
@@ -280,7 +280,7 @@ function Fleet({ sites, stats, vitals: vs }: { sites: Site[]; stats: SiteStats[]
       <Tile icon={HeartPulseIcon} label="Fleet vitals" className="col-span-2 @4xl:col-span-1 @4xl:row-span-2">
         <VitalBars values={fleetVitals} protectionAsShare className="mt-3 flex-1 justify-evenly" />
       </Tile>
-      <Tile icon={ShieldIcon} label="Threats blocked · 24 h" className={cn("col-span-2", attacked > 0 && "bg-danger-fill/10")}>
+      <Tile icon={ShieldIcon} label="Threats blocked · 24 h" className="col-span-2">
         <TileValue>{stats.length ? fmtNum(total("blocked")) : "–"}</TileValue>
         <span className={cn("text-xs", attacked ? "font-medium text-danger" : off ? "text-warning" : "text-muted-foreground")}>
           {attacked ? `${attacked} in Under attack mode` : off ? `${off} with protection off` : "Protection on for every site"}
