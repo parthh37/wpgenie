@@ -19,16 +19,21 @@ import type { SectionProps } from "@/features/sites/sections"
 import { AddDomainDialog, checkBeforePrimary, type DomainPreset } from "./data/dns"
 import { useSiteJob } from "./data/jobs"
 import type { SiteCert } from "./data/types"
+import { Redirects } from "./domains/redirects"
+import { SiteLock } from "./domains/site-lock"
 
 // Domains & SSL: the names a site answers on (serving it, or redirecting
 // to the primary one), changing the primary domain, and its certificate:
-// automatic (Let's Encrypt, through Caddy) or uploaded.
+// automatic (Let's Encrypt, through Caddy) or uploaded. Then who may see
+// it (password protection) and where its old paths lead (redirects).
 
 export default function DomainsSection({ site }: SectionProps) {
   return (
     <div className="flex flex-col">
       <Domains site={site} />
       <Certificate site={site} />
+      <SiteLock site={site} />
+      <Redirects site={site} />
     </div>
   )
 }

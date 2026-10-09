@@ -6,10 +6,11 @@ Guidelines: the system font, grouped backgrounds, systemIndigo as the one
 tint, Liquid Glass surfaces over a soft wash of colour, Settings-style icon
 tiles, vital gauges and Dynamic Island toasts.
 
-It replaces the vanilla-JS dashboard in `internal/web/static` screen by screen.
-Until it has parity it is served at **`/next/`**; the classic panel stays at
-`/`. Both use the same addresses (`#/sites/<id>/<section>`, `#/billing/...`),
-so links move across unchanged.
+It replaced the vanilla-JS dashboard in `internal/web/static` and is served
+at **`/`** (its build lives under `/next/`, which redirects to `/`). The
+classic panel stays at `/classic/` until it's retired. Both use the same
+addresses (`#/sites/<id>/<section>`, `#/billing/...`), so links move across
+unchanged.
 
 ```sh
 npm ci

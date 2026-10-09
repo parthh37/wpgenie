@@ -17,7 +17,7 @@ export function LegacyFallback({ path, title }: { path: string; title: string })
           <EmptyDescription>This page hasn't moved to the new panel yet. It opens in the classic one, signed in as you.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button render={<a href={"/#/" + path} />} nativeButton={false}>
+          <Button render={<a href={"/classic/#/" + path} />} nativeButton={false}>
             <ExternalLinkIcon data-icon="inline-start" />
             Open in the classic panel
           </Button>

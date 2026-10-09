@@ -133,3 +133,22 @@ func (s *Store) SetSiteGrantAccess(ctx context.Context, siteID string, userID in
 func (s *Store) DeleteSiteGrant(ctx context.Context, siteID string, userID int64) error {
 	return s.exec1(ctx, `DELETE FROM site_grants WHERE site_id = ? AND user_id = ?`, siteID, userID)
 }
+
+// SiteGrantCounts maps each shared site to how many people it's shared with.
+func (s *Store) SiteGrantCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT site_id, COUNT(*) FROM site_grants GROUP BY site_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}

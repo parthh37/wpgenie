@@ -169,6 +169,11 @@ type Service struct {
 	repoMu sync.Map
 	// phpLogLocks: site ID -> *sync.Mutex, one error log read at a time.
 	phpLogLocks sync.Map
+	// wpConfigLocks: site ID -> *sync.Mutex, one wp-config.php edit at a
+	// time (debug mode). cronRuns: site ID -> cronRun, the last WP-Cron
+	// run of the every-minute loop.
+	wpConfigLocks sync.Map
+	cronRuns      sync.Map
 	// certWarnDay: the day expiring certificates were last reported (the
 	// backup scheduler's goroutine only).
 	certWarnDay string
@@ -231,7 +236,7 @@ func newSite(domain, name string) *store.Site {
 		ShieldMode: string(shield.ModeAuto), BlockAIBots: true, WAF: true,
 		Reputation: ReputationChallenge, CountryMode: CountryOff, CountryAction: ReputationBlock, BodyWAF: BodyWAFBlock,
 		MemoryMB: defaultMemoryMB, CPUs: defaultCPUs, Replicas: 1,
-		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(),
+		PageCache: true, ObjectCache: true, Optimize: DefaultOptimizations(), Harden: DefaultHardening(),
 	}
 }
 
@@ -644,6 +649,10 @@ func (s *Service) Sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	redirects, err := s.Store.AllSiteRedirects(ctx)
+	if err != nil {
+		return err
+	}
 	var ps []proxy.Site
 	settings := make(map[string]shield.SiteSettings, len(sites))
 	// A site that moved here is also served to visitors its old server
@@ -668,6 +677,7 @@ func (s *Service) Sync(ctx context.Context) error {
 			PageCache: st.PageCache, BodyWAF: proxy.WAFMode(st.BodyWAF),
 			CustomCert: certs[st.ID] != nil, Staging: st.ParentID != "",
 			Images: st.ImageFormats, Forwarded: ingress[st.ID].From != "", Offload: offloadOf[st.ID],
+			Lock: proxyLock(st), PathRedirects: proxyRedirects(redirects[st.ID]),
 		})
 		if len(st.RemoteUpstreams) > 0 {
 			// Spread: every replica serves page views; writes stay home.

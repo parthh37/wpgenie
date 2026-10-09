@@ -12,7 +12,7 @@ export function SectionFallback({ site, section }: { site: Site; section: string
         <EmptyDescription>This section hasn't moved to the new panel yet.</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button render={<a href={`/#/sites/${encodeURIComponent(site.id)}/${section}`} />} nativeButton={false}>
+        <Button render={<a href={`/classic/#/sites/${encodeURIComponent(site.id)}/${section}`} />} nativeButton={false}>
           <ExternalLinkIcon data-icon="inline-start" />
           Open in the classic panel
         </Button>

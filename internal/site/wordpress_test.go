@@ -384,7 +384,7 @@ func TestDeleteUser(t *testing.T) {
 func TestAnalyseFindings(t *testing.T) {
 	now := time.Date(2026, 9, 30, 3, 0, 0, 0, time.UTC)
 	st := &store.Site{ID: "s1", ShieldMode: "standard", WAF: true, AutoUpdate: AutoUpdateSecurity,
-		PageCache: false, ObjectCache: true, Optimize: DefaultOptimizations(), ImageFormats: []string{"webp"}}
+		PageCache: false, ObjectCache: true, Optimize: DefaultOptimizations(), Harden: DefaultHardening(), ImageFormats: []string{"webp"}}
 	scan := &ScanReport{ScannedAt: now.Add(-time.Hour), Inventory: &Inventory{
 		Core: Component{Type: "core", Slug: "wordpress", Version: "6.8.1"},
 		Plugins: []Component{

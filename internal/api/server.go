@@ -158,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	s.supportRoutes(mux, r)
 	s.logshipRoutes(mux, r)
 	s.sharingRoutes(r)
+	s.edgeRoutes(r)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.
@@ -226,6 +227,8 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/optimizations", viewer, s.optimizations)
 	r("PUT /api/v1/sites/{id}/optimize", operator, s.setOptimize)
 	r("POST /api/v1/sites/{id}/optimize/cleanup", operator, s.cleanupDB)
+	s.toolsRoutes(r)
+	s.hardeningRoutes(r)
 	r("GET /api/v1/settings/branding", viewer, s.branding)
 	r("PUT /api/v1/settings/branding", admin, s.setBranding)
 	r("GET /api/v1/settings/branding/logo", viewer, s.brandLogo)
@@ -353,8 +356,27 @@ func (s *Server) Handler() http.Handler {
 
 	static, _ := fs.Sub(web.Static, "static")
 	mux.Handle("GET /", http.FileServerFS(static))
+	// The panel is the React one (built into static/next). The classic one
+	// stays at /classic/ until it's retired; both use the same #/ addresses,
+	// so links in emails and payment returns land on the same screen.
+	mux.HandleFunc("GET /{$}", panelPage(static, "next/index.html"))
+	mux.HandleFunc("GET /classic/{$}", panelPage(static, "index.html"))
+	mux.HandleFunc("GET /next/{$}", func(w http.ResponseWriter, r *http.Request) {
+		// The browser keeps the #fragment across the redirect.
+		http.Redirect(w, r, "/", http.StatusMovedPermanently)
+	})
 
 	return securityHeaders(mux)
+}
+
+// panelPage serves one of the panel's HTML pages. They're revalidated on
+// every load: they name the build's hashed scripts, so a stale copy after
+// an upgrade would load the old panel (or none).
+func panelPage(static fs.FS, name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, static, name)
+	}
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
@@ -438,13 +460,21 @@ func (s *Server) listSites(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	counts, err := s.Store.SiteGrantCounts(r.Context())
+	if err != nil {
+		return err
+	}
 	out := make([]siteView, 0, len(sites))
 	for _, st := range sites {
 		acct, ok := owners[st.ID]
 		if !ok && tenantOf(r) != nil {
 			continue
 		}
-		out = append(out, siteView{Site: st, AccountID: acct, Access: shared[st.ID]})
+		v := siteView{Site: st, AccountID: acct, Access: shared[st.ID]}
+		if v.Access == "" {
+			v.SharedWith = counts[st.ID]
+		}
+		out = append(out, v)
 	}
 	return writeJSON(w, http.StatusOK, out)
 }
@@ -477,6 +507,11 @@ func (s *Server) getSite(w http.ResponseWriter, r *http.Request) error {
 	}
 	if t := tenantOf(r); t != nil {
 		v.Access = t.Access
+	}
+	if v.Access == "" {
+		if grants, err := s.Store.SiteGrants(r.Context(), st.ID); err == nil {
+			v.SharedWith = len(grants)
+		}
 	}
 	return writeJSON(w, http.StatusOK, v)
 }

@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useRef } from "react"
-import { ChevronLeftIcon, ExternalLinkIcon, LayoutDashboardIcon } from "lucide-react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
+import { ChevronLeftIcon, ExternalLinkIcon, LayoutDashboardIcon, UsersIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -10,11 +10,13 @@ import { PageSpinner } from "@/app/shell"
 import { ScreenBoundary } from "@/components/app/error-boundary"
 import { useClustered, useNodes, useSite } from "@/lib/query"
 import { href, navigate, sitePath } from "@/lib/router"
-import { ACCESS_LABELS } from "@/lib/session"
+import { ACCESS_LABELS, useSession } from "@/lib/session"
 import { cn } from "@/lib/utils"
 import { SHIELD_LABELS, useAttack } from "./data"
 import { SiteAvatar } from "./list"
 import { RAIL_GROUPS, resolveSection, sectionsFor } from "./sections"
+
+const ShareDialog = lazy(() => import("./sections/sharing").then((m) => ({ default: m.ShareDialog })))
 
 // One site, full page: its header, the sections in a rail (grouped, as in
 // Settings), and the open section.
@@ -130,7 +132,13 @@ export function SiteWorkspace({ id, section }: { id: string; section?: string })
 function SiteHeader({ siteId }: { siteId: string }) {
   const { site } = useSite(siteId)
   const { data: attack } = useAttack(site!)
+  const s = useSession()
+  const [sharing, setSharing] = useState(false)
   if (!site) return null
+  // Share, as in a document: for the site's owners and staff. A site
+  // without an account opens Sharing, where staff give it one first.
+  const canShare = !site.access && s.canChange
+  const shared = site.shared_with ?? 0
   const url = "https://" + site.primary_domain
   return (
     <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
@@ -156,7 +164,16 @@ function SiteHeader({ siteId }: { siteId: string }) {
           </Badge>
         </div>
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
+        {canShare && (
+          <Button
+            onClick={() => (site.account_id ? setSharing(true) : navigate(sitePath(site.id, "sharing"), { replace: true }))}
+            title={shared ? `Shared with ${shared} ${shared === 1 ? "person" : "people"}` : "Give someone else access to this site"}
+          >
+            <UsersIcon data-icon="inline-start" />
+            {shared ? `Shared · ${shared}` : "Share"}
+          </Button>
+        )}
         <Button variant="tinted" render={<a href={url} target="_blank" rel="noopener" />} nativeButton={false}>
           <ExternalLinkIcon data-icon="inline-start" />
           Visit
@@ -166,6 +183,11 @@ function SiteHeader({ siteId }: { siteId: string }) {
           WP Admin
         </Button>
       </div>
+      {sharing && (
+        <Suspense fallback={null}>
+          <ShareDialog site={site} open={sharing} onOpenChange={setSharing} />
+        </Suspense>
+      )}
     </header>
   )
 }

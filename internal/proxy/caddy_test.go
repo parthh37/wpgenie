@@ -49,6 +49,12 @@ func TestRender(t *testing.T) {
 		"header_up -X-WPGenie-Site",
 		// /wp-login.php/x.css runs wp-login.php: ".php" anywhere must reach the shield.
 		"not path_regexp (?i)\\.php",
+		// Browser features and version leaks; the ? headers one per line
+		// (in one block, Caddy would set each only when both are absent).
+		`	header ?Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), browsing-topics=()"` + "\n",
+		`	header ?Cross-Origin-Opener-Policy "same-origin-allow-popups"` + "\n",
+		"path /wp-content/plugins/*/readme.txt /wp-content/themes/*/readme.txt",
+		"path /wp-includes/wlwmanifest.xml",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("rendered Caddyfile missing %q", want)

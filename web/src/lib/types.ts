@@ -60,6 +60,8 @@ export interface Site {
   node?: string
   image_formats: string[]
   optimize: string[]
+  // WordPress hardening on (the /hardening catalogue's keys).
+  harden?: string[]
   waf: boolean
   admin_allow: string[]
   trusted_ips: string[]
@@ -86,10 +88,17 @@ export interface Site {
   auto_update: string
   smtp: boolean
   parent_id: string
+  // The site lock: visitors need this username and its password (never
+  // sent to the panel). Absent from servers without it.
+  site_lock?: boolean
+  site_lock_user?: string
+  site_lock_allow?: string[]
   account_id?: number
   // The level another account shared this site with you at; absent when
   // it's yours (or you're staff).
   access?: SiteAccess
+  // How many people its owners shared it with (for its owners and staff).
+  shared_with?: number
   php: { memory_limit_mb: number; upload_max_mb: number; max_execution_time: number; max_input_vars: number }
   created_at: string
   updated_at: string
@@ -121,6 +130,8 @@ export interface Job {
   progress: number
   step?: string
   error?: string
+  // JSON the job left (never secrets), e.g. a search & replace's counts.
+  result?: string
   created_at?: string
   finished_at?: string
 }

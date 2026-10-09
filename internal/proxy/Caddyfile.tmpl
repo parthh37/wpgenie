@@ -35,6 +35,16 @@
 		-Server
 		-X-Powered-By
 	}
+	# Defaults a site may override with its own header (? = only if absent;
+	# one line each, or Caddy sets them only when both are absent): the
+	# camera, microphone and location for the site's own pages (QR scanners,
+	# store locators) but never for a frame another site embeds in it, no
+	# interest-based ad topics (FLoC's
+	# successor; browsers warn about interest-cohort); and windows the site
+	# opens keep working (payment and sign-in popups) while other sites
+	# lose their handle on it.
+	header ?Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), browsing-topics=()"
+	header ?Cross-Origin-Opener-Policy "same-origin-allow-popups"
 	# Files that must never be served, and PHP where PHP should never run.
 	@wpg_forbidden {
 		path /wp-config.php /wp-config-sample.php /readme.html /license.txt
@@ -42,6 +52,11 @@
 		path /wp-content/uploads/*.php /wp-content/uploads/*.phtml /wp-content/uploads/*.phar
 		path *.sql *.sql.gz *.bak *.old *.orig *.swp *.log *.ini
 		path /wp-content/cache/wpgenie/* /wp-content/cache/wpgenie.*
+		# What tells a scanner which versions (and so which vulnerabilities)
+		# a site has.
+		path /wp-content/plugins/*/readme.txt /wp-content/themes/*/readme.txt
+		path /wp-content/plugins/*/changelog.txt /wp-content/themes/*/changelog.txt
+		path /wp-includes/wlwmanifest.xml
 	}
 	@wpg_dotfiles path_regexp ^/(?:.*/)?\.(?:git|svn|hg|env|htaccess|htpasswd|user\.ini|DS_Store|idea|vscode|wpgenie-restore)
 }
@@ -210,8 +225,21 @@
 		not path_regexp (?i)\.php
 		file
 	}
+	{{- if .Lock}}
+	# Locked: only for browsers that have the password, never a CDN or other
+	# shared cache. Deferred, so the lock's own 401 doesn't get them.
+	header @wpg_static_long {
+		Cache-Control "private, max-age=2592000"
+		defer
+	}
+	header @wpg_static_short {
+		Cache-Control "private, max-age=604800"
+		defer
+	}
+	{{- else}}
 	header @wpg_static_long Cache-Control "public, max-age=2592000"
 	header @wpg_static_short Cache-Control "public, max-age=604800"
+	{{- end}}
 	{{- if .AssetCDN}}
 	# A pull-zone CDN serves static files from its own hostname: browsers
 	# only use fonts from another origin with CORS.
@@ -251,6 +279,27 @@
 		not path_regexp (?i)(?:\.php|/\.)
 		not file
 	}
+	{{- end}}
+	{{- with .Lock}}
+	# The site lock asks everyone for the password but Let's Encrypt, the
+	# allowed networks (client_ip: the visitor, also behind Cloudflare) and
+	# the daemon's health checks (from this server itself, remote_ip being
+	# the connection's own peer), so a broken update on a locked site is
+	# still seen and rolled back. (Visitors the cluster passes on arrive
+	# over loopback too, but with their own address from the PROXY header.)
+	@wpg_locked {
+		not path /.well-known/acme-challenge/*
+		not {
+			remote_ip 127.0.0.1/32 ::1/128
+			query wpgenie-health=*
+		}
+		{{- if .Allow}}
+		not client_ip {{join .Allow " "}}
+		{{- end}}
+	}
+	{{- end}}
+	{{- range $i, $r := .RedirectRules}}
+	@wpg_redirect_{{$i}} path {{join $r.Paths " "}}
 	{{- end}}
 	{{- if .PageCache}}
 	# Page cache hit: the same checks the PHP side applies before storing a
@@ -306,6 +355,18 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 		{{- end}}
+		{{- with .Lock}}
+		# After the shield (its bans and rate limits count password guesses
+		# too), before the WAF and everything that serves the site: cached
+		# pages, files, uploads and PHP. The panel's own paths (/_wpgenie/*,
+		# /_shield/*) are routed above it.
+		basic_auth @wpg_locked bcrypt "Private site" {
+			{{.User}} {{.Hash}}
+		}
+		# The password is the lock's alone: PHP would see it (PHP_AUTH_PW),
+		# and the page cache skips requests that carry credentials.
+		request_header @wpg_locked -Authorization
+		{{- end}}
 		{{- if ne .BodyWAF "off"}}
 		# After the shield (bans and rate limits come first), before the page
 		# cache and PHP.
@@ -315,6 +376,13 @@
 		respond @wpg_dotfiles 404
 		{{- if .BlockXMLRPC}}
 		respond @wpg_xmlrpc 403
+		{{- end}}
+		{{- if .RedirectRules}}
+		# Redirects, the most specific first: before cached pages, uploads
+		# and PHP.
+		{{- end}}
+		{{- range $i, $r := .RedirectRules}}
+		redir @wpg_redirect_{{$i}} {{$r.Location}} {{$r.Code}}
 		{{- end}}
 		{{- range .Images}}
 		rewrite @wpg_img_{{.}} {path}.{{.}}

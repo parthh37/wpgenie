@@ -43,7 +43,35 @@ export interface ScanReport {
     uploads_php: string[] | null
   }
   vulnerable: number
+  // Compared with the previous scan; absent in reports from before it.
+  intrusion?: Intrusion | null
   errors?: string[] | null
+}
+
+export interface AdminAccount {
+  id: number
+  login: string
+  registered?: string
+  role?: string
+  super?: boolean
+}
+
+export interface FileChange {
+  path: string
+  change: "changed" | "added" | string
+  component: string
+}
+
+export interface Intrusion {
+  admins: AdminAccount[] | null
+  new_admins: AdminAccount[] | null
+  admins_baseline?: string
+  file_changes: FileChange[] | null
+  file_changes_total: number
+  updated?: string[] | null
+  files_checked: number
+  files_truncated?: boolean
+  files_baseline?: string
 }
 
 export interface ProtectionLevel {

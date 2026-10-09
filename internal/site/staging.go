@@ -34,6 +34,9 @@ import (
 // StagingInput creates a staging site.
 type StagingInput struct {
 	Domain string `json:"domain"` // default staging.<live primary domain>
+	// Lock, if enabled, locks the copy from the start: nobody sees it
+	// without the password, not even while it is being made.
+	Lock *LockInput `json:"lock,omitempty"`
 }
 
 // StartStaging clones a live site into a new staging site, as a job.
@@ -70,9 +73,15 @@ func (s *Service) StartStaging(ctx context.Context, liveID string, in StagingInp
 	st.MemoryMB, st.CPUs = live.MemoryMB, live.CPUs
 	st.PageCache, st.ObjectCache = live.PageCache, live.ObjectCache
 	st.Optimize = slices.Clone(live.Optimize)
+	st.Harden = slices.Clone(live.Harden)
 	st.ShieldMode, st.BlockAIBots, st.WAF, st.BodyWAF, st.XMLRPC = live.ShieldMode, live.BlockAIBots, live.WAF, live.BodyWAF, live.XMLRPC
 	st.AdminAllow, st.TrustedIPs, st.DenyIPs = live.AdminAllow, live.TrustedIPs, live.DenyIPs
 	st.AutoUpdate = AutoUpdateOff
+	if in.Lock != nil && in.Lock.Enabled {
+		if err := applyLock(st, *in.Lock); err != nil {
+			return nil, 0, err
+		}
+	}
 	bld, err := s.reserve(ctx, st)
 	if err != nil {
 		return nil, 0, err
@@ -122,6 +131,9 @@ func (s *Service) StartStaging(ctx context.Context, liveID string, in StagingInp
 		t.SetResult(map[string]string{"site_id": st.ID, "url": "https://" + domain})
 		s.event(liveID, "staging", fmt.Sprintf("Staging site %s created (%s)", domain, st.ID))
 		s.event(st.ID, "staging", fmt.Sprintf("Cloned from %s", live.PrimaryDomain))
+		if st.Lock {
+			s.event(st.ID, "lock", fmt.Sprintf("Site lock on from the start: visitors need the username %s and its password", st.LockUser))
+		}
 		return nil
 	})
 	if err != nil {
@@ -232,7 +244,9 @@ func (s *Service) push(ctx context.Context, liveID, stagingID string, in PushInp
 
 	if in.Files != PushFilesNone {
 		t.Progress(45, "Pushing files")
-		if err := s.copyInstall(ctx, stagingID, liveID, in.Files == PushFilesAll); err != nil {
+		if err := s.keepMaintenance(liveID, func() error {
+			return s.copyInstall(ctx, stagingID, liveID, in.Files == PushFilesAll)
+		}); err != nil {
 			return fail(err)
 		}
 	}

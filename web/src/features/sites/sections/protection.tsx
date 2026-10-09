@@ -16,14 +16,15 @@ import { useQuery } from "@tanstack/react-query"
 import { useAttack } from "../data"
 import type { SectionProps } from "../sections"
 import { AdvancedProtection, advancedKey } from "./protect/advanced"
+import { HardeningCard } from "./protect/hardening"
 import { RecentBlocks } from "./protect/recent-blocks"
 import { ScanSection } from "./protect/scan"
 import { CHECK_NAMES, LEVEL_NAMES, levelOf, Note, putShield, type ShieldChange } from "./protect/shared"
 import type { ProtectionLevel } from "./protect/types"
 
-// Protection: a level and a visitor check in plain words (simple.js), the
-// detailed rules under Advanced (app.js renderSecurity), what was blocked
-// lately, and the vulnerability scan.
+// Protection: a level and a visitor check in plain words (simple.js),
+// WordPress hardening, the detailed rules under Advanced (app.js
+// renderSecurity), what was blocked lately, and the vulnerability scan.
 
 const recommended = (
   <Badge variant="secondary" className="ml-1.5 bg-primary/12 align-middle text-link">
@@ -87,7 +88,8 @@ export default function ProtectionSection({ site }: SectionProps) {
               </ChoiceCard>
               <ChoiceCard name={`level-${site.id}`} value="strict" title="Strict" checked={level === "strict"} disabled={off}
                 onChange={(v) => put({ level: v }, `${LEVEL_NAMES[v]} protection on ${site.primary_domain}`)}>
-                For sites that are attacked often: tighter limits, and known bad addresses are blocked.
+                For sites that are attacked often: tighter limits, and known bad addresses are blocked. Pair it with locking administrator
+                accounts under WordPress hardening.
               </ChoiceCard>
             </div>
             {level === "custom" && <Note className="mt-3">This site has custom settings (see Advanced). Choosing a level replaces them.</Note>}
@@ -145,6 +147,8 @@ export default function ProtectionSection({ site }: SectionProps) {
           </Label>
         </div>
       </Section>
+
+      <HardeningCard site={site} />
 
       <Collapsible className="mb-4 rounded-2xl bg-card px-5 py-4 card-shadow">
         <CollapsibleTrigger

@@ -23,6 +23,9 @@ export const JOB_NAMES: Record<string, string> = {
   "offload-download": "Uploads copied back from the bucket",
   migrate: "Moving a site to another server",
   drain: "Moving every site off a server",
+  "search-replace": "Search & replace",
+  "search-replace-preview": "Search & replace preview",
+  "theme-install": "Theme install",
 }
 
 export interface JobResult {

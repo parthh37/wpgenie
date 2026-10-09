@@ -20,6 +20,7 @@ import { useSession } from "@/lib/session"
 import type { Site } from "@/lib/types"
 import type { SectionProps } from "@/features/sites/sections"
 import { useSiteJob } from "./data/jobs"
+import { LockFields, showLockPassword, suggestPassword } from "./domains/site-lock"
 
 // Staging: a private copy of a live site on its own domain. On a live site:
 // create one (or open it); on a staging site: push files, the database or
@@ -72,14 +73,24 @@ function CreateStaging({ site }: { site: Site }) {
   const s = useSession()
   const job = useSiteJob(site.id, ["staging"])
   const [domain, setDomain] = useState("")
+  // Locking the copy from the start (deciding who sees it needs manager
+  // access, like the lock itself).
+  const canLock = s.canChangeSite(site, "manager")
+  const [lock, setLock] = useState(false)
+  const [lockUser, setLockUser] = useState("preview")
+  const [lockPassword, setLockPassword] = useState("")
   const placeholder = "staging." + site.primary_domain.replace(/^www\./, "")
 
   const create = async () => {
-    const res = await job.run<{ job_id: string; site?: Site }>("POST", `/sites/${site.id}/staging`, { domain: domain.trim() }, async (v) => {
+    const body = { domain: domain.trim(), ...(lock ? { lock: { enabled: true, username: lockUser.trim(), password: lockPassword } } : {}) }
+    const res = await job.run<{ job_id: string; site?: Site }>("POST", `/sites/${site.id}/staging`, body, async (v) => {
       if (v.job.status === "succeeded") notify("Staging site ready")
     })
     // The copy is listed (being created) at once.
-    if (res) await invalidate("/sites")
+    if (res) {
+      if (lock) showLockPassword(res.site?.primary_domain || domain.trim() || placeholder, lockUser.trim(), lockPassword)
+      await invalidate("/sites")
+    }
   }
 
   return (
@@ -114,6 +125,28 @@ function CreateStaging({ site }: { site: Site }) {
             {job.running ? "Creating staging site…" : "Create staging site"}
           </Button>
           <FieldDescription className="basis-full">Empty: {placeholder}.</FieldDescription>
+          {canLock && (
+            <div className="flex basis-full flex-col gap-3">
+              <Label className="w-fit font-normal">
+                <Switch
+                  checked={lock}
+                  disabled={job.running}
+                  onCheckedChange={(on) => {
+                    setLock(on)
+                    if (on && !lockPassword) setLockPassword(suggestPassword())
+                  }}
+                />
+                Ask visitors for a password
+              </Label>
+              {lock ? (
+                <div className="grid gap-4 rounded-2xl bg-muted/50 p-3.5 sm:max-w-2xl sm:grid-cols-2">
+                  <LockFields user={lockUser} password={lockPassword} onUser={setLockUser} onPassword={setLockPassword} disabled={job.running} />
+                </div>
+              ) : (
+                <FieldDescription>Only people with the password see the copy, from the moment it exists. You can turn this on or off later under Domains & SSL.</FieldDescription>
+              )}
+            </div>
+          )}
         </form>
       ) : (
         <p className="text-sm text-muted-foreground">This site has no staging copy.</p>

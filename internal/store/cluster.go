@@ -202,7 +202,7 @@ func scanClusterSite(row interface{ Scan(...any) error }) (*ClusterSite, error) 
 // always have them (clients iterate them without checking).
 func (st *Site) normalizeLists() {
 	for _, l := range []*[]string{&st.Domains, &st.RedirectDomains, &st.AdminAllow, &st.TrustedIPs, &st.DenyIPs,
-		&st.Countries, &st.ImageFormats, &st.Optimize, &st.SpreadNodes} {
+		&st.Countries, &st.ImageFormats, &st.Optimize, &st.Harden, &st.SpreadNodes, &st.LockAllow} {
 		if *l == nil {
 			*l = []string{}
 		}
