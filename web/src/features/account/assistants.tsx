@@ -35,7 +35,7 @@ export function Assistants({ blocked }: { blocked: boolean }) {
         <p className="text-sm text-muted-foreground">Turn on two-factor authentication first: this panel requires it before an assistant can connect.</p>
       ) : (
         <div className="flex flex-col gap-5">
-          {info.isLoading && <Skeleton className="h-24 rounded-xl" />}
+          {info.isLoading && <Skeleton className="h-24 rounded-lg" />}
           {info.error && <LoadError error={info.error} retry={() => info.refetch()} />}
           {info.data && (
             <>
@@ -47,7 +47,7 @@ export function Assistants({ blocked }: { blocked: boolean }) {
               )}
               <div className="grid gap-1.5">
                 <span className="text-sm font-medium">Connector address</span>
-                <CopyField text={info.data.url} className="rounded-xl bg-muted px-3 font-mono text-sm" />
+                <CopyField text={info.data.url} className="rounded-lg bg-muted px-3 font-mono text-sm" />
               </div>
               <Steps url={info.data.url} />
             </>
@@ -55,7 +55,7 @@ export function Assistants({ blocked }: { blocked: boolean }) {
 
           <div className="grid gap-2">
             <h3 className="text-sm font-semibold">Connected assistants</h3>
-            {tokens.isLoading && <Skeleton className="h-16 rounded-xl" />}
+            {tokens.isLoading && <Skeleton className="h-16 rounded-lg" />}
             {tokens.error && <LoadError error={tokens.error} retry={() => tokens.refetch()} />}
             {tokens.data && (
               <BTable
@@ -90,7 +90,7 @@ export function Assistants({ blocked }: { blocked: boolean }) {
               <summary className="cursor-pointer font-medium">What an assistant can do for you ({info.data.tools.length})</summary>
               <ul className="mt-2 grid list-none gap-1.5 p-0 sm:grid-cols-2">
                 {info.data.tools.map((t) => (
-                  <li key={t.name} className="rounded-xl bg-muted/60 px-3 py-2">
+                  <li key={t.name} className="rounded-lg bg-muted/60 px-3 py-2">
                     <span className="font-medium">{t.title}</span>
                     {!t.read_only && <span className="ml-1.5 text-xs text-warning">makes changes</span>}
                     <span className="block text-xs text-muted-foreground">{t.description}</span>
@@ -131,7 +131,7 @@ function Steps({ url }: { url: string }) {
       <TabsContent value="code">
         <div className="grid gap-2 text-sm">
           <p>Run this, then type /mcp in Claude Code and choose WPGenie to sign in:</p>
-          <CopyField text={`claude mcp add --transport http wpgenie ${url}`} className="rounded-xl bg-muted px-3 font-mono text-xs" />
+          <CopyField text={`claude mcp add --transport http wpgenie ${url}`} className="rounded-lg bg-muted px-3 font-mono text-xs" />
         </div>
       </TabsContent>
       <TabsContent value="other">

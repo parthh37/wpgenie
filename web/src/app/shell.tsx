@@ -1,27 +1,35 @@
-import { Suspense, useCallback, useEffect, useMemo } from "react"
-import { LogOutIcon, MoonIcon, SearchIcon, SunIcon } from "lucide-react"
+import { Fragment, Suspense, useCallback, useEffect, useMemo } from "react"
+import { ChevronRightIcon, LogOutIcon, MoonIcon, SearchIcon, SunIcon, UserIcon } from "lucide-react"
 import {
-  Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader,
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader,
   SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
 } from "@/components/ui/sidebar"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Kbd } from "@/components/ui/kbd"
 import { Spinner } from "@/components/ui/spinner"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ScreenBoundary } from "@/components/app/error-boundary"
-import { IconTile } from "@/components/app/icon-tile"
 import { Logo } from "@/components/app/logo"
 import { Toaster, showError } from "@/components/app/toaster"
 import { JobTray } from "@/app/job-tray"
 import { CommandPalette, openPalette } from "@/app/command-palette"
 import { NewSiteDialog } from "@/features/sites/new-site"
+import { SECTIONS } from "@/features/sites/sections"
 import { GROUP_LABEL, PAGES, type NavGroup, type PageDef } from "@/app/pages"
 import { useAlertsFiring, useNavFlags, useSupportSummary, useTenantBilling, useUpdateAvailable } from "@/app/nav-state"
 import { pollJobs, stopJobs } from "@/lib/jobs"
-import { href, navigate, useLocation, useRoute } from "@/lib/router"
+import { useSite } from "@/lib/query"
+import { href, navigate, sitePath, useLocation, useRoute } from "@/lib/router"
 import { useSession } from "@/lib/session"
 import { toggleTheme, useTheme } from "@/lib/theme"
-import { cn } from "@/lib/utils"
+import { humanize } from "@/lib/format"
+
+// The panel's frame, as Cloudflare's dashboard: a white sidebar of grouped
+// pages on the left, a top bar over the page (where you are, search, theme
+// and your account), and the page under it.
 
 const GROUPS: NavGroup[] = ["", "operate", "business", "infrastructure"]
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
@@ -80,7 +88,7 @@ export function AppShell() {
     <SidebarProvider>
       <AppSidebar pages={visible} current={current.key} />
       <SidebarInset className="min-w-0">
-        <MobileTop />
+        <TopBar current={current} />
         <main id="main" tabIndex={-1} className="flex-1 outline-none">
           <ScreenBoundary key={location}>
             <Suspense fallback={<PageSpinner />}>
@@ -111,26 +119,26 @@ function AppSidebar({ pages, current }: { pages: PageDef[]; current: string }) {
   const support = useSupportSummary(s)
   const alerts = useAlertsFiring(s)
   const update = useUpdateAvailable(s)
-  const theme = useTheme()
 
+  const badgeAt = "top-1/2! right-2 -translate-y-1/2"
   const badge = (key: string) => {
     if (key === "support" && support.data?.awaiting)
       return (
-        <SidebarMenuBadge className="rounded-full bg-danger-fill px-1.5 text-white">
+        <SidebarMenuBadge className={`${badgeAt} h-[18px] min-w-[18px] rounded-full bg-danger-fill px-1.5 text-[11px] font-semibold text-white peer-hover/menu-button:text-white peer-data-active/menu-button:text-white`}>
           {support.data.awaiting}
           <span className="sr-only"> {support.data.awaiting === 1 ? "ticket needs" : "tickets need"} your reply</span>
         </SidebarMenuBadge>
       )
     if (key === "monitoring" && alerts.data)
       return (
-        <SidebarMenuBadge>
+        <SidebarMenuBadge className={badgeAt}>
           <span className="size-2 rounded-full bg-danger-fill" />
           <span className="sr-only">(alerts firing)</span>
         </SidebarMenuBadge>
       )
     if (key === "system" && update.data)
       return (
-        <SidebarMenuBadge>
+        <SidebarMenuBadge className={badgeAt}>
           <span className="size-2 rounded-full bg-primary" />
           <span className="sr-only">(update available)</span>
         </SidebarMenuBadge>
@@ -142,10 +150,10 @@ function AppSidebar({ pages, current }: { pages: PageDef[]; current: string }) {
     <SidebarMenuItem key={p.key}>
       <SidebarMenuButton
         isActive={p.key === current}
-        className="h-9 gap-2.5 text-[0.9375rem] text-sidebar-foreground no-underline hover:no-underline data-active:font-semibold"
-        render={<a href={href(p.key)} onClick={() => setOpenMobile(false)} />}
+        className="group/nav text-sidebar-foreground no-underline hover:no-underline data-active:font-medium"
+        render={<a href={href(p.key)} onClick={() => setOpenMobile(false)} aria-current={p.key === current ? "page" : undefined} />}
       >
-        <IconTile icon={p.icon} tint={p.tint} size="sm" />
+        <p.icon strokeWidth={1.75} className="text-muted-foreground group-data-active/nav:text-foreground" />
         <span>{p.label}</span>
       </SidebarMenuButton>
       {badge(p.key)}
@@ -153,32 +161,24 @@ function AppSidebar({ pages, current }: { pages: PageDef[]; current: string }) {
   )
 
   return (
-    <Sidebar className="border-r-[0.5px] border-sidebar-border [&_[data-slot=sidebar-inner]]:bg-sidebar [&_[data-slot=sidebar-inner]]:material">
-      <SidebarHeader className="gap-3 px-3 pt-4">
-        <div className="flex items-center gap-2.5 px-1">
-          <Logo className="size-8" />
-          <div className="flex flex-col leading-tight">
-            <span className="text-[0.9375rem] font-semibold">WPGenie</span>
-            <small className="text-xs text-muted-foreground">Control panel</small>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={openPalette}
-          className="flex h-9 w-full items-center gap-2 rounded-xl bg-sidebar-accent px-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+    <Sidebar className="border-sidebar-border">
+      <SidebarHeader className="h-[58px] shrink-0 flex-row items-center gap-2.5 border-b border-sidebar-border px-4 py-0">
+        <a
+          href={href("sites")}
+          onClick={() => setOpenMobile(false)}
+          className="flex items-center gap-2.5 rounded-md text-foreground no-underline hover:no-underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
-          <SearchIcon className="size-4" />
-          <span className="flex-1 text-left">Search or jump to…</span>
-          <Kbd>{isMac ? "⌘K" : "Ctrl K"}</Kbd>
-        </button>
+          <Logo className="size-7" />
+          <span className="text-lg font-semibold tracking-[-0.01em]">WPGenie</span>
+        </a>
       </SidebarHeader>
-      <SidebarContent className="px-1">
+      <SidebarContent className="gap-0 px-2 py-3">
         {GROUPS.map((g) => {
           const items = pages.filter((p) => p.group === g && p.key !== "account")
           if (!items.length) return null
           return (
-            <SidebarGroup key={g || "main"} className="py-1">
-              {g && <SidebarGroupLabel className="text-xs font-semibold text-muted-foreground">{GROUP_LABEL(g, s)}</SidebarGroupLabel>}
+            <SidebarGroup key={g || "main"} className="p-0">
+              {g && <SidebarGroupLabel className="mt-4 mb-1 h-auto">{GROUP_LABEL(g, s)}</SidebarGroupLabel>}
               <SidebarGroupContent>
                 <SidebarMenu>{items.map(item)}</SidebarMenu>
               </SidebarGroupContent>
@@ -186,57 +186,149 @@ function AppSidebar({ pages, current }: { pages: PageDef[]; current: string }) {
           )
         })}
       </SidebarContent>
-      <SidebarFooter className="px-3 pb-4">
-        <div className="flex items-center gap-1">
-          <a
-            href={href("account")}
-            onClick={() => setOpenMobile(false)}
-            aria-current={current === "account" ? "page" : undefined}
-            className={cn(
-              "flex min-w-0 flex-1 items-center gap-2.5 rounded-xl p-1.5 text-foreground no-underline transition-colors hover:bg-sidebar-accent hover:no-underline",
-              current === "account" && "bg-sidebar-accent"
-            )}
-          >
-            <span aria-hidden className="brand-gradient flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white">
-              {s.me?.username.slice(0, 1).toUpperCase()}
-            </span>
-            <span className="flex min-w-0 flex-col leading-tight">
-              <strong className="truncate text-sm font-semibold">{s.me?.username}</strong>
-              <span className="text-xs text-muted-foreground">{s.me?.role}</span>
-            </span>
-          </a>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"} />
-              }
-            >
-              {theme === "light" ? <MoonIcon /> : <SunIcon />}
-            </TooltipTrigger>
-            <TooltipContent>{theme === "light" ? "Dark theme" : "Light theme"}</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger render={<Button variant="ghost" size="icon-sm" onClick={() => s.signOut()} aria-label="Sign out" />}>
-              <LogOutIcon />
-            </TooltipTrigger>
-            <TooltipContent>Sign out</TooltipContent>
-          </Tooltip>
-        </div>
-      </SidebarFooter>
     </Sidebar>
   )
 }
 
-function MobileTop() {
+// The bar over every page: where you are, search, the theme, your account.
+function TopBar({ current }: { current: PageDef }) {
+  const s = useSession()
+  const theme = useTheme()
+  const [, siteId, section] = useRoute()
+  const group = current.group ? GROUP_LABEL(current.group, s) : ""
+  const name = s.me?.username ?? ""
+
   return (
-    <header className="material sticky top-0 z-30 flex h-12 items-center justify-between border-b-[0.5px] border-border bg-background/75 px-2 md:hidden">
-      <SidebarTrigger aria-label="Open navigation" />
-      <div className="flex items-center gap-2 text-[0.9375rem] font-semibold">
-        <Logo className="size-6" /> WPGenie
-      </div>
-      <Button variant="ghost" size="icon" aria-label="Search" onClick={openPalette}>
-        <SearchIcon />
-      </Button>
+    <header className="sticky top-0 z-30 flex h-[58px] shrink-0 items-center gap-2 border-b border-border bg-card px-3 sm:px-5">
+      <SidebarTrigger aria-label="Open navigation" className="md:hidden" />
+      <a href={href("sites")} aria-label="WPGenie" className="flex md:hidden">
+        <Logo className="size-6" />
+      </a>
+
+      <nav aria-label="You are here" className="min-w-0 flex-1 max-md:sr-only">
+        <ol className="m-0 flex min-w-0 list-none items-center gap-1.5 p-0 text-base">
+          {group && (
+            <>
+              <li className="shrink-0 text-muted-foreground">{group}</li>
+              <Crumbsep />
+            </>
+          )}
+          <li className="min-w-0 truncate">
+            {current.key === "sites" && siteId ? (
+              <a href={href(current.key)} className="text-muted-foreground no-underline hover:text-foreground hover:no-underline">
+                {current.label}
+              </a>
+            ) : (
+              <span aria-current="page" className="font-medium text-foreground">
+                {current.label}
+              </span>
+            )}
+          </li>
+          {current.key === "sites" && siteId && <SiteCrumbs id={siteId} section={section} />}
+        </ol>
+      </nav>
+      <div className="flex-1 md:hidden" />
+
+      <button
+        type="button"
+        onClick={openPalette}
+        aria-label="Search or jump to"
+        className="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-lg bg-card px-2.5 text-sm text-muted-foreground shadow-xs ring-1 ring-border transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none max-sm:size-8 max-sm:justify-center max-sm:px-0 sm:w-56 lg:w-64"
+      >
+        <SearchIcon className="size-4 shrink-0" />
+        <span className="flex-1 text-left max-sm:hidden">Search or jump to…</span>
+        <Kbd className="max-sm:hidden">{isMac ? "⌘K" : "Ctrl K"}</Kbd>
+      </button>
+
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"} />
+          }
+        >
+          {theme === "light" ? <MoonIcon /> : <SunIcon />}
+        </TooltipTrigger>
+        <TooltipContent>{theme === "light" ? "Dark theme" : "Light theme"}</TooltipContent>
+      </Tooltip>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label={`Your account (${name})`}
+              className="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-lg pr-1 pl-1 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none data-popup-open:bg-accent lg:pr-2"
+            />
+          }
+        >
+          <span aria-hidden className="flex size-6 items-center justify-center rounded-full bg-fill text-xs font-semibold text-foreground">
+            {name.slice(0, 1).toUpperCase()}
+          </span>
+          <span className="max-w-32 truncate text-base font-medium max-lg:hidden">{name}</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="flex flex-col gap-0.5 px-2 py-1.5">
+              <span className="truncate text-base font-medium text-foreground">{name}</span>
+              <span className="text-xs text-muted-foreground">{s.me?.role ? humanize(s.me.role) : ""}</span>
+            </DropdownMenuLabel>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem render={<a href={href("account")} className="text-foreground no-underline hover:no-underline" />}>
+            <UserIcon />
+            Your account
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={toggleTheme}>
+            {theme === "light" ? <MoonIcon /> : <SunIcon />}
+            {theme === "light" ? "Dark theme" : "Light theme"}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => s.signOut()}>
+            <LogOutIcon />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </header>
+  )
+}
+
+function Crumbsep() {
+  return (
+    <li aria-hidden className="flex shrink-0 text-faint">
+      <ChevronRightIcon className="size-3.5" />
+    </li>
+  )
+}
+
+// A site's place in the bar: its domain, then the section open in it.
+function SiteCrumbs({ id, section }: { id: string; section?: string }) {
+  const { site } = useSite(id)
+  const sec = section ? SECTIONS.find((x) => x.key === section) : undefined
+  return (
+    <>
+      <Crumbsep />
+      <li className="min-w-0 truncate">
+        {sec ? (
+          <a href={href(sitePath(id))} className="text-muted-foreground no-underline hover:text-foreground hover:no-underline">
+            {site?.primary_domain ?? "Site"}
+          </a>
+        ) : (
+          <span aria-current="page" className="font-medium text-foreground">
+            {site?.primary_domain ?? "Site"}
+          </span>
+        )}
+      </li>
+      {sec && (
+        <Fragment>
+          <Crumbsep />
+          <li className="min-w-0 shrink-0 truncate">
+            <span aria-current="page" className="font-medium text-foreground">
+              {sec.label}
+            </span>
+          </li>
+        </Fragment>
+      )}
+    </>
   )
 }

@@ -1,10 +1,17 @@
 # WPGenie panel (React)
 
 The control panel, rebuilt on [shadcn/ui](https://ui.shadcn.com) (Base UI
-primitives, style "maia") with Tailwind v4, themed to Apple's Human Interface
-Guidelines: the system font, grouped backgrounds, systemIndigo as the one
-tint, Liquid Glass surfaces over a soft wash of colour, Settings-style icon
-tiles, vital gauges and Dynamic Island toasts.
+primitives, style "maia") with Tailwind v4, in the visual language of
+Cloudflare's dashboard and its open-source design system,
+[Kumo](https://github.com/cloudflare/kumo) (`@cloudflare/kumo`, MIT): flat
+white cards ringed by a hairline on a light grey canvas (near-black in dark),
+a neutral grey scale, Cloudflare blue for actions and links, Cloudflare
+orange only for the brand mark, the system font at a 14px base (Kumo's 12 /
+13 / 14 / 16 scale), dense tables, a white sidebar of grouped pages with a
+top bar over the page, neutral icons, status bars (never rings) and toasts
+stacked in the top-right corner. Kumo itself isn't a dependency (it injects
+styles and pulls in heavy libraries); `src/index.css` maps its tokens onto
+shadcn's variables, and the components borrow its class patterns.
 
 It replaced the vanilla-JS dashboard in `internal/web/static` and is served
 at **`/`** (its build lives under `/next/`, which redirects to `/`). The
@@ -34,10 +41,13 @@ it and fails if the committed copy is stale.
   `text-muted-foreground`, `text-success`/`text-danger`/`text-warning`,
   `bg-success-fill/15`, `text-link`), never raw colours.
   `prefers-reduced-motion` is honoured globally.
-- **Glass.** Every card surface is `bg-card card-shadow` (frosted, with a lit
-  edge); menus and dialogs add `material`. Don't put an opaque background on
-  the page or the shell, or the glass has nothing to show. Reduce
-  Transparency (`prefers-reduced-transparency`) swaps in solid surfaces.
+- **Surfaces.** Every card is `bg-card card-shadow` (solid, Kumo's 1px ring
+  in the line colour and an xs shadow) or a shadcn `Card`, on the
+  `bg-background` canvas; insets and tracks are `bg-muted` (or `bg-recessed`,
+  `bg-fill`), dividers `border-border` (or the lighter `border-hairline`).
+  No translucency or blur: `material` is kept only so older markup stays
+  valid. Corners are 8px (`rounded-lg`; dialogs 12px). Cloudflare orange
+  (`bg-brand`) is the logo's, not a button's.
 - **Words.** The panel says "Protection" (on/off), never "Shield". Customers
   are non-technical: plain words, sentences that say what happens.
 - **The server enforces everything.** Hide what a role can't do, but never
@@ -69,13 +79,13 @@ src/
 | Messages | `notify("Saved")`, `showError(err)` from `@/components/app/toaster` |
 | Confirm / prompt | `await ask("Delete x? Explanation.")` (title from the question, verb on the button, red when destructive); `await askText(msg, {title, label, match, type})` |
 | Shown once | `showSecret(title, lines)` from `@/components/app/secret` |
-| Page | `<Page><PageHeader icon={…} tint="…" title description actions/>…</Page>` from `@/components/app/page` |
+| Page | `<Page><PageHeader title description actions/>…</Page>` from `@/components/app/page` (`icon`/`tint` are accepted, not shown: the top bar says where you are) |
 | Card with a title | `<Section icon tint title description action>` (same file) |
 | Verdict | `<StatusHero kind="ok" title sub/>` |
-| Icon tile | `<IconTile icon={ShieldIcon} tint="green" size="md"/>` |
+| Icon tile | `<IconTile icon={ShieldIcon} size="md"/>` (neutral: a plain icon at xs/sm, in a hairline square from md; `tint` is accepted and ignored) |
 | Status words | `<StatusText status="failed"/>`, `<StatusPill status="active"/>`, `<Severity level/>`, `toneOf(status)` |
 | Tables | `<SimpleTable headers rows/>`, `<KeyValues items/>` from `@/components/app/data-table`; shadcn `Table` for anything richer |
-| Charts | `<LineChart series label readout/>`, `hourly()`, `hoursSince()` from `@/components/app/chart`; `<VitalBars values/>` (labelled gauges for a card), `<VitalMeter values/>` (compact, for a row) from `@/components/app/vitals` |
+| Charts | `<LineChart series label readout/>`, `hourly()`, `hoursSince()` from `@/components/app/chart`; `<VitalBars values/>` (labelled bars for a card), `<VitalMeter values/>` (compact, for a row) from `@/components/app/vitals` |
 | Formatting | `fmtBytes`, `fmtNum`, `fmtTime`, `fmtDate`, `fmtAgo`, `fmtMem`, `fmtPct`, `plural`, `splitList`, `humanize` from `@/lib/format` |
 | Number cards, notices, sub-tabs, filters | `Kpi`, `Banner`, `SubNav`, `Chips` from `@/components/app/blocks` |
 | Empty / failed / busy | `EmptyState`, `LoadError` (404 = "not on this server yet"), `ActionButton` (disabled while running, errors to toasts) |
@@ -84,8 +94,10 @@ src/
 
 Forms: shadcn `Field`, `FieldLabel`, `FieldDescription`, `FieldGroup`,
 `Input`, `NativeSelect` (prefer it over `Select` for plain choices),
-`Switch`, `Checkbox`, `RadioGroup`, `Textarea`. Buttons: `default` (filled
-tint), `tinted` (gray fill, tint text: the usual secondary), `ghost`,
-`outline`, `destructive` (tinted red), `destructive-solid`, `link`. Base UI
+`Switch`, `Checkbox`, `RadioGroup`, `Textarea`. Buttons (Kumo's): `default`
+(Cloudflare blue, for the one main action), `tinted` (white with a line ring:
+the usual secondary; `outline` and `secondary` look the same), `ghost`,
+`destructive` (red words on the secondary button), `destructive-solid` (red,
+for the confirming click), `link`. Base UI
 composes with `render={<a href=… />}` (plus `nativeButton={false}` on
 `Button`) where Radix used `asChild`.

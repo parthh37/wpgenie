@@ -26,7 +26,7 @@ export function DiviCard() {
       title="Divi"
       description="Install the Divi theme from Elegant Themes on new sites, with your license. Every site with Divi gets updates and premade layouts without anyone seeing the key: it isn't saved in the site's database or shown in Divi's settings."
     >
-      {q.isLoading && <Skeleton className="h-40 rounded-xl" />}
+      {q.isLoading && <Skeleton className="h-40 rounded-lg" />}
       {q.error && !q.data && <LoadError error={q.error} retry={() => q.refetch()} />}
       {/* Fresh fields whenever the saved license changes. */}
       {q.data && <DiviForm key={JSON.stringify(q.data)} d={q.data} />}

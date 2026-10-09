@@ -191,8 +191,8 @@ wpgenie mail box add jane@example.com --quota 2048
 wpgenie site smtp <site-id> on                 # WordPress sends its mail through it
 ```
 
-Backups, staging and access (every site is backed up daily to this server by default; add an
-off-server destination for when the server itself is lost):
+Backups, staging and access (sites back up daily to your S3 destination once one is added, else to
+another off-server one; this server's own disk is used only when you choose it for a site):
 
 ```bash
 echo "$SECRET_KEY" | wpgenie backup repo add b2 offsite --bucket my-backups --key-id 004abc…

@@ -253,6 +253,9 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/backups/repos/{id}/password", admin, s.repoPassword)
 	r("GET /api/v1/backups/repos/{id}/backups", viewer, s.repoBackups)
 	r("DELETE /api/v1/backups/repos/{id}/backups/{backup}", admin, s.deleteRepoBackup)
+	r("POST /api/v1/backups/repos/{id}/cleanup", admin, s.cleanupRepo)
+	r("POST /api/v1/backups/repos/{id}/adopt", admin, s.adoptRepo)
+	r("GET /api/v1/backups/coverage", viewer, s.backupCoverage)
 	r("POST /api/v1/backups/restore-new", admin, s.restoreAsNew)
 	r("GET /api/v1/sites/{id}/backups", viewer, s.siteBackups)
 	r("PUT /api/v1/sites/{id}/backups/policy", operator, s.setBackupPolicy)
@@ -260,6 +263,7 @@ func (s *Server) Handler() http.Handler {
 	r("POST /api/v1/sites/{id}/backups/restore", operator, s.startRestore)
 	r("GET /api/v1/sites/{id}/backups/{repo}/{backup}/download", operator, s.downloadBackup)
 	r("DELETE /api/v1/sites/{id}/backups/{repo}/{backup}", admin, s.deleteBackup)
+	r("POST /api/v1/sites/{id}/backups/cleanup", admin, s.cleanupSiteBackups)
 
 	r("POST /api/v1/sites/{id}/staging", operator, s.createStaging)
 	r("POST /api/v1/sites/{id}/push", operator, s.pushStaging)

@@ -48,7 +48,7 @@ export function SignIn() {
 
   return (
     <AuthLayout>
-      <h1 className="text-[2.125rem] leading-tight font-bold tracking-[-0.022em]">Sign in</h1>
+      <h1 className="text-2xl leading-tight font-semibold tracking-[-0.01em]">Sign in</h1>
       <p className="mt-1 mb-6 text-muted-foreground">Manage your sites, backups and security.</p>
       <form onSubmit={submit}>
         <FieldGroup>
@@ -105,7 +105,7 @@ export function Setup() {
 
   return (
     <AuthLayout aside={false}>
-      <h1 className="text-[2.125rem] leading-tight font-bold tracking-[-0.022em]">Welcome to WPGenie</h1>
+      <h1 className="text-2xl leading-tight font-semibold tracking-[-0.01em]">Welcome to WPGenie</h1>
       <p className="mt-1 mb-6 text-muted-foreground">
         Create the first administrator. To prove you own this server, paste the API token the installer printed (it is in{" "}
         <code>/etc/wpgenie/config.json</code>).
@@ -165,7 +165,7 @@ export function SSO({ token, onDone }: { token: string; onDone: () => void }) {
 
   return (
     <AuthLayout>
-      <h1 className="text-[2.125rem] leading-tight font-bold tracking-[-0.022em]">Sign in</h1>
+      <h1 className="text-2xl leading-tight font-semibold tracking-[-0.01em]">Sign in</h1>
       <p className="mt-1 mb-6 text-muted-foreground">You followed a one-time sign-in link from your billing portal.</p>
       <form onSubmit={go}>
         <FieldGroup>

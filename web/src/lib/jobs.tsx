@@ -18,6 +18,8 @@ export const JOB_NAMES: Record<string, string> = {
   php: "PHP change",
   "primary-domain": "Primary domain change",
   "repo-upkeep": "Backup upkeep",
+  "backup-cleanup": "Deleting backups",
+  "repo-cleanup": "Emptying a backup destination",
   images: "Image conversion",
   "offload-sync": "Uploads offload sync",
   "offload-download": "Uploads copied back from the bucket",

@@ -52,7 +52,7 @@ export default function Connect() {
           <h1 className="text-xl font-semibold">Connect an AI assistant</h1>
         </div>
 
-        {info.isLoading && <Skeleton className="h-40 rounded-2xl" />}
+        {info.isLoading && <Skeleton className="h-40 rounded-lg" />}
 
         {needs2FA && (
           <Banner tone="warn" icon={TriangleAlertIcon} title="Two-factor authentication first">

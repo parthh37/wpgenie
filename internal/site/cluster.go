@@ -118,6 +118,20 @@ func (s *Service) ClusterHandler() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /cluster/v1/repos/{id}/adopt", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			MoveLocal bool `json:"move_local"`
+		}
+		if err := decodeCluster(w, r, &in); err != nil {
+			return
+		}
+		res, err := s.AdoptRepo(r.Context(), r.PathValue("id"), in.MoveLocal)
+		if err != nil {
+			clusterError(w, err)
+			return
+		}
+		writeClusterJSON(w, http.StatusOK, res)
+	})
 	mux.HandleFunc("GET /cluster/v1/repos/{id}/sites", func(w http.ResponseWriter, r *http.Request) {
 		policies, err := s.Store.BackupPolicies(r.Context())
 		if err != nil {
@@ -222,8 +236,18 @@ func (s *Service) PutRepoRecord(ctx context.Context, in RepoRecord) error {
 	if in.ID == LocalRepoID || in.ID == "" || in.Kind == "" || in.Password == "" {
 		return fmt.Errorf("%w: incomplete repository", ErrInvalidInput)
 	}
-	return s.Store.PutRepo(ctx, &store.BackupRepo{ID: in.ID, Name: in.Name, Kind: in.Kind, Location: in.Location,
-		Password: in.Password, Secrets: in.Secrets})
+	_, err := s.Store.GetRepo(ctx, in.ID)
+	added := errors.Is(err, store.ErrNotFound)
+	if err := s.Store.PutRepo(ctx, &store.BackupRepo{ID: in.ID, Name: in.Name, Kind: in.Kind, Location: in.Location,
+		Password: in.Password, Secrets: in.Secrets}); err != nil {
+		return err
+	}
+	if added && s.Backups != nil {
+		// Like on the panel: this server's sites without a destination
+		// take the new one when it is the one they'd default to.
+		s.adoptIfPreferred(ctx, in.ID)
+	}
+	return nil
 }
 
 // ---- Peers ----

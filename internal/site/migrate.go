@@ -720,18 +720,25 @@ func (s *Service) FinishImport(ctx context.Context, m *MigrationMeta, from strin
 	if m.Backup != nil {
 		p := *m.Backup
 		p.SiteID = id
+		keep := true
 		if _, err := s.Store.GetRepo(ctx, p.RepoID); err != nil {
 			// A destination this server doesn't have (another server's
-			// local repository): back up locally instead.
-			s.event(id, "backup", "The backup destination didn't move with the site; backing up to this server instead")
-			p.RepoID = LocalRepoID
-			if _, err := s.ensureLocalRepo(ctx); err != nil {
-				s.Log.Warn("creating the local backup repository", "err", err)
+			// own disk): the preferred off-server one, else none until
+			// someone chooses; never this server's disk unasked.
+			if pr, _ := s.preferredRepo(ctx); pr != nil {
+				s.event(id, "backup", "The backup destination didn't move with the site; backing up to "+pr.Name+" instead")
+				p.RepoID = pr.ID
+			} else {
+				s.event(id, "backup", "The backup destination didn't move with the site, and this server has no off-server "+
+					"destination: choose where its backups go under Backups")
+				keep = false
 			}
 		}
 		p.LastBackupAt, p.LastAttemptAt, p.LastError = time.Time{}, time.Time{}, ""
-		if err := s.Store.SetBackupPolicy(ctx, &p); err != nil {
-			return nil, err
+		if keep {
+			if err := s.Store.SetBackupPolicy(ctx, &p); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if m.Offload != nil {

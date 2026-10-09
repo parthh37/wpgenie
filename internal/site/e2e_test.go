@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -50,8 +51,13 @@ func TestEnvironmentsEndToEnd(t *testing.T) {
 		t.Fatal("credentials visible to another user")
 	}
 	id := live.ID
-	if p, err := st.BackupPolicy(ctx, id); err != nil || p.RepoID != LocalRepoID || p.IntervalHours != 24 {
-		t.Fatalf("default backup policy %+v %v", p, err)
+	// No off-server destination: no backups until someone chooses this
+	// server's disk.
+	if p, err := st.BackupPolicy(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("backups set up without a choice: %+v %v", p, err)
+	}
+	if _, err := svc.SetBackupPolicy(ctx, id, defaultSchedule(LocalRepoID)); err != nil {
+		t.Fatal(err)
 	}
 	wp(id, "post", "create", "--post_title=Original", "--post_status=publish",
 		`--post_content=<a href="https://a.test/about">About</a> and https://a.test.au stays`)

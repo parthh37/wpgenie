@@ -202,6 +202,10 @@ func (s *Service) StartPush(ctx context.Context, stagingID string, in PushInput)
 		return 0, fmt.Errorf("%w: pushing needs backups (the live site is backed up first)", ErrInvalidInput)
 	}
 	liveID := stg.ParentID
+	if _, err := s.siteRepo(ctx, liveID); errors.Is(err, errNoDestination) {
+		return 0, fmt.Errorf("%w: the live site is backed up before every push: choose where its backups go first (Backups)",
+			ErrInvalidInput)
+	}
 	spec := s.siteJob(liveID, "push", true)
 	spec.Lock = jobs.LockFunc(s.maintLock(liveID), s.maintLock(stagingID))
 	return s.Jobs.Submit(ctx, spec, func(ctx context.Context, t *jobs.Task) error {

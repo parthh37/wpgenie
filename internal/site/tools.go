@@ -178,8 +178,8 @@ func (s *Service) StartSearchReplace(ctx context.Context, id string, in SearchRe
 	if err := s.requireActive(ctx, id); err != nil {
 		return 0, err
 	}
-	if !in.DryRun && s.Backups == nil && !in.HaveBackup {
-		return 0, fmt.Errorf("%w: WPGenie can't back the site up first here: confirm you have a recent backup", ErrInvalidInput)
+	if !in.DryRun && !s.canBackUp(ctx, id) && !in.HaveBackup {
+		return 0, fmt.Errorf("%w: WPGenie can't back the site up first (no backup destination): confirm you have a recent backup", ErrInvalidInput)
 	}
 	kind := "search-replace"
 	if in.DryRun {
@@ -196,9 +196,9 @@ func (s *Service) StartSearchReplace(ctx context.Context, id string, in SearchRe
 			return err
 		}
 		res := &SearchReplaceResult{DryRun: in.DryRun, Search: in.Search, Replace: in.Replace, Tables: []SearchReplaceTable{},
-			BackupFirst: s.Backups != nil}
+			BackupFirst: s.canBackUp(ctx, id)}
 		from := 5
-		if !in.DryRun && s.Backups != nil {
+		if !in.DryRun && res.BackupFirst {
 			repo, err := s.siteRepo(ctx, id)
 			if err != nil {
 				return err

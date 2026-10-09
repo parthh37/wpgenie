@@ -38,7 +38,7 @@ export function StatusPill({ status, tone, children, className }: { status: stri
     <Badge
       variant="secondary"
       className={cn(
-        "gap-1.5 font-semibold before:size-1.5 before:rounded-full before:bg-current",
+        "gap-1.5 font-medium before:size-1.5 before:rounded-full before:bg-current",
         t === "ok" && "bg-success-fill/16 text-success",
         t === "bad" && "bg-danger-fill/16 text-danger",
         t === "warn" && "bg-warning-fill/16 text-warning",
