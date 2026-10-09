@@ -284,16 +284,23 @@ func (s *Server) backupDestinations(w http.ResponseWriter, r *http.Request) erro
 	if err != nil {
 		return err
 	}
+	preferred, err := s.Sites.PreferredRepoID(r.Context())
+	if err != nil {
+		return err
+	}
 	type dest struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Kind string `json:"kind"`
+		// Preferred: where the site's backups go when nobody chose (an
+		// off-server destination; never this server's disk).
+		Preferred bool `json:"preferred,omitempty"`
 	}
 	out := []dest{}
 	t := tenantOf(r)
 	for _, rp := range repos {
 		if t == nil || slices.Contains(t.SiteLimits.BackupRepos, rp.ID) {
-			out = append(out, dest{rp.ID, rp.Name, rp.Kind})
+			out = append(out, dest{rp.ID, rp.Name, rp.Kind, rp.ID == preferred})
 		}
 	}
 	return writeJSON(w, http.StatusOK, out)

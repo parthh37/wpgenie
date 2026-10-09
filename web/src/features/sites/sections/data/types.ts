@@ -39,6 +39,7 @@ export interface BackupDestination {
   id: string
   name: string
   kind: string
+  preferred?: boolean // where backups go when nobody chose (off-server; never this server's disk)
 }
 
 // GET /sites/{id}/certificate: an uploaded certificate (null: automatic).
