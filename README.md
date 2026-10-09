@@ -39,6 +39,7 @@ with one command.
 | 🪶 | **WordPress tweaks**: emoji/embed scripts, `<head>` clutter, Heartbeat polling, Dashicons for visitors, nightly database cleanup — applied by a must-use plugin, on by default for new sites | ✅ |
 | ⬆️ | **One-click WPGenie updates**: signed releases, automatic rollback if the new version doesn't start | ✅ |
 | 🖥️ | Dashboard + REST API + CLI | ✅ |
+| 🤖 | **AI assistants (MCP)**: connect Claude, ChatGPT or Claude Code to the panel: paste one address, approve once (OAuth), then ask it to check traffic and updates, back up, update WordPress, clear caches, create sites or staging copies. It acts as you, with your role and account; it never deletes anything or sees passwords | ✅ |
 | 💾 | **Backups** (restic: deduplicated, encrypted) of files + database to this server, S3, B2 or SFTP; retention rules, one-click restore, downloads, restore as a new site | ✅ |
 | 🧪 | **Staging**: clone a site, push code / files / database (or chosen tables) back with links rewritten | ✅ |
 | 🌐 | Domain aliases, www ↔ bare-domain redirects, primary domain changes, your own TLS certificates | ✅ |
@@ -144,6 +145,15 @@ people with roles, and turn on two-factor authentication under Account:
 wpgenie user add jane@example.com --role operator   # prints a generated password
 wpgenie user require-2fa on
 wpgenie audit                                       # who changed what, from where
+```
+
+Let an AI assistant manage sites for you. Under **Your account → AI assistants** the panel shows its
+MCP address (`https://panel.example.com/mcp`) and the steps for Claude, ChatGPT and Claude Code; you
+approve the assistant once in the panel, and can disconnect it there at any time. Claude.ai and
+ChatGPT need the panel on its own HTTPS address (`PANEL_DOMAIN`):
+
+```bash
+claude mcp add --transport http wpgenie https://panel.example.com/mcp   # then /mcp in Claude Code to sign in
 ```
 
 Host other people's sites: plans, customer and reseller accounts (each sees only its own sites), usage,

@@ -245,6 +245,36 @@ and creates the first one atomically). After that people sign in with their own 
   passes `{client_ip}`). The newest 20 000 entries are kept. The CLI appears as `api-token`.
 - An admin can't demote, disable or delete the last active admin, or delete themselves.
 
+### AI assistants (MCP)
+
+`/mcp` is an [MCP](https://modelcontextprotocol.io) server (Streamable HTTP; each POST answered with
+JSON, no sessions or server streams) for Claude, ChatGPT, Claude Code and other assistants. Every tool
+is one of the API's own routes, called in-process as the assistant's user through the same wrapper as
+any request, so the route's role, tenants' ownership and plan checks, the two-factor requirement,
+cluster forwarding and the audit log all apply unchanged; `tools/list` offers only what that user may
+call. The catalogue is "read, plus everyday actions" (`internal/api/mcp.go`): sites, traffic,
+performance, updates, scans, backups, jobs; create sites and staging copies, back up, update
+WordPress, purge caches, maintenance and debug mode, themes, burst, auto-updates. Nothing that deletes
+or overwrites (sites, restores, files, search-replace) and no credentials (wp-admin links, passwords, a
+new site's admin password, which stays the job's secret in the panel): what an assistant receives ends
+up in a transcript its provider keeps. Only bearer tokens are accepted (never the session cookie), and
+a request with a foreign `Origin` is refused (DNS rebinding).
+
+Assistants connect with OAuth 2.1 (`internal/api/oauth.go`): protected resource metadata (RFC 9728)
+and authorization server metadata (RFC 8414) under `/.well-known/`, dynamic client registration
+(RFC 7591; open, so rate limited per address, capped at 1 000 clients and pruned after 30 idle days;
+redirect URIs must be `https` or `http` to loopback), PKCE S256 required, codes single-use for two
+minutes, `resource` must be this server's `/mcp`. `/oauth/authorize` sends the browser to the panel's
+consent screen (`#/connect`), which signs the person in as usual; the `SameSite=Strict` session never
+rides along the cross-site navigation, so approving always takes a same-origin request from the panel
+itself (CSRF header included). The consent screen names the client and the host approval returns to.
+What the assistant gets is an ordinary API token of that user (`client_id` set): one hour, renewed with
+a single-use rotating refresh token (60 days), one per user and assistant (connecting again replaces
+it). So everything that limits API tokens applies: the user's current role and account, two-factor
+authentication when required (checked again at every refresh), revocation by the user (Your account →
+AI assistants), by an administrator, by resetting the user's password or 2FA, or by the client itself
+(`/oauth/revoke`).
+
 ## Accounts, plans and billing
 
 WPGenie can host other people's sites: **accounts** (organisations) of kind *customer* or *reseller*, each on

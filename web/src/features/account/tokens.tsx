@@ -16,7 +16,7 @@ import { invalidate, useApi } from "@/lib/query"
 // API tokens: for scripts and billing systems. Shown once; only a hash is
 // kept on the server.
 
-interface Token {
+export interface Token {
   id: number
   name: string
   hint: string
@@ -24,6 +24,8 @@ interface Token {
   expires_at?: string
   last_used_at?: string
   last_used_ip?: string
+  // An AI assistant's access (assistants.tsx lists those).
+  client_id?: string
 }
 
 export function ApiTokens({ blocked }: { blocked: boolean }) {
@@ -85,7 +87,7 @@ export function ApiTokens({ blocked }: { blocked: boolean }) {
               caption="Your API tokens"
               empty={<p className="py-2 text-sm text-muted-foreground">No tokens yet.</p>}
               cols={["Name", "Token", "Created", "Expires", "Last used", { label: <span className="sr-only">Actions</span>, className: "w-0" }]}
-              rows={list.data.map((t) => ({
+              rows={list.data.filter((t) => !t.client_id).map((t) => ({
                 key: t.id,
                 cells: [
                   <span className="font-medium">{t.name}</span>,

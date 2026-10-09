@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { ArchiveIcon, BoxIcon, LockIcon, ShieldIcon } from "lucide-react"
 import { Logo } from "@/components/app/logo"
 import { IconTile } from "@/components/app/icon-tile"
+import { cn } from "@/lib/utils"
 
 // The signed-out screens: a card on the brand's colours, blurred far behind,
 // and what WPGenie does beside it.
@@ -12,7 +13,7 @@ export function AuthLayout({ children, aside = true }: { children: ReactNode; as
         aria-hidden
         className="fixed inset-0 -z-10 bg-[radial-gradient(40vw_40vw_at_20%_15%,rgba(94,92,230,.35),transparent_70%),radial-gradient(35vw_35vw_at_85%_80%,rgba(191,90,242,.25),transparent_70%),radial-gradient(30vw_30vw_at_70%_10%,rgba(255,55,95,.14),transparent_70%)]"
       />
-      <div className="grid w-full max-w-4xl items-center gap-10 md:grid-cols-[minmax(0,26rem)_1fr]">
+      <div className={cn("grid w-full items-center gap-10", aside ? "max-w-4xl md:grid-cols-[minmax(0,26rem)_1fr]" : "max-w-[26rem]")}>
         <div className="material rounded-3xl bg-card/85 p-7 shadow-[0_22px_70px_rgba(0,0,0,.25),0_0_0_.5px_rgba(127,127,127,.2)] sm:p-9">
           <div className="mb-6 flex items-center gap-2.5 text-[1.0625rem] font-semibold">
             <Logo className="size-8" /> WPGenie
