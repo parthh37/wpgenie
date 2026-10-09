@@ -232,6 +232,7 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/settings/branding", viewer, s.branding)
 	r("PUT /api/v1/settings/branding", admin, s.setBranding)
 	r("GET /api/v1/settings/branding/logo", viewer, s.brandLogo)
+	s.diviRoutes(r)
 
 	r("GET /api/v1/jobs", viewer, s.listJobs)
 	r("GET /api/v1/jobs/{id}", viewer, s.getJob)

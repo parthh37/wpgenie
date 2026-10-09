@@ -16,9 +16,11 @@ import { api } from "@/lib/api"
 import { fmtAgo, fmtBytes, fmtTime, humanize } from "@/lib/format"
 import { queryClient } from "@/lib/query"
 import { useSession } from "@/lib/session"
+import { DiviCard } from "./divi"
 
 // The System page: WPGenie's version and self-update, and (for
-// administrators) the branding every site's WordPress admin shows.
+// administrators) the branding every site's WordPress admin shows and the
+// Divi license new sites get Divi with.
 
 interface Release {
   version: string
@@ -69,9 +71,10 @@ export default function SystemPage() {
   const s = useSession()
   return (
     <Page>
-      <PageHeader icon={SlidersHorizontalIcon} tint="gray" title="System" description="WPGenie’s version, updates and your branding." />
+      <PageHeader icon={SlidersHorizontalIcon} tint="gray" title="System" description="WPGenie’s version, updates, your branding and your Divi license." />
       <Updates />
       {s.isAdmin && <BrandingCard />}
+      {s.isAdmin && <DiviCard />}
     </Page>
   )
 }

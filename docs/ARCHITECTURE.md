@@ -297,7 +297,8 @@ WordPress administrators' passwords, WordPress tweaks, the site analyser and its
 memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
 infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
 destinations and deleting backups, restoring a backup as a new site, users outside their accounts,
-plans' definitions, billing settings, audit log, self-update, branding. `TestEveryRouteIsClosedToOtherTenants`
+plans' definitions, billing settings, audit log, self-update, branding, the Divi license (tenants only learn
+whether new sites get Divi). `TestEveryRouteIsClosedToOtherTenants`
 walks the whole route table as a customer and a reseller (tokens and sessions): every staff-only route
 answers 403 and every route on another account's site, account or job 404.
 
@@ -1119,6 +1120,28 @@ page titles, and no WordPress news widget or welcome panel. The logo is never wr
 cached for good per version, SVG under a `sandbox` CSP. The panel sends the whole brand to every node (and to a
 node when it's added), and each rewrites its sites' wrappers; sites still being provisioned get theirs when
 they go live (the WordPress image only copies core into an empty docroot).
+
+**Divi** (`site/divi.go`, `images/php/divi.php`). One server-wide Elegant Themes license (`PUT /settings/divi`,
+admins; the key is write-only: responses carry `key_set` and its last four characters, everyone else only
+`configured` and `new_sites`). With `new_sites` on (the default once a license is saved) a new site gets Divi
+right after `wp core install`, unless its creation says `"divi": false`; the panel decides it for sites it
+places on other servers. The daemon downloads the theme itself (`api_downloads.php`, 150 MB cap, the answer
+must be a zip holding `Divi/style.css`; anything else is "Elegant Themes refused the username or API key")
+into a randomly named root:82 0640 file in the site directory, runs `wp theme install <that file> --activate`
+and removes it: the key never reaches argv, logs, errors, job output or events (HTTP client errors are
+stripped of their URL). A failure never fails the site: it goes to the site's activity, and `POST
+/sites/{id}/divi` (a job) installs or activates it later. Sites that have `wp-content/themes/Divi` get
+`wpgenie-divi.php` next to `wp-config.php` (the username and key, checked against strict charsets) and a
+root-owned `wpgenie-divi.php` mu-plugin wrapper loading `divi.php` from the image, which answers Divi's
+`et_automatic_updates_options` through `pre_option`/`pre_site_option`, keeps every write from reaching the
+database (`pre_update_option` returns the old value; an `add_option` is undone), deletes a copy stored earlier
+on the next admin page, and masks the key with asterisks on Divi's Theme Options screen. The license is sent
+to every node like the brand; a change rewrites the files of every site with Divi (and the credentials of
+spread sites' replicas), and updates, restores, clones and staging rewrite them with the other wrappers.
+Anyone who can run their own PHP on a site can still read the key, and Divi's builder hands the account to
+wp-admin users' browsers for premade layouts: hence a dedicated, revocable key. WP-CLI runs with
+`--skip-themes`, so Divi's own updater (in the theme) isn't loaded there: Divi updates itself from wp-admin,
+where the license is active.
 
 **WordPress tweaks** (`site/optimize.go`, `images/php/optimize.php`). What performance plugins do on top of
 caching, as a list per site (`PUT /sites/{id}/optimize`): no emoji scripts, no oEmbed discovery, no generator,

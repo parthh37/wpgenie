@@ -11,6 +11,7 @@ import { SimpleTable } from "@/components/app/data-table"
 import { Section } from "@/components/app/page"
 import { notify } from "@/components/app/toaster"
 import { api } from "@/lib/api"
+import { DIVI_SLUG, useDivi } from "@/lib/divi"
 import { plural } from "@/lib/format"
 import { startJob } from "@/lib/jobs"
 import { invalidate, useApi } from "@/lib/query"
@@ -37,6 +38,24 @@ export function ThemesCard({ site }: { site: Site }) {
   const [installing, setInstalling] = useState(false)
   const themes = q.data ?? []
   const updates = themes.filter((t) => t.update_version).length
+  // The host's Divi license: offered until the site has Divi.
+  const divi = useDivi().data
+  const offerDivi = can && !!divi?.configured && !!q.data && !themes.some((t) => t.slug === DIVI_SLUG)
+
+  const installDivi = async () => {
+    if (
+      !(await ask(
+        `Install Divi on ${site.primary_domain}? Divi becomes the active theme, so every page changes look at once. It's licensed for updates and premade layouts.`,
+        { ok: "Install Divi" }
+      ))
+    )
+      return
+    await startJob("POST", `/sites/${site.id}/divi`, undefined, async (v) => {
+      if (v.job.status === "succeeded") notify(`Divi is now the active theme on ${site.primary_domain}`)
+      await invalidate(path)
+    })
+    notify("Installing Divi…")
+  }
 
   const activate = async (t: Theme) => {
     if (!(await ask(`Switch ${site.primary_domain} to ${t.title}? Every page changes look at once; the page cache is emptied.`, { ok: "Switch theme" })))
@@ -72,10 +91,13 @@ export function ThemesCard({ site }: { site: Site }) {
       }
       action={
         can && (
-          <Button onClick={() => setInstalling(true)}>
-            <PlusIcon data-icon="inline-start" />
-            Install theme
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {offerDivi && <ActionButton run={installDivi}>Install Divi</ActionButton>}
+            <Button onClick={() => setInstalling(true)}>
+              <PlusIcon data-icon="inline-start" />
+              Install theme
+            </Button>
+          </div>
         )
       }
     >

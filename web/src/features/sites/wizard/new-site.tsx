@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react"
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { notify, showError } from "@/components/app/toaster"
 import { api } from "@/lib/api"
+import { useDivi } from "@/lib/divi"
 import { followJob } from "@/lib/jobs"
 import { invalidate, useClustered, useNodes } from "@/lib/query"
 import { navigate, sitePath } from "@/lib/router"
@@ -30,6 +32,11 @@ export function NewSiteWizard({ open, onClose }: { open: boolean; onClose: () =>
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [user, setUser] = useState("")
+  // null: the license's default for new sites.
+  const [divi, setDivi] = useState<boolean | null>(null)
+  const license = useDivi().data
+  const offerDivi = !!license?.configured
+  const withDivi = divi ?? !!license?.new_sites
   const emailRef = useRef<HTMLInputElement>(null)
 
   // A fresh form each time it opens.
@@ -43,6 +50,7 @@ export function NewSiteWizard({ open, onClose }: { open: boolean; onClose: () =>
       setName("")
       setEmail("")
       setUser("")
+      setDivi(null)
     }
   }
 
@@ -128,6 +136,15 @@ export function NewSiteWizard({ open, onClose }: { open: boolean; onClose: () =>
           </FieldLabel>
           <Input id={ids + "user"} placeholder="random if empty" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} />
         </Field>
+        {offerDivi && (
+          <Field orientation="horizontal">
+            <Checkbox id={ids + "divi"} checked={withDivi} onCheckedChange={(v) => setDivi(!!v)} aria-describedby={ids + "divi-help"} />
+            <FieldContent>
+              <FieldLabel htmlFor={ids + "divi"}>Install Divi</FieldLabel>
+              <FieldDescription id={ids + "divi-help"}>The Divi theme, switched on and licensed for updates and premade layouts.</FieldDescription>
+            </FieldContent>
+          </Field>
+        )}
       </FieldGroup>
     ),
     button: { label: "Create site" },
@@ -136,7 +153,9 @@ export function NewSiteWizard({ open, onClose }: { open: boolean; onClose: () =>
         emailRef.current?.focus()
         throw new Error("Enter the admin's e-mail address.")
       }
-      const body: Record<string, string> = { domain, name: name.trim(), admin_email: email.trim(), admin_user: user.trim() }
+      const body: Record<string, string | boolean> = { domain, name: name.trim(), admin_email: email.trim(), admin_user: user.trim() }
+      // Said either way once offered: what the person saw is what they get.
+      if (offerDivi) body.divi = withDivi
       // Automatic placement: the site goes where the domain points.
       if (pickNode) body.node = node || checked?.server || ""
       const res = await api<{ site: Site; job_id: string | number }>("POST", "/sites", body)

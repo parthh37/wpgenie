@@ -58,8 +58,9 @@ const usage = `WPGenie — secure, efficient WordPress hosting control panel
 Usage:
   wpgenie serve                         run the control plane daemon
   wpgenie site ls                       list sites
-  wpgenie site create <domain> <email> [--node ID]
-                                        create a WordPress site (on a chosen server)
+  wpgenie site create <domain> <email> [--node ID] [--no-divi]
+                                        create a WordPress site (on a chosen server); with a
+                                        Divi license set, Divi is installed unless --no-divi
   wpgenie site rm <site-id>             delete a site (irreversible)
   wpgenie site scale <site-id> [--memory MB] [--cpus N] [--replicas N]
                                         resize a site with no downtime; with no
@@ -127,6 +128,7 @@ Usage:
                                         one-time link into wp-admin (no WordPress password),
                                         administrators and editors: add, delete (never the
                                         site's first user), reset a password
+  wpgenie site divi <site-id>           install and activate Divi with the host's license
   wpgenie site optimize <site-id> [ls | recommended | off | key,key,... | cleanup]
                                         WordPress performance tweaks; clean the database now
   wpgenie site analyse <site-id> [--fix <fix>]
@@ -146,6 +148,9 @@ Usage:
   wpgenie security reputation [refresh] IP blocklists and country database status
   wpgenie branding [show | set [--name NAME] [--url URL] [--logo FILE|none]]
                                         your brand in WordPress's admin instead of WordPress's
+  wpgenie divi [status | set --username U [--new-sites on|off] | new-sites on|off | check | clear]
+                                        your Elegant Themes license: Divi on new sites, applied
+                                        without showing the key; the API key is read from stdin
   wpgenie user ls | add <name> [--role admin|operator|viewer] | role <name> <role>
   wpgenie user disable|enable|passwd|reset-2fa|rm <name> | require-2fa on|off
                                         panel accounts (sign in to the dashboard)
@@ -223,6 +228,8 @@ func main() {
 		err = securityCmd(cfg, args[1:])
 	case "branding":
 		err = brandingCmd(cfg, args[1:])
+	case "divi":
+		err = diviCmd(cfg, args[1:])
 	case "user":
 		err = userCmd(cfg, args[1:])
 	case "audit":
@@ -750,7 +757,7 @@ func serve(cfg *config.Config, node bool) error {
 func siteCmd(cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: wpgenie site ls|create|rm|scale|cache|purge|autoscale|burst|shield|updates|update|auto-update|scan|" +
-			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|phpmyadmin|wp|optimize|analyse")
+			"plugins|smtp|cdn|offload|images|insights|events|backup|staging|push|domain|cert|php|sftp|phpmyadmin|wp|optimize|analyse|divi")
 	}
 	switch args[0] {
 	case "ls":
@@ -819,6 +826,11 @@ func siteCmd(cfg *config.Config, args []string) error {
 		default:
 			return phpMyAdminCmd(cfg, id)
 		}
+	case "divi":
+		if len(args) != 2 || strings.HasPrefix(args[1], "-") {
+			return errors.New("usage: wpgenie site divi <site-id>")
+		}
+		return siteDiviCmd(cfg, args[1])
 	case "purge":
 		if len(args) != 2 {
 			return errors.New("usage: wpgenie site purge <site-id>")
