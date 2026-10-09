@@ -79,17 +79,27 @@ func (s *Store) CountOAuthClients(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// PruneOAuthClients forgets clients registered or last used before cutoff
-// that hold no tokens: registration is open to anyone, so abandoned ones
-// must not pile up.
-func (s *Store) PruneOAuthClients(ctx context.Context, cutoff time.Time) (int64, error) {
+// PruneOAuthClients forgets clients that hold no tokens: those that never
+// got one, registered before unusedCutoff, and those last used before
+// idleCutoff. Registration is open to anyone, so abandoned ones must not
+// pile up.
+func (s *Store) PruneOAuthClients(ctx context.Context, idleCutoff, unusedCutoff time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_clients
-		WHERE created_at < ? AND last_used_at < ?
-		AND NOT EXISTS (SELECT 1 FROM api_tokens t WHERE t.client_id = oauth_clients.id)`, cutoff.Unix(), cutoff.Unix())
+		WHERE ((last_used_at = 0 AND created_at < ?) OR (created_at < ? AND last_used_at < ?))
+		AND NOT EXISTS (SELECT 1 FROM api_tokens t WHERE t.client_id = oauth_clients.id)`,
+		unusedCutoff.Unix(), idleCutoff.Unix(), idleCutoff.Unix())
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// EvictUnusedOAuthClient forgets the oldest client that never got a token
+// (ErrNotFound: there is none).
+func (s *Store) EvictUnusedOAuthClient(ctx context.Context) error {
+	return s.exec1(ctx, `DELETE FROM oauth_clients WHERE id = (SELECT c.id FROM oauth_clients c
+		WHERE c.last_used_at = 0 AND NOT EXISTS (SELECT 1 FROM api_tokens t WHERE t.client_id = c.id)
+		ORDER BY c.created_at, c.id LIMIT 1)`)
 }
 
 // CreateOAuthToken stores the API token an OAuth client was granted with

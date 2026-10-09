@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -47,8 +48,11 @@ const (
 	oauthScope      = "wpgenie"
 	// Registration is open: a ceiling on clients, and clients nobody used
 	// for oauthClientIdle (and that hold no tokens) are forgotten.
-	maxOAuthClients   = 1000
-	oauthClientIdle   = 30 * 24 * time.Hour
+	maxOAuthClients = 1000
+	oauthClientIdle = 30 * 24 * time.Hour
+	// A client that never got a token is forgotten sooner: connecting
+	// takes minutes (a code lives two).
+	oauthClientUnused = time.Hour
 	oauthRegisterRate = 20 // per address per guardWindow
 	refreshPrefix     = "wpgr_"
 	oauthClientPrefix = "wpgc_"
@@ -216,7 +220,9 @@ func (s *Server) oauthRegister(w http.ResponseWriter, r *http.Request) {
 		ResponseTypes           []string `json:"response_types"`
 		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	}
-	if err := decode(w, r, &in); err != nil {
+	// Unknown metadata (scope, logo_uri, software_id, ...) is ignored, as
+	// RFC 7591 requires: not decode(), which refuses unknown fields.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
 		oauthJSONError(w, http.StatusBadRequest, "invalid_client_metadata", "the request is not valid JSON")
 		return
 	}
@@ -253,10 +259,13 @@ func (s *Server) oauthRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := cleanClientName(in.ClientName)
-	if _, err := s.Store.PruneOAuthClients(ctx, now.Add(-oauthClientIdle)); err != nil {
+	if _, err := s.Store.PruneOAuthClients(ctx, now.Add(-oauthClientIdle), now.Add(-oauthClientUnused)); err != nil {
 		s.Log.Warn("oauth: pruning clients", "err", err)
 	}
-	if n, err := s.Store.CountOAuthClients(ctx); err != nil || n >= maxOAuthClients {
+	// Full: the oldest client that never connected makes room, so a flood
+	// of registrations can't lock real assistants out.
+	if n, err := s.Store.CountOAuthClients(ctx); err != nil ||
+		(n >= maxOAuthClients && s.Store.EvictUnusedOAuthClient(ctx) != nil) {
 		oauthJSONError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "too many registered clients")
 		return
 	}
@@ -365,8 +374,6 @@ func (s *Server) checkRequest(r *http.Request, in *authRequest) (string, string)
 		return "invalid_request", "PKCE with S256 is required"
 	case len(in.State) > 1000:
 		return "invalid_request", "state is too long"
-	case in.Scope != "" && !slices.ContainsFunc(strings.Fields(in.Scope), func(sc string) bool { return sc == oauthScope }):
-		return "invalid_scope", "the only scope is " + oauthScope
 	case in.Resource != "" && strings.TrimSuffix(in.Resource, "/") != s.mcpURL(r) &&
 		strings.TrimSuffix(in.Resource, "/") != s.publicBase(r):
 		return "invalid_target", "this server only grants access to " + s.mcpURL(r)
@@ -400,9 +407,13 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "WPGenie: %s.\n", strings.TrimPrefix(err.Error(), "store: "))
 		return
 	}
-	if code, desc := s.checkRequest(r, &in); code != "" {
-		http.Redirect(w, r, redirectWith(in.RedirectURI, map[string]string{"error": code, "error_description": desc,
-			"state": in.State, "iss": s.publicBase(r)}), http.StatusFound)
+	// A bad request is shown here, not redirected: registration is open,
+	// so redirecting errors would make the panel's address a springboard
+	// to any site (RFC 9700 4.11.2).
+	if _, desc := s.checkRequest(r, &in); desc != "" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "WPGenie: this connection request is not valid: %s.\n", desc)
 		return
 	}
 	// The consent page reads the request from its address (a fragment:

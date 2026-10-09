@@ -262,13 +262,18 @@ a request with a foreign `Origin` is refused (DNS rebinding).
 
 Assistants connect with OAuth 2.1 (`internal/api/oauth.go`): protected resource metadata (RFC 9728)
 and authorization server metadata (RFC 8414) under `/.well-known/`, dynamic client registration
-(RFC 7591; open, so rate limited per address, capped at 1 000 clients and pruned after 30 idle days;
-redirect URIs must be `https` or `http` to loopback), PKCE S256 required, codes single-use for two
-minutes, `resource` must be this server's `/mcp`. `/oauth/authorize` sends the browser to the panel's
+(RFC 7591; unknown metadata ignored; open, so rate limited per address and capped at 1 000 clients:
+clients that never connected are forgotten after an hour, or evicted oldest first when the cap is
+reached, and quiet ones after 30 days; redirect URIs must be `https` or `http` to loopback), PKCE S256
+required, codes single-use for two minutes, `resource` must be this server's `/mcp`, unknown scopes
+ignored. A bad authorization request is shown on the panel rather than redirected to the client, so
+open registration doesn't turn the panel's address into an open redirect. `/oauth/authorize` sends the browser to the panel's
 consent screen (`#/connect`), which signs the person in as usual; the `SameSite=Strict` session never
 rides along the cross-site navigation, so approving always takes a same-origin request from the panel
 itself (CSRF header included). The consent screen names the client and the host approval returns to.
-What the assistant gets is an ordinary API token of that user (`client_id` set): one hour, renewed with
+What the assistant gets is an API token of that user (`client_id` set) that works only for the route of
+the MCP tool being called (the in-process call carries the tool's pattern; anywhere else, including
+the API directly, it is refused), so it can do no more than the person approved: one hour, renewed with
 a single-use rotating refresh token (60 days), one per user and assistant (connecting again replaces
 it). So everything that limits API tokens applies: the user's current role and account, two-factor
 authentication when required (checked again at every refresh), revocation by the user (Your account →

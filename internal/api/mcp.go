@@ -587,6 +587,16 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mcpCallKey marks an in-process request made by a tool (its route
+// pattern): only callTool sets it, so an assistant's token works there
+// and nowhere else (see route).
+type mcpCallKey struct{}
+
+func mcpToolPattern(ctx context.Context) string {
+	p, _ := ctx.Value(mcpCallKey{}).(string)
+	return p
+}
+
 // toolText is a tool call's result.
 func toolText(text string, isError bool) map[string]any {
 	return map[string]any{"content": []map[string]any{{"type": "text", "text": text}}, "isError": isError}
@@ -598,7 +608,7 @@ func (s *Server) callTool(orig *http.Request, t *mcpTool, args map[string]any) m
 	if err != nil {
 		return toolText(err.Error(), true)
 	}
-	ctx := context.WithoutCancel(orig.Context())
+	ctx := context.WithValue(context.WithoutCancel(orig.Context()), mcpCallKey{}, t.Pattern)
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {
 		return toolText(err.Error(), true)

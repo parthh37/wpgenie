@@ -193,6 +193,24 @@ func TestOAuthConnectsAnAssistantAsItsUser(t *testing.T) {
 	if isErr || !strings.Contains(text, `"sa"`) || strings.Contains(text, `"sb"`) || strings.Contains(text, `"sx"`) {
 		t.Fatalf("alice's assistant lists: %s", text)
 	}
+	// The token only works through the tools: not on the API directly,
+	// where it could do what the person didn't approve.
+	for _, path := range []string{"/api/v1/sites", "/api/v1/sites/sa", "/api/v1/account/tokens"} {
+		req, _ := http.NewRequest("GET", e.srv.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+access)
+		resp, _ := http.DefaultClient.Do(req)
+		resp.Body.Close()
+		if resp.StatusCode != 403 {
+			t.Errorf("assistant's token on %s: %d", path, resp.StatusCode)
+		}
+	}
+	req, _ = http.NewRequest("DELETE", e.srv.URL+"/api/v1/sites/sa", nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Errorf("assistant's token deleted a site: %d", resp.StatusCode)
+	}
 	// Another account's site doesn't exist for it.
 	if text, isErr := e.call(access, "get_site", map[string]any{"site_id": "sb"}); !isErr || !strings.Contains(text, "404") {
 		t.Errorf("reached bob's site: %s", text)
@@ -261,21 +279,36 @@ func TestOAuthRefusesBadRequests(t *testing.T) {
 	if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
 		t.Errorf("unregistered redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	// Without PKCE: an error sent back to the (registered) client.
+	// Bad requests (no PKCE, another resource) are shown on the panel, not
+	// redirected: open registration would make that an open redirect.
 	q.Set("redirect_uri", redirect)
 	q.Del("code_challenge")
 	resp, _ = noRedirects.Get(e.srv.URL + "/oauth/authorize?" + q.Encode())
 	resp.Body.Close()
-	if loc := resp.Header.Get("Location"); resp.StatusCode != 302 || !strings.Contains(loc, "error=invalid_request") {
-		t.Errorf("no PKCE: %d %q", resp.StatusCode, loc)
+	if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+		t.Errorf("no PKCE: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	// A different resource than this server's MCP endpoint.
 	q.Set("code_challenge", challenge)
 	q.Set("resource", "https://other.example/mcp")
 	resp, _ = noRedirects.Get(e.srv.URL + "/oauth/authorize?" + q.Encode())
 	resp.Body.Close()
-	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "error=invalid_target") {
-		t.Errorf("foreign resource: %q", loc)
+	if resp.StatusCode != 400 || resp.Header.Get("Location") != "" {
+		t.Errorf("foreign resource: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Scopes it doesn't know are ignored (clients send their own names).
+	q.Del("resource")
+	q.Set("scope", "claudeai")
+	resp, _ = noRedirects.Get(e.srv.URL + "/oauth/authorize?" + q.Encode())
+	resp.Body.Close()
+	if resp.StatusCode != 302 || !strings.HasPrefix(resp.Header.Get("Location"), "/#/connect?") {
+		t.Errorf("unknown scope: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Registration ignores metadata it doesn't use (RFC 7591).
+	resp, _ = http.Post(e.srv.URL+"/oauth/register", "application/json", strings.NewReader(`{"client_name":"x",`+
+		`"redirect_uris":["`+redirect+`"],"scope":"claudeai","logo_uri":"https://x.test/l.png","software_id":"s"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Errorf("registration with extra metadata: %d", resp.StatusCode)
 	}
 
 	// Approving takes a signed-in session, not an API token.
@@ -476,5 +509,47 @@ func TestMCPToolsAreRegisteredRoutes(t *testing.T) {
 		if strings.Contains(path, "{") {
 			t.Errorf("tool %s leaves %s unfilled", tool.Name, path)
 		}
+	}
+}
+
+func TestOAuthClientsArePrunedAndEvicted(t *testing.T) {
+	e := newTenancyEnv(t)
+	ctx := context.Background()
+	now := time.Now()
+	mk := func(id string, created, used time.Time) {
+		if err := e.st.CreateOAuthClient(ctx, &store.OAuthClient{ID: id, Name: id, RedirectURIs: []string{"https://x.test/cb"},
+			CreatedAt: created}); err != nil {
+			t.Fatal(err)
+		}
+		if !used.IsZero() {
+			e.st.TouchOAuthClient(ctx, id, used)
+		}
+	}
+	mk("fresh", now, time.Time{})                                      // registering right now
+	mk("never", now.Add(-2*time.Hour), time.Time{})                    // never connected
+	mk("idle", now.Add(-60*24*time.Hour), now.Add(-40*24*time.Hour))   // gone quiet
+	mk("active", now.Add(-60*24*time.Hour), now.Add(-time.Hour))       // in use
+	mk("holder", now.Add(-60*24*time.Hour), now.Add(-40*24*time.Hour)) // quiet, but holds a token
+	if _, err := e.st.CreateOAuthToken(ctx, &store.APIToken{UserID: e.user["alice"].ID, Name: "h", Hint: "h",
+		ClientID: "holder"}, "th", "rh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.PruneOAuthClients(ctx, now.Add(-oauthClientIdle), now.Add(-oauthClientUnused)); err != nil {
+		t.Fatal(err)
+	}
+	for id, kept := range map[string]bool{"fresh": true, "never": false, "idle": false, "active": true, "holder": true} {
+		if _, err := e.st.OAuthClient(ctx, id); (err == nil) != kept {
+			t.Errorf("%s kept = %v, want %v", id, err == nil, kept)
+		}
+	}
+	// Full: the oldest client that never connected goes; then none is left.
+	if err := e.st.EvictUnusedOAuthClient(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.OAuthClient(ctx, "fresh"); err == nil {
+		t.Error("fresh client not evicted")
+	}
+	if err := e.st.EvictUnusedOAuthClient(ctx); err == nil {
+		t.Error("evicted a client in use")
 	}
 }
