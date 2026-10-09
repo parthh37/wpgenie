@@ -89,7 +89,7 @@ jobs:
           docker exec php php -l /usr/local/share/wpgenie/page-cache.php
           docker exec php php -l /usr/local/share/wpgenie/smtp.php
           docker exec php php -l /usr/local/share/wpgenie/profile.php
-          for f in images image-convert convert-images cdn offload optimize branding hardening maintenance; do docker exec php php -l /usr/local/share/wpgenie/$f.php; done
+          for f in images image-convert convert-images cdn offload optimize branding hardening maintenance divi; do docker exec php php -l /usr/local/share/wpgenie/$f.php; done
           # The page cache stores Brotli copies; GD must write both modern formats.
           docker exec php php -r 'exit(function_exists("brotli_compress") && function_exists("imageavif") && function_exists("imagewebp") ? 0 : 1);'
           docker exec php grep -q "function wp_cache_init" /usr/local/share/wpgenie/object-cache.php

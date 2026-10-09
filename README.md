@@ -36,9 +36,11 @@ with one command.
 | 🩺 | **Site analyser**: one scored report (A–F) on security, performance and upkeep — plugin/theme versions against known vulnerabilities, risky WordPress settings, database bloat — with one-click fixes | ✅ |
 | 🗝️ | **wp-admin without a password**: one click in the panel signs you in as any administrator (a one-time link that opens a normal WordPress session); reset administrators' passwords from the panel | ✅ |
 | 🏷️ | **Branding**: your logo and name instead of WordPress's on the login page, admin bar, footer and titles of every site | ✅ |
+| 🎨 | **Divi preinstalled**: with your Elegant Themes license saved once, new sites get Divi installed and activated (skippable per site); every site with Divi gets updates and premade layouts while the key stays out of its database and out of Divi's settings | ✅ |
 | 🪶 | **WordPress tweaks**: emoji/embed scripts, `<head>` clutter, Heartbeat polling, Dashicons for visitors, nightly database cleanup — applied by a must-use plugin, on by default for new sites | ✅ |
 | ⬆️ | **One-click WPGenie updates**: signed releases, automatic rollback if the new version doesn't start | ✅ |
 | 🖥️ | Dashboard + REST API + CLI | ✅ |
+| 🤖 | **AI assistants (MCP)**: connect Claude, ChatGPT or Claude Code to the panel: paste one address, approve once (OAuth), then ask it to check traffic and updates, back up, update WordPress, clear caches, create sites or staging copies. It acts as you, with your role and account; it never deletes anything or sees passwords | ✅ |
 | 💾 | **Backups** (restic: deduplicated, encrypted) of files + database to this server, S3, B2 or SFTP; retention rules, one-click restore, downloads, restore as a new site | ✅ |
 | 🧪 | **Staging**: clone a site, push code / files / database (or chosen tables) back with links rewritten | ✅ |
 | 🌐 | Domain aliases, www ↔ bare-domain redirects, primary domain changes, your own TLS certificates | ✅ |
@@ -80,6 +82,16 @@ Create a site (point the domain's DNS at the server first, so the certificate ca
 
 ```bash
 wpgenie site create example.com you@example.com
+```
+
+Using Divi? Save your Elegant Themes account once (a dedicated API key from Account → Username & API
+Key, so it can be revoked on its own) and new sites come with Divi installed, activated and licensed:
+
+```bash
+wpgenie divi set --username acme < divi-api-key.txt   # the key on stdin, never the command line
+wpgenie divi check                                    # does Elegant Themes accept it?
+wpgenie site create shop.example.com you@example.com --no-divi   # skip it for one site
+wpgenie site divi <site-id>                           # add it to an existing site
 ```
 
 Scale it when it gets busy — no downtime, the old containers drain before they are removed:
@@ -144,6 +156,15 @@ people with roles, and turn on two-factor authentication under Account:
 wpgenie user add jane@example.com --role operator   # prints a generated password
 wpgenie user require-2fa on
 wpgenie audit                                       # who changed what, from where
+```
+
+Let an AI assistant manage sites for you. Under **Your account → AI assistants** the panel shows its
+MCP address (`https://panel.example.com/mcp`) and the steps for Claude, ChatGPT and Claude Code; you
+approve the assistant once in the panel, and can disconnect it there at any time. Claude.ai and
+ChatGPT need the panel on its own HTTPS address (`PANEL_DOMAIN`):
+
+```bash
+claude mcp add --transport http wpgenie https://panel.example.com/mcp   # then /mcp in Claude Code to sign in
 ```
 
 Host other people's sites: plans, customer and reseller accounts (each sees only its own sites), usage,

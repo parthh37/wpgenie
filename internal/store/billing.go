@@ -22,14 +22,21 @@ type APIToken struct {
 	ExpiresAt  time.Time `json:"expires_at,omitzero"`
 	LastUsedAt time.Time `json:"last_used_at,omitzero"`
 	LastUsedIP string    `json:"last_used_ip,omitempty"`
+	// ClientID is the OAuth client (an AI assistant connected over MCP,
+	// see oauth.go) the token was issued to; "" for tokens made by hand.
+	ClientID string `json:"client_id,omitempty"`
+	// RefreshExpiresAt: an OAuth token can be renewed until then.
+	RefreshExpiresAt time.Time `json:"-"`
 }
 
-const tokenCols = `t.id, t.user_id, u.username, t.name, t.hint, t.created_at, t.expires_at, t.last_used_at, t.last_used_ip`
+const tokenCols = `t.id, t.user_id, u.username, t.name, t.hint, t.created_at, t.expires_at, t.last_used_at, t.last_used_ip,
+	t.client_id, t.refresh_expires_at`
 
 func scanToken(row interface{ Scan(...any) error }) (*APIToken, error) {
 	var t APIToken
-	var created, expires, used int64
-	err := row.Scan(&t.ID, &t.UserID, &t.Username, &t.Name, &t.Hint, &created, &expires, &used, &t.LastUsedIP)
+	var created, expires, used, refreshExpires int64
+	err := row.Scan(&t.ID, &t.UserID, &t.Username, &t.Name, &t.Hint, &created, &expires, &used, &t.LastUsedIP,
+		&t.ClientID, &refreshExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -43,17 +50,22 @@ func scanToken(row interface{ Scan(...any) error }) (*APIToken, error) {
 	if used > 0 {
 		t.LastUsedAt = time.Unix(used, 0).UTC()
 	}
+	if refreshExpires > 0 {
+		t.RefreshExpiresAt = time.Unix(refreshExpires, 0).UTC()
+	}
 	return &t, nil
 }
 
 func (s *Store) CreateAPIToken(ctx context.Context, t *APIToken, tokenHash string) (*APIToken, error) {
-	var expires int64
-	if !t.ExpiresAt.IsZero() {
-		expires = t.ExpiresAt.Unix()
-	}
+	return s.createAPIToken(ctx, t, tokenHash, "")
+}
+
+func (s *Store) createAPIToken(ctx context.Context, t *APIToken, tokenHash, refreshHash string) (*APIToken, error) {
 	var id int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO api_tokens (user_id, name, token_hash, hint, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`, t.UserID, t.Name, tokenHash, t.Hint, time.Now().Unix(), expires).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO api_tokens (user_id, name, token_hash, hint, created_at, expires_at,
+		client_id, refresh_hash, refresh_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		t.UserID, t.Name, tokenHash, t.Hint, time.Now().Unix(), unixOrZero(t.ExpiresAt),
+		t.ClientID, refreshHash, unixOrZero(t.RefreshExpiresAt)).Scan(&id)
 	if err != nil {
 		return nil, err
 	}

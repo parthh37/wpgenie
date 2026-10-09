@@ -679,6 +679,9 @@ var migrations = []string{
 	`ALTER TABLE sites ADD COLUMN harden TEXT NOT NULL DEFAULT '';`,
 	// Site locks and redirects: see edge.go.
 	edgeSchema,
+	// AI assistants connected over MCP (OAuth clients and their tokens):
+	// see oauth.go.
+	oauthSchema,
 }
 
 // postgresMigrations holds PostgreSQL versions of the migrations the

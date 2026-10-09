@@ -2,13 +2,14 @@ import type { ReactNode } from "react"
 import { ArchiveIcon, BoxIcon, LockIcon, ShieldIcon } from "lucide-react"
 import { Logo } from "@/components/app/logo"
 import { IconTile } from "@/components/app/icon-tile"
+import { cn } from "@/lib/utils"
 
 // The signed-out screens: a plain card on the canvas, and what WPGenie
 // does beside it.
 export function AuthLayout({ children, aside = true }: { children: ReactNode; aside?: boolean }) {
   return (
     <div className="flex min-h-svh items-center justify-center p-4 sm:p-8">
-      <div className="grid w-full max-w-4xl items-center gap-10 md:grid-cols-[minmax(0,26rem)_1fr]">
+      <div className={cn("grid w-full items-center gap-10", aside ? "max-w-4xl md:grid-cols-[minmax(0,26rem)_1fr]" : "max-w-[26rem]")}>
         <div className="rounded-lg bg-card p-7 card-shadow sm:p-8">
           <div className="mb-6 flex items-center gap-2.5 text-lg font-semibold">
             <Logo className="size-7" /> WPGenie

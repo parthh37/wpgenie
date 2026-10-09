@@ -173,6 +173,12 @@ func (s *Service) DeleteTheme(ctx context.Context, id, slug string) error {
 		if _, err := s.Runtime.WP(ctx, id, nil, "theme", "delete", t.Slug); err != nil {
 			return fmt.Errorf("deleting theme: %w", err)
 		}
+		if t.Slug == diviThemeSlug {
+			// The license goes with the theme.
+			if err := s.writeDiviFiles(ctx, id); err != nil {
+				s.Log.Warn("divi: removing a site's license files", "site", id, "err", err)
+			}
+		}
 		s.event(id, "tools", fmt.Sprintf("Theme %s %s deleted", t.Title, t.Version))
 		return nil
 	})

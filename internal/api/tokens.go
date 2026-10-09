@@ -57,7 +57,7 @@ func (s *Server) tokenPrincipal(r *http.Request, tok string) (*Principal, error)
 	if err != nil {
 		return nil, err
 	}
-	p.TokenID = t.ID
+	p.TokenID, p.ClientID = t.ID, t.ClientID
 	if now.Sub(t.LastUsedAt) > time.Minute { // don't write on every request
 		s.Store.TouchAPIToken(context.WithoutCancel(ctx), t.ID, now, clientIP(r))
 	}

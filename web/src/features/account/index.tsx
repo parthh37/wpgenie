@@ -16,11 +16,12 @@ import type { User } from "@/lib/types"
 import { AccountPlan, type TenantAccount } from "./plan"
 import { ROLE_NAMES } from "./roles"
 import { SessionsTable, type SessionRow } from "./sessions"
+import { Assistants } from "./assistants"
 import { ApiTokens } from "./tokens"
 import { TwoFactor } from "./two-factor"
 
 // Your account: profile, a tenant's plan, two-factor authentication,
-// password, sessions and API tokens.
+// password, sessions, AI assistants and API tokens.
 
 interface AccountResp {
   user: User
@@ -78,6 +79,8 @@ export default function AccountPage() {
             {sessions.error && <LoadError error={sessions.error} retry={() => sessions.refetch()} />}
             {sessions.data && <SessionsTable sessions={sessions.data} onChanged={() => invalidate("/account/sessions")} />}
           </Section>
+
+          <Assistants blocked={locked} />
 
           <ApiTokens blocked={locked} />
         </>

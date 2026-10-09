@@ -361,6 +361,16 @@ func (s *Server) ConfigureNode(ctx context.Context, n *store.Node) error {
 	} else if err := s.nodeAPI(ctx, n.ID, panel, http.MethodPut, "/api/v1/settings/branding", b.Input(), nil); err != nil {
 		errs = append(errs, fmt.Errorf("branding: %w", err))
 	}
+	// The Divi license: the node installs Divi on its own sites.
+	if l, err := s.Sites.Divi(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("divi license: %w", err))
+	} else if err := s.nodeAPI(ctx, n.ID, panel, http.MethodPut, "/api/v1/settings/divi", l.Input(), nil); err != nil {
+		// A node older than the license has nothing to apply it to.
+		var se *cluster.StatusError
+		if !errors.As(err, &se) || se.Code != http.StatusNotFound {
+			errs = append(errs, fmt.Errorf("divi license: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -716,6 +726,12 @@ func (s *Server) createOnNode(r *http.Request, in createSiteInput) (st *store.Si
 	var out struct {
 		Site  *store.Site `json:"site"`
 		JobID int64       `json:"job_id"`
+	}
+	// Whether it gets Divi is decided here, by the panel's license, not by
+	// whatever copy of it the node has.
+	if in.Divi == nil {
+		d := s.Sites.DiviDefault(r.Context())
+		in.Divi = &d
 	}
 	if err := s.nodeAPI(r.Context(), node, s.identity(r), http.MethodPost, "/api/v1/sites", in.CreateInput, &out); err != nil {
 		return nil, 0, false, clusterErr(err)

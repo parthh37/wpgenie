@@ -245,6 +245,41 @@ and creates the first one atomically). After that people sign in with their own 
   passes `{client_ip}`). The newest 20 000 entries are kept. The CLI appears as `api-token`.
 - An admin can't demote, disable or delete the last active admin, or delete themselves.
 
+### AI assistants (MCP)
+
+`/mcp` is an [MCP](https://modelcontextprotocol.io) server (Streamable HTTP; each POST answered with
+JSON, no sessions or server streams) for Claude, ChatGPT, Claude Code and other assistants. Every tool
+is one of the API's own routes, called in-process as the assistant's user through the same wrapper as
+any request, so the route's role, tenants' ownership and plan checks, the two-factor requirement,
+cluster forwarding and the audit log all apply unchanged; `tools/list` offers only what that user may
+call. The catalogue is "read, plus everyday actions" (`internal/api/mcp.go`): sites, traffic,
+performance, updates, scans, backups, jobs; create sites and staging copies, back up, update
+WordPress, purge caches, maintenance and debug mode, themes, burst, auto-updates. Nothing that deletes
+or overwrites (sites, restores, files, search-replace) and no credentials (wp-admin links, passwords, a
+new site's admin password, which stays the job's secret in the panel): what an assistant receives ends
+up in a transcript its provider keeps. Only bearer tokens are accepted (never the session cookie), and
+a request with a foreign `Origin` is refused (DNS rebinding).
+
+Assistants connect with OAuth 2.1 (`internal/api/oauth.go`): protected resource metadata (RFC 9728)
+and authorization server metadata (RFC 8414) under `/.well-known/`, dynamic client registration
+(RFC 7591; unknown metadata ignored; open, so rate limited per address and capped at 1 000 clients:
+clients that never connected are forgotten after an hour, or evicted oldest first when the cap is
+reached, and quiet ones after 30 days; redirect URIs must be `https` or `http` to loopback), PKCE S256
+required, codes single-use for two minutes, `resource` must be this server's `/mcp`, unknown scopes
+ignored. A bad authorization request is shown on the panel rather than redirected to the client, so
+open registration doesn't turn the panel's address into an open redirect. `/oauth/authorize` sends the browser to the panel's
+consent screen (`#/connect`), which signs the person in as usual; the `SameSite=Strict` session never
+rides along the cross-site navigation, so approving always takes a same-origin request from the panel
+itself (CSRF header included). The consent screen names the client and the host approval returns to.
+What the assistant gets is an API token of that user (`client_id` set) that works only for the route of
+the MCP tool being called (the in-process call carries the tool's pattern; anywhere else, including
+the API directly, it is refused), so it can do no more than the person approved: one hour, renewed with
+a single-use rotating refresh token (60 days), one per user and assistant (connecting again replaces
+it). So everything that limits API tokens applies: the user's current role and account, two-factor
+authentication when required (checked again at every refresh), revocation by the user (Your account →
+AI assistants), by an administrator, by resetting the user's password or 2FA, or by the client itself
+(`/oauth/revoke`).
+
 ## Accounts, plans and billing
 
 WPGenie can host other people's sites: **accounts** (organisations) of kind *customer* or *reseller*, each on
@@ -297,7 +332,8 @@ WordPress administrators' passwords, WordPress tweaks, the site analyser and its
 memory, CPUs, the autoscaling maximum) are checked against the plan. Everything that touches shared
 infrastructure stays staff-only: the server's settings and security lists, bans, the mail server, backup
 destinations and deleting backups, restoring a backup as a new site, users outside their accounts,
-plans' definitions, billing settings, audit log, self-update, branding. `TestEveryRouteIsClosedToOtherTenants`
+plans' definitions, billing settings, audit log, self-update, branding, the Divi license (tenants only learn
+whether new sites get Divi). `TestEveryRouteIsClosedToOtherTenants`
 walks the whole route table as a customer and a reseller (tokens and sessions): every staff-only route
 answers 403 and every route on another account's site, account or job 404.
 
@@ -1119,6 +1155,28 @@ page titles, and no WordPress news widget or welcome panel. The logo is never wr
 cached for good per version, SVG under a `sandbox` CSP. The panel sends the whole brand to every node (and to a
 node when it's added), and each rewrites its sites' wrappers; sites still being provisioned get theirs when
 they go live (the WordPress image only copies core into an empty docroot).
+
+**Divi** (`site/divi.go`, `images/php/divi.php`). One server-wide Elegant Themes license (`PUT /settings/divi`,
+admins; the key is write-only: responses carry `key_set` and its last four characters, everyone else only
+`configured` and `new_sites`). With `new_sites` on (the default once a license is saved) a new site gets Divi
+right after `wp core install`, unless its creation says `"divi": false`; the panel decides it for sites it
+places on other servers. The daemon downloads the theme itself (`api_downloads.php`, 150 MB cap, the answer
+must be a zip holding `Divi/style.css`; anything else is "Elegant Themes refused the username or API key")
+into a randomly named root:82 0640 file in the site directory, runs `wp theme install <that file> --activate`
+and removes it: the key never reaches argv, logs, errors, job output or events (HTTP client errors are
+stripped of their URL). A failure never fails the site: it goes to the site's activity, and `POST
+/sites/{id}/divi` (a job) installs or activates it later. Sites that have `wp-content/themes/Divi` get
+`wpgenie-divi.php` next to `wp-config.php` (the username and key, checked against strict charsets) and a
+root-owned `wpgenie-divi.php` mu-plugin wrapper loading `divi.php` from the image, which answers Divi's
+`et_automatic_updates_options` through `pre_option`/`pre_site_option`, keeps every write from reaching the
+database (`pre_update_option` returns the old value; an `add_option` is undone), deletes a copy stored earlier
+on the next admin page, and masks the key with asterisks on Divi's Theme Options screen. The license is sent
+to every node like the brand; a change rewrites the files of every site with Divi (and the credentials of
+spread sites' replicas), and updates, restores, clones and staging rewrite them with the other wrappers.
+Anyone who can run their own PHP on a site can still read the key, and Divi's builder hands the account to
+wp-admin users' browsers for premade layouts: hence a dedicated, revocable key. WP-CLI runs with
+`--skip-themes`, so Divi's own updater (in the theme) isn't loaded there: Divi updates itself from wp-admin,
+where the license is active.
 
 **WordPress tweaks** (`site/optimize.go`, `images/php/optimize.php`). What performance plugins do on top of
 caching, as a list per site (`PUT /sites/{id}/optimize`): no emoji scripts, no oEmbed discovery, no generator,
