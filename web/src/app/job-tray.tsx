@@ -25,7 +25,7 @@ function JobRow({ job: j, done }: { job: Job; done?: boolean }) {
   const detail =
     j.status === "failed" ? j.error : j.status === "succeeded" ? "Done" : j.status === "queued" ? "Waiting for another operation on this site…" : j.step || "Starting…"
   return (
-    <div className="material flex items-start gap-3 rounded-2xl bg-popover/90 p-3 text-sm shadow-[0_10px_40px_rgba(0,0,0,.25),0_0_0_.5px_rgba(127,127,127,.25)]">
+    <div className="flex items-start gap-3 rounded-lg bg-popover p-3 text-base shadow-lg ring-1 ring-border">
       <div className="min-w-0 flex-1">
         <div className="truncate">
           <strong className="font-semibold">{JOB_NAMES[j.kind] || j.kind}</strong>

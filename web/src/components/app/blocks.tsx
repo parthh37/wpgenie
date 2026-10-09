@@ -38,22 +38,22 @@ export function Kpi({
   className?: string
 }) {
   const cls = cn(
-    "flex min-w-0 flex-col gap-1 rounded-2xl bg-card p-4 text-left text-foreground no-underline card-shadow",
-    (onClick || href) && "cursor-pointer transition-transform hover:-translate-y-0.5 hover:no-underline active:scale-[.98]",
-    tone === "bad" && "bg-danger-fill/10",
-    tone === "warn" && "bg-warning-fill/10",
-    tone === "ok" && "bg-success-fill/10",
+    "flex min-w-0 flex-col gap-1 rounded-lg bg-card p-4 text-left text-foreground no-underline card-shadow",
+    (onClick || href) && "cursor-pointer transition-shadow hover:no-underline hover:shadow-[var(--shadow-card-raised)]",
+    tone === "bad" && "border-l-[3px] border-l-danger-fill",
+    tone === "warn" && "border-l-[3px] border-l-warning-fill",
+    tone === "ok" && "border-l-[3px] border-l-success-fill",
     className
   )
   const body = (
     <>
-      <span className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+      <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
         {Icon && <Icon className="size-3.5" />}
         {label}
       </span>
       <span
         className={cn(
-          "font-heading text-[1.625rem] leading-tight font-bold tracking-[-0.02em] tabular-nums",
+          "font-heading text-2xl leading-tight font-semibold tracking-[-0.01em] tabular-nums",
           tone === "bad" && "text-danger",
           tone === "warn" && "text-warning"
         )}
@@ -85,25 +85,36 @@ export function Banner({
   actions?: ReactNode
   className?: string
 }) {
-  const tint: Tint = tone === "ok" ? "green" : tone === "warn" ? "orange" : tone === "bad" ? "red" : "indigo"
+  // Kumo's banner: a tint of the tone, a ring of it, the icon in it.
   return (
     <div
       role={tone === "bad" ? "alert" : "status"}
       className={cn(
-        "mb-4 flex flex-wrap items-center gap-3.5 rounded-2xl p-4",
-        tone === "info" && "bg-primary/10",
-        tone === "ok" && "bg-success-fill/12",
-        tone === "warn" && "bg-warning-fill/12",
-        tone === "bad" && "bg-danger-fill/12",
+        "mb-4 flex flex-wrap items-start gap-3 rounded-lg px-4 py-3 ring-1",
+        tone === "info" && "bg-primary/6 ring-primary/25",
+        tone === "ok" && "bg-success-fill/8 ring-success-fill/30",
+        tone === "warn" && "bg-warning-fill/10 ring-warning-fill/35",
+        tone === "bad" && "bg-danger-fill/7 ring-danger-fill/30",
         className
       )}
     >
-      {Icon && <IconTile icon={Icon} tint={tint} size="lg" />}
-      <div className="min-w-0 flex-1">
+      {Icon && (
+        <Icon
+          aria-hidden
+          className={cn(
+            "mt-0.5 size-[18px] shrink-0",
+            tone === "info" && "text-info",
+            tone === "ok" && "text-success",
+            tone === "warn" && "text-warning",
+            tone === "bad" && "text-danger"
+          )}
+        />
+      )}
+      <div className="min-w-0 flex-1 self-center">
         <strong className="font-semibold">{title}</strong>
         {children && <div className="text-sm text-muted-foreground">{children}</div>}
       </div>
-      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+      {actions && <div className="flex flex-wrap gap-2 self-center">{actions}</div>}
     </div>
   )
 }
@@ -127,23 +138,24 @@ export function SubNav({ label, items, current, className }: { label: string; it
     <nav
       ref={ref}
       aria-label={label}
-      className={cn("-mx-4 mb-5 flex gap-1 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0", className)}
+      className={cn("-mx-4 mb-5 overflow-x-auto px-4 sm:mx-0 sm:px-0", className)}
     >
-      <div className="inline-flex gap-1 rounded-full bg-muted p-1">
+      {/* Cloudflare's tabs: words on a hairline, the current one underlined. */}
+      <div className="flex min-w-max gap-1 border-b border-border">
         {items.map((it) => (
           <a
             key={it.key}
             href={hashHref(it.href)}
             aria-current={it.key === current ? "page" : undefined}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground hover:no-underline",
-              it.key === current && "bg-card text-foreground shadow-sm"
+              "relative -mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 border-transparent px-2.5 pt-1.5 pb-2.5 text-base font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground hover:no-underline",
+              it.key === current && "border-primary text-foreground"
             )}
           >
             {it.icon && <it.icon className="size-4" />}
             {it.label}
             {it.count ? (
-              <span className="rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground tabular-nums">{fmtNum(it.count)}</span>
+              <span className="rounded-full bg-fill px-1.5 text-xs font-semibold text-foreground tabular-nums">{fmtNum(it.count)}</span>
             ) : null}
           </a>
         ))}
@@ -176,8 +188,8 @@ export function Chips<K extends string>({
           aria-pressed={key === current}
           onClick={() => onPick(key)}
           className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-full bg-secondary px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent",
-            key === current && "bg-primary text-primary-foreground hover:bg-primary"
+            "inline-flex h-8 items-center gap-1.5 rounded-md bg-card px-2.5 text-sm font-medium text-foreground shadow-xs ring-1 ring-border transition-colors hover:bg-accent",
+            key === current && "bg-primary/8 text-link ring-primary/50 hover:bg-primary/10"
           )}
         >
           {text}
@@ -206,12 +218,12 @@ export function EmptyState({
   className?: string
 }) {
   return (
-    <Empty className={cn("rounded-2xl bg-card py-12 card-shadow", className)}>
+    <Empty className={cn("rounded-lg bg-card py-12 card-shadow", className)}>
       <EmptyHeader>
         <EmptyMedia>
           <IconTile icon={icon} tint={tint} size="xl" />
         </EmptyMedia>
-        <EmptyTitle className="text-lg">{title}</EmptyTitle>
+        <EmptyTitle className="text-lg font-semibold">{title}</EmptyTitle>
         {children && <EmptyDescription>{children}</EmptyDescription>}
       </EmptyHeader>
       {actions && <EmptyContent className="flex-row flex-wrap justify-center">{actions}</EmptyContent>}
@@ -224,12 +236,12 @@ export function EmptyState({
 export function LoadError({ error, retry, className }: { error: unknown; retry?: () => void; className?: string }) {
   const missing = error instanceof ApiError && error.status === 404
   return (
-    <Empty role="alert" className={cn("mb-4 rounded-2xl bg-card py-12 card-shadow", className)}>
+    <Empty role="alert" className={cn("mb-4 rounded-lg bg-card py-12 card-shadow", className)}>
       <EmptyHeader>
         <EmptyMedia>
-          <IconTile icon={TriangleAlertIcon} tint="red" size="xl" />
+          <IconTile icon={TriangleAlertIcon} tint="red" size="xl" className="text-danger" />
         </EmptyMedia>
-        <EmptyTitle className="text-lg">{missing ? "Not available on this server yet" : "This didn't load"}</EmptyTitle>
+        <EmptyTitle className="text-lg font-semibold">{missing ? "Not available on this server yet" : "This didn't load"}</EmptyTitle>
         <EmptyDescription>
           {missing
             ? "This server doesn't have this part yet (it may need an update). Everything else keeps working."
@@ -377,7 +389,7 @@ export function ChoiceCard({
   return (
     <label
       className={cn(
-        "flex cursor-pointer items-start gap-3 rounded-2xl bg-card p-3.5 ring-1 ring-border transition-colors has-checked:bg-primary/8 has-checked:ring-2 has-checked:ring-primary has-disabled:cursor-not-allowed has-disabled:opacity-55"
+        "flex cursor-pointer items-start gap-3 rounded-lg bg-card p-3.5 ring-1 ring-border transition-[box-shadow,background-color] hover:bg-accent/50 has-checked:bg-primary/5 has-checked:ring-2 has-checked:ring-primary has-disabled:cursor-not-allowed has-disabled:opacity-55"
       )}
     >
       <input
@@ -388,7 +400,7 @@ export function ChoiceCard({
         defaultChecked={defaultChecked}
         disabled={disabled}
         onChange={(e) => e.target.checked && onChange?.(value)}
-        className="mt-0.5 size-[18px] shrink-0 accent-primary"
+        className="mt-0.5 size-4 shrink-0 accent-primary"
       />
       <span className="flex min-w-0 flex-col gap-0.5">
         <strong className="text-sm font-semibold">{title}</strong>

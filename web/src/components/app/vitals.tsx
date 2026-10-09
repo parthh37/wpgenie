@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 
 // A site's vitals: responses without a server error (24 h), CPU headroom
 // (now) and protection, each 0–100 or null while not known. Shown as
-// labelled capsule gauges coloured by how they're doing (green, orange,
+// labelled bars coloured by how they're doing (green, orange,
 // red), never by colour alone: every bar has its words and its number.
 
 export type VitalValues = [number | null | undefined, number | null | undefined, number | null | undefined]
@@ -36,19 +36,19 @@ export function vitalSaid(values: VitalValues, protectionAsShare = false): strin
 }
 
 const FILL: Record<VitalTone, string> = {
-  ok: "from-success-fill/75 to-success-fill",
-  warn: "from-warning-fill/75 to-warning-fill",
-  bad: "from-danger-fill/75 to-danger-fill",
+  ok: "bg-success-fill",
+  warn: "bg-warning-fill",
+  bad: "bg-danger-fill",
   none: "",
 }
 const TEXT: Record<VitalTone, string> = { ok: "text-foreground", warn: "text-warning", bad: "text-danger", none: "text-faint" }
 
 function Gauge({ value, tone, className }: { value: number | null | undefined; tone: VitalTone; className?: string }) {
   return (
-    <span className={cn("relative block h-1.5 overflow-hidden rounded-full bg-muted", className)}>
+    <span className={cn("relative block h-1.5 overflow-hidden rounded-full bg-fill", className)}>
       {value != null && (
         <span
-          className={cn("vital-fill absolute inset-y-0 left-0 rounded-full bg-linear-to-r", FILL[tone])}
+          className={cn("vital-fill absolute inset-y-0 left-0 rounded-full", FILL[tone])}
           style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
         />
       )}

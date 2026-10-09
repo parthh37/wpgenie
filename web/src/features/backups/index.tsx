@@ -1,7 +1,9 @@
 import { useMemo, useState, type FormEvent } from "react"
 import {
-  ArchiveIcon, CloudIcon, HardDriveIcon, KeyRoundIcon, PlusIcon, RefreshCwIcon, SearchIcon, ServerIcon, Trash2Icon, UndoIcon, type LucideIcon,
+  ArchiveIcon, ArrowRightLeftIcon, CloudIcon, EraserIcon, HardDriveIcon, KeyRoundIcon, PlusIcon, RefreshCwIcon, SearchIcon, ServerIcon, Trash2Icon,
+  UndoIcon, type LucideIcon,
 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
@@ -22,6 +24,7 @@ import { startJob } from "@/lib/jobs"
 import { invalidate, useApi, useSites } from "@/lib/query"
 import { navigate } from "@/lib/router"
 import { useSession } from "@/lib/session"
+import { CleanupDialog, type CleanupBody } from "./cleanup-dialog"
 
 // The Backups page: the server's backup destinations (restic
 // repositories), and every backup in one of them, deleted sites' included.
@@ -68,14 +71,30 @@ const KIND_ICONS: Record<string, LucideIcon> = {
   local: HardDriveIcon,
 }
 
+// GET /backups/coverage: where this server's live sites back up.
+interface Coverage {
+  sites: number
+  without_destination: number
+  on_this_server: number
+  preferred: string // the destination new sites get ("": none)
+}
+
+const offsite = (r: Repo) => r.kind === "s3" || r.kind === "b2" || r.kind === "sftp"
+
+const KIND_RANK = (r: Repo) => ({ s3: 0, b2: 1, sftp: 2 })[r.kind as "s3"] ?? 9
+
 const REPOS = "/backups/repos"
+const COVERAGE = "/backups/coverage"
 const repoBackupsPath = (id: string) => `${REPOS}/${encodeURIComponent(id)}/backups`
 
 export default function BackupsPage() {
   const s = useSession()
   const repos = useApi<Repo[]>(REPOS)
+  const coverage = useApi<Coverage>(COVERAGE)
   const [adding, setAdding] = useState(false)
-  const list = repos.data ?? []
+  // Off-server destinations first (S3 first), this server's disk last.
+  const list = [...(repos.data ?? [])].sort((a, b) => KIND_RANK(a) - KIND_RANK(b))
+  const preferred = coverage.data?.preferred ?? ""
 
   return (
     <Page>
@@ -83,7 +102,7 @@ export default function BackupsPage() {
         icon={ArchiveIcon}
         tint="orange"
         title="Backups"
-        description="Encrypted copies of every site, kept on this server and off it. Any of them restores in one click."
+        description="Encrypted, deduplicated copies of every site. Sites back up to your S3 destination by default; this server's own storage only when you choose it."
         actions={
           s.isAdmin && (
             <Button onClick={() => setAdding(true)}>
@@ -105,8 +124,8 @@ export default function BackupsPage() {
 
       {repos.data && (
         <>
-          <Verdict repos={list} onAdd={s.isAdmin ? () => setAdding(true) : undefined} />
-          <Destinations repos={list} />
+          <Verdict repos={list} coverage={coverage.data} onAdd={s.isAdmin ? () => setAdding(true) : undefined} />
+          <Destinations repos={list} preferred={preferred} />
           <Browse repos={list} />
         </>
       )}
@@ -118,42 +137,114 @@ export default function BackupsPage() {
 
 // ---- The verdict: can the destinations be reached, is anything off the server ----
 
-function Verdict({ repos, onAdd }: { repos: Repo[]; onAdd?: () => void }) {
+function Verdict({ repos, coverage, onAdd }: { repos: Repo[]; coverage?: Coverage; onAdd?: () => void }) {
+  const s = useSession()
   const failing = repos.filter((r) => r.check_error)
-  const offsite = repos.filter((r) => r.kind === "s3" || r.kind === "b2" || r.kind === "sftp")
-  if (failing.length)
-    return (
-      <StatusHero
-        kind="bad"
-        title={failing.length === 1 ? `${failing[0].name} can't be reached` : `${failing.length} destinations can't be reached`}
-        sub="Backups sent there fail until it answers again: the reason is under Destinations."
-      />
-    )
-  if (!offsite.length)
-    return (
-      <Banner
-        tone="warn"
-        icon={CloudIcon}
-        title="Backups are only on this server"
-        actions={
-          onAdd && (
-            <Button variant="tinted" onClick={onAdd}>
-              <PlusIcon data-icon="inline-start" />
-              Add destination
-            </Button>
-          )
-        }
-      >
-        They cover a broken site or a bad update, not losing the server. Add an off-server destination and keep its password somewhere else.
-      </Banner>
-    )
-  return <StatusHero kind="ok" title="Backups are kept off this server too" sub={`${plural(offsite.length, "off-server destination")}, every one reachable.`} />
+  const remote = repos.filter(offsite)
+  const preferred = repos.find((r) => r.id === coverage?.preferred)
+  const none = coverage?.without_destination ?? 0
+  const local = coverage?.on_this_server ?? 0
+
+  async function moveHere(moveLocal: boolean) {
+    if (!preferred) return
+    const what = moveLocal ? "the sites backing up to this server's storage, and those with no destination" : "the sites with no destination"
+    if (!(await ask(`Move ${what} to ${preferred.name}? Their schedules are kept; old backups stay where they are until deleted.`, { ok: "Move sites" })))
+      return
+    const r = await api<{ started: string[]; moved: string[]; failed_servers: string[] }>("POST", `${REPOS}/${encodeURIComponent(preferred.id)}/adopt`, {
+      move_local: moveLocal,
+    })
+    notify(`${plural(r.started.length + r.moved.length, "site")} now back up to ${preferred.name}`)
+    if (r.failed_servers.length) showError(new Error(`Some servers didn't answer: ${r.failed_servers.join(", ")}. Try again later.`))
+    await Promise.all([invalidate(REPOS), invalidate(COVERAGE)])
+  }
+
+  return (
+    <>
+      {failing.length > 0 && (
+        <StatusHero
+          kind="bad"
+          title={failing.length === 1 ? `${failing[0].name} can't be reached` : `${failing.length} destinations can't be reached`}
+          sub="Backups sent there fail until it answers again: the reason is under Destinations."
+        />
+      )}
+      {!remote.length ? (
+        <Banner
+          tone="warn"
+          icon={CloudIcon}
+          title={none ? `${plural(none, "site")} ${none === 1 ? "isn't" : "aren't"} backed up` : "No off-server destination"}
+          actions={
+            onAdd && (
+              <Button onClick={onAdd}>
+                <PlusIcon data-icon="inline-start" />
+                Add S3 destination
+              </Button>
+            )
+          }
+        >
+          Sites back up to an S3 destination as soon as you add one. Until then nothing is stored on this server unless you choose its storage for a
+          site, under the site's Backups.
+        </Banner>
+      ) : (
+        <>
+          {none > 0 && preferred && (
+            <Banner
+              tone="warn"
+              icon={CloudIcon}
+              title={`${plural(none, "site")} without a schedule`}
+              actions={
+                s.isAdmin && (
+                  <ActionButton run={() => moveHere(false)}>
+                    <ArrowRightLeftIcon data-icon="inline-start" />
+                    Back them up daily to {preferred.name}
+                  </ActionButton>
+                )
+              }
+            >
+              Their manual and safety backups go to {preferred.name}, but nothing is scheduled.
+            </Banner>
+          )}
+          {local > 0 && preferred && (
+            <Banner
+              tone="info"
+              icon={HardDriveIcon}
+              title={`${plural(local, "site")} back${local === 1 ? "s" : ""} up only to this server`}
+              actions={
+                s.isAdmin && (
+                  <ActionButton run={() => moveHere(true)}>
+                    <ArrowRightLeftIcon data-icon="inline-start" />
+                    Move to {preferred.name}
+                  </ActionButton>
+                )
+              }
+            >
+              That covers a broken site, not losing the server. {preferred.name} would.
+            </Banner>
+          )}
+          {!failing.length && !none && !local && (
+            <StatusHero kind="ok" title="Every site is backed up off this server" sub={`${plural(remote.length, "off-server destination")}, every one reachable.`} />
+          )}
+        </>
+      )}
+    </>
+  )
 }
 
 // ---- Destinations ----
 
-function Destinations({ repos }: { repos: Repo[] }) {
+function Destinations({ repos, preferred }: { repos: Repo[]; preferred: string }) {
   const s = useSession()
+  const [emptying, setEmptying] = useState<Repo | null>(null)
+
+  async function empty(r: Repo, body: CleanupBody) {
+    await startJob<{ job_id: string }>("POST", `${REPOS}/${encodeURIComponent(r.id)}/cleanup`, body, async (v) => {
+      if (v.job.status === "succeeded" && v.job.result) {
+        const res = JSON.parse(v.job.result) as { deleted: number }
+        notify(`${plural(res.deleted, "backup")} deleted from ${r.name}`)
+      }
+      await invalidate(repoBackupsPath(r.id))
+    })
+    notify(`Deleting backups in ${r.name}: follow it in the activity tray`)
+  }
 
   async function check(r: Repo) {
     try {
@@ -204,6 +295,8 @@ function Destinations({ repos }: { repos: Repo[] }) {
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <strong className="font-semibold">{r.name}</strong>
                 <Badge variant="secondary">{KINDS[r.kind] ?? r.kind}</Badge>
+                {r.id === preferred && <Badge>Default for new sites</Badge>}
+                {r.kind === "local" && <Badge variant="outline">Only when chosen</Badge>}
                 <span className="text-xs text-muted-foreground">used by {plural(r.sites_using, "site")}</span>
               </div>
               <code className="text-xs break-all text-muted-foreground">{r.location}</code>
@@ -240,6 +333,12 @@ function Destinations({ repos }: { repos: Repo[] }) {
                   Password
                 </ActionButton>
               )}
+              {s.isAdmin && (
+                <Button size="sm" variant="destructive" onClick={() => setEmptying(r)}>
+                  <EraserIcon data-icon="inline-start" />
+                  Delete all backups
+                </Button>
+              )}
               {s.isAdmin && r.id !== "local" && (
                 <ActionButton size="sm" variant="destructive" run={() => remove(r)}>
                   Remove
@@ -249,6 +348,14 @@ function Destinations({ repos }: { repos: Repo[] }) {
           </li>
         ))}
       </ul>
+      <CleanupDialog
+        open={!!emptying}
+        onOpenChange={(o) => !o && setEmptying(null)}
+        title={`Delete every backup in ${emptying?.name ?? ""}?`}
+        intro="Every site's backups there, deleted sites' included. The destination stays, ready for the next backups."
+        confirm={emptying?.name ?? ""}
+        onSubmit={(body) => (emptying ? empty(emptying, body) : Promise.resolve())}
+      />
     </Section>
   )
 }
@@ -265,6 +372,7 @@ const SHOWN: Record<string, string[]> = {
 
 function AddDestination({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [kind, setKind] = useState("s3")
+  const [moveLocal, setMoveLocal] = useState(true)
   const [connecting, setConnecting] = useState(false)
   const shown = (n: string) => SHOWN[kind]?.includes(n)
 
@@ -303,16 +411,29 @@ function AddDestination({ open, onOpenChange }: { open: boolean; onOpenChange: (
         "",
         `Server key pinned: ${r.repo.host_key_fingerprint ?? ""}`
       )
+    if (offsite(r.repo) && moveLocal && !r.repo.check_error) {
+      // Sites without a destination took it over already if it's the
+      // default; this also moves those on this server's own storage.
+      try {
+        const m = await api<{ started: string[]; moved: string[] }>("POST", `${REPOS}/${encodeURIComponent(r.repo.id)}/adopt`, { move_local: true })
+        if (m.started.length + m.moved.length) lines.push("", `${plural(m.started.length + m.moved.length, "site")} now back up here.`)
+      } catch (e) {
+        showError(e)
+      }
+    }
     if (lines.length) showSecret(`Destination ${r.repo.name} added`, lines)
     else notify(`Destination ${r.repo.name} added`)
-    await invalidate(REPOS)
+    await Promise.all([invalidate(REPOS), invalidate(COVERAGE)])
   }
 
   return (
     <FormDialog
       open={open}
       onOpenChange={(o) => {
-        if (o) setKind("s3")
+        if (o) {
+          setKind("s3")
+          setMoveLocal(true)
+        }
         onOpenChange(o)
       }}
       wide
@@ -332,7 +453,7 @@ function AddDestination({ open, onOpenChange }: { open: boolean; onOpenChange: (
             <NativeSelectOption value="s3">S3-compatible (AWS, Wasabi, R2, MinIO…)</NativeSelectOption>
             <NativeSelectOption value="b2">Backblaze B2</NativeSelectOption>
             <NativeSelectOption value="sftp">SFTP server</NativeSelectOption>
-            <NativeSelectOption value="local">Directory on this server</NativeSelectOption>
+            <NativeSelectOption value="local">Another directory on this server (not off-server)</NativeSelectOption>
           </NativeSelect>
         </Field>
         {shown("endpoint") && (
@@ -403,6 +524,14 @@ function AddDestination({ open, onOpenChange }: { open: boolean; onOpenChange: (
           <Input id="repo-password" name="password" type="password" autoComplete="new-password" />
           <FieldDescription>Only to attach backups made elsewhere. Empty: a new password is created and shown once.</FieldDescription>
         </Field>
+        {kind !== "local" && (
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm sm:col-span-2">
+            <Checkbox className="mt-0.5" checked={moveLocal} onCheckedChange={(c) => setMoveLocal(!!c)} />
+            <span>
+              Back up every site here: those with no destination, and those using this server's storage (their schedules are kept).
+            </span>
+          </label>
+        )}
       </FieldGroup>
     </FormDialog>
   )

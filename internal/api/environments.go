@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/parthh37/wpgenie/internal/billing"
@@ -190,6 +191,81 @@ func (s *Server) repoBackups(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, list)
+}
+
+// backupCoverage says where this server's sites back up: how many have no
+// destination yet (and so no backups), how many only this server's disk,
+// and which destination new sites get.
+func (s *Server) backupCoverage(w http.ResponseWriter, r *http.Request) error {
+	c, err := s.Sites.BackupCoverage(r.Context())
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, c)
+}
+
+// adoptRepo makes a destination home to the sites without one (and, with
+// move_local, those on a server's own disk), on every server.
+func (s *Server) adoptRepo(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		MoveLocal bool `json:"move_local"`
+	}
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	id := r.PathValue("id")
+	res, err := s.Sites.AdoptRepo(r.Context(), id, in.MoveLocal)
+	if err != nil {
+		return err
+	}
+	var mu sync.Mutex
+	errs := s.eachNode(r.Context(), 60*time.Second, func(ctx context.Context, n *store.Node) error {
+		var nr site.AdoptResult
+		if err := s.Cluster.Call(ctx, n.ID, http.MethodPost, "/cluster/v1/repos/"+id+"/adopt", in, &nr); err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		res.Started = append(res.Started, nr.Started...)
+		res.Moved = append(res.Moved, nr.Moved...)
+		return nil
+	})
+	failed := []string{}
+	for node, err := range errs {
+		if err != nil {
+			s.Log.Warn("cluster: moving sites to a backup destination", "node", node, "err", err)
+			failed = append(failed, node)
+		}
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{"started": res.Started, "moved": res.Moved, "failed_servers": failed})
+}
+
+// cleanupSiteBackups deletes a site's backups in bulk (all of them, or
+// one destination's or some kinds'), as a job.
+func (s *Server) cleanupSiteBackups(w http.ResponseWriter, r *http.Request) error {
+	var in site.BackupCleanupInput
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	id, err := s.Sites.StartSiteCleanup(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	return jobAccepted(w, id, nil)
+}
+
+// cleanupRepo deletes every backup in a destination (or some kinds), as
+// a job; the destination stays.
+func (s *Server) cleanupRepo(w http.ResponseWriter, r *http.Request) error {
+	var in site.BackupCleanupInput
+	if err := decode(w, r, &in); err != nil {
+		return err
+	}
+	id, err := s.Sites.StartRepoCleanup(r.Context(), r.PathValue("id"), in)
+	if err != nil {
+		return err
+	}
+	return jobAccepted(w, id, nil)
 }
 
 func (s *Server) deleteRepoBackup(w http.ResponseWriter, r *http.Request) error {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -60,6 +61,57 @@ const (
 const LocalRepoID = "local"
 
 var errNoBackups = fmt.Errorf("%w: backups are not available (restic is not configured)", ErrInvalidInput)
+
+// errNoDestination: nothing was chosen for the site and there is no
+// off-server destination to default to. Backups never land on this
+// server's own disk unless someone picks it.
+var errNoDestination = fmt.Errorf("%w: choose where this site's backups go first (Backups: an off-server destination, "+
+	"or this server's own storage)", ErrInvalidInput)
+
+// offsiteRank orders the kinds of destination a site defaults to: S3
+// first, then the other off-server kinds. This server's disk is never a
+// default (-1).
+func offsiteRank(kind string) int {
+	switch kind {
+	case backup.KindS3:
+		return 0
+	case backup.KindB2:
+		return 1
+	case backup.KindSFTP:
+		return 2
+	}
+	return -1
+}
+
+// preferredRepo is the destination sites back up to when nobody chose
+// one: an S3 destination if there is one, else another off-server one
+// (of a kind, reachable ones before failing ones, then the oldest). Nil:
+// none, so backups wait for someone to choose.
+func (s *Service) preferredRepo(ctx context.Context) (*store.BackupRepo, error) {
+	repos, err := s.Store.Repos(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var best *store.BackupRepo
+	better := func(a, b *store.BackupRepo) bool {
+		if ra, rb := offsiteRank(a.Kind), offsiteRank(b.Kind); ra != rb {
+			return ra < rb
+		}
+		if (a.CheckError == "") != (b.CheckError == "") {
+			return a.CheckError == ""
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	for _, r := range repos {
+		if offsiteRank(r.Kind) < 0 {
+			continue
+		}
+		if best == nil || better(r, best) {
+			best = r
+		}
+	}
+	return best, nil
+}
 
 // BackupMeta is stored with every backup (/backup/db/meta.json).
 type BackupMeta struct {
@@ -278,6 +330,8 @@ func (s *Service) AddRepo(ctx context.Context, in RepoInput) (*store.BackupRepo,
 	}
 	if initErr != nil {
 		s.Store.RepoChecked(ctx, r.ID, "not connected yet: add the public key to the server's authorized_keys, then check: "+initErr.Error())
+	} else {
+		s.adoptIfPreferred(ctx, r.ID)
 	}
 	return s.Store.GetRepo(ctx, r.ID)
 }
@@ -341,6 +395,10 @@ func (s *Service) CheckRepo(ctx context.Context, id string) (*store.BackupRepo, 
 	}
 	if err := s.Store.RepoChecked(ctx, id, msg); err != nil {
 		return nil, err
+	}
+	if err == nil && r.SitesUsing == 0 {
+		// An SFTP server that only now lets WPGenie in.
+		s.adoptIfPreferred(ctx, id)
 	}
 	return s.Store.GetRepo(ctx, id)
 }
@@ -427,8 +485,16 @@ func (s *Service) SetBackupPolicy(ctx context.Context, siteID string, in PolicyI
 	return s.Store.BackupPolicy(ctx, siteID)
 }
 
-// defaultBackupPolicy gives a new live site daily local backups (7 daily,
-// 4 weekly, 6 monthly). Best effort: a site without backups still works.
+// defaultSchedule is a new site's: daily, keeping 7 daily, 4 weekly and 6
+// monthly backups.
+func defaultSchedule(repoID string) PolicyInput {
+	return PolicyInput{RepoID: repoID, IntervalHours: 24, KeepDaily: 7, KeepWeekly: 4, KeepMonthly: 6}
+}
+
+// defaultBackupPolicy gives a new live site daily backups to the preferred
+// off-server destination. Without one the site gets none until someone
+// chooses (this server's disk is never chosen for them). Best effort: a
+// site without backups still works.
 func (s *Service) defaultBackupPolicy(ctx context.Context, st *store.Site) {
 	if s.Backups == nil || st.ParentID != "" {
 		return
@@ -436,21 +502,174 @@ func (s *Service) defaultBackupPolicy(ctx context.Context, st *store.Site) {
 	if _, err := s.Store.BackupPolicy(ctx, st.ID); err == nil {
 		return
 	}
-	if _, err := s.SetBackupPolicy(ctx, st.ID, PolicyInput{RepoID: LocalRepoID, IntervalHours: 24,
-		KeepDaily: 7, KeepWeekly: 4, KeepMonthly: 6}); err != nil {
+	r, err := s.preferredRepo(ctx)
+	if err != nil {
+		s.Log.Warn("choosing a backup destination", "site", st.ID, "err", err)
+		return
+	}
+	if r == nil {
+		s.event(st.ID, "backup", "Not backed up yet: no off-server destination is set up. Choose where backups go under Backups.")
+		return
+	}
+	if _, err := s.SetBackupPolicy(ctx, st.ID, defaultSchedule(r.ID)); err != nil {
 		s.Log.Warn("setting up default backups", "site", st.ID, "err", err)
 	}
 }
 
-// siteRepo is the repository a site's manual backups go to: its policy's,
-// or the local one.
+// siteRepo is the repository a site's manual and safety backups go to:
+// its policy's, else the preferred off-server one; errNoDestination when
+// there is neither.
 func (s *Service) siteRepo(ctx context.Context, siteID string) (*store.BackupRepo, error) {
 	if p, err := s.Store.BackupPolicy(ctx, siteID); err == nil {
 		return s.Store.GetRepo(ctx, p.RepoID)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	return s.ensureLocalRepo(ctx)
+	r, err := s.preferredRepo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, errNoDestination
+	}
+	return r, nil
+}
+
+// PreferredRepoID is the destination new sites get ("": none).
+func (s *Service) PreferredRepoID(ctx context.Context) (string, error) {
+	r, err := s.preferredRepo(ctx)
+	if r == nil || err != nil {
+		return "", err
+	}
+	return r.ID, nil
+}
+
+// canBackUp reports whether WPGenie can back a site up before a risky
+// change (backups configured, and a destination for the site).
+func (s *Service) canBackUp(ctx context.Context, siteID string) bool {
+	if s.Backups == nil {
+		return false
+	}
+	_, err := s.siteRepo(ctx, siteID)
+	return err == nil
+}
+
+// backedUpSite reports whether a site is one schedules are for: a live
+// site (not a staging copy) that exists here (not being created, failed,
+// arriving or gone to another server).
+func backedUpSite(st *store.Site) bool {
+	return st.ParentID == "" && (st.Status == store.StatusActive || st.Status == store.StatusSuspended)
+}
+
+// BackupCoverage is where this server's live sites back up.
+type BackupCoverage struct {
+	// Sites is how many live sites there are; WithoutDestination have no
+	// destination (so no backups at all); OnThisServer back up only to
+	// this server's own disk.
+	Sites              int `json:"sites"`
+	WithoutDestination int `json:"without_destination"`
+	OnThisServer       int `json:"on_this_server"`
+	// Preferred is the destination new sites get ("": none, they wait for
+	// someone to choose).
+	Preferred string `json:"preferred"`
+}
+
+func (s *Service) BackupCoverage(ctx context.Context) (*BackupCoverage, error) {
+	sites, err := s.Store.ListSites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policies, err := s.Store.BackupPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	repoOf := map[string]string{}
+	for _, p := range policies {
+		repoOf[p.SiteID] = p.RepoID
+	}
+	c := &BackupCoverage{}
+	if pr, err := s.preferredRepo(ctx); err != nil {
+		return nil, err
+	} else if pr != nil {
+		c.Preferred = pr.ID
+	}
+	for _, st := range sites {
+		if !backedUpSite(st) {
+			continue
+		}
+		c.Sites++
+		switch repo, ok := repoOf[st.ID]; {
+		case !ok:
+			c.WithoutDestination++
+		case repo == LocalRepoID:
+			c.OnThisServer++
+		}
+	}
+	return c, nil
+}
+
+// AdoptResult lists the sites a destination took over.
+type AdoptResult struct {
+	Started []string `json:"started"` // had no destination: now back up daily there
+	Moved   []string `json:"moved"`   // backed up to this server's disk: now there, same schedule
+}
+
+// AdoptRepo makes an off-server destination home to this server's live
+// sites that have none (the default daily schedule) and, with moveLocal,
+// to those backing up to this server's own disk (schedule and retention
+// kept; their existing backups stay where they are until deleted).
+func (s *Service) AdoptRepo(ctx context.Context, repoID string, moveLocal bool) (*AdoptResult, error) {
+	if s.Backups == nil {
+		return nil, errNoBackups
+	}
+	r, err := s.Store.GetRepo(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+	if offsiteRank(r.Kind) < 0 {
+		return nil, fmt.Errorf("%w: only an off-server destination can take sites over", ErrInvalidInput)
+	}
+	sites, err := s.Store.ListSites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := &AdoptResult{Started: []string{}, Moved: []string{}}
+	for _, st := range sites {
+		if !backedUpSite(st) { // staging copies have no schedule unless given one
+			continue
+		}
+		p, err := s.Store.BackupPolicy(ctx, st.ID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			if _, err := s.SetBackupPolicy(ctx, st.ID, defaultSchedule(r.ID)); err != nil {
+				return res, err
+			}
+			res.Started = append(res.Started, st.ID)
+			s.event(st.ID, "backup", "Backed up daily to "+r.Name+" from now on")
+		case err != nil:
+			return res, err
+		case moveLocal && p.RepoID == LocalRepoID:
+			p.RepoID = r.ID
+			if err := s.Store.SetBackupPolicy(ctx, p); err != nil {
+				return res, err
+			}
+			res.Moved = append(res.Moved, st.ID)
+			s.event(st.ID, "backup", "Backups go to "+r.Name+" instead of this server from now on")
+		}
+	}
+	return res, nil
+}
+
+// adoptIfPreferred hands the sites without a destination to a destination
+// that was just added here, when it is the one new sites would get.
+func (s *Service) adoptIfPreferred(ctx context.Context, repoID string) {
+	pr, err := s.preferredRepo(ctx)
+	if err != nil || pr == nil || pr.ID != repoID {
+		return
+	}
+	if _, err := s.AdoptRepo(ctx, repoID, false); err != nil {
+		s.Log.Warn("backups: moving sites without a destination", "repo", repoID, "err", err)
+	}
 }
 
 // ---- Backing up ----
@@ -466,6 +685,9 @@ func (s *Service) StartBackup(ctx context.Context, siteID string) (int64, error)
 	}
 	if st.Status != store.StatusActive {
 		return 0, fmt.Errorf("%w: site is %s", ErrInvalidInput, st.Status)
+	}
+	if _, err := s.siteRepo(ctx, siteID); err != nil {
+		return 0, err
 	}
 	return s.submitBackup(ctx, siteID, BackupManual)
 }
@@ -708,6 +930,163 @@ func (s *Service) DownloadBackup(ctx context.Context, siteID, repoID, snapID str
 	return s.Backups.Dump(ctx, r, b.ID, backup.Root, start(b))
 }
 
+// ---- Deleting in bulk ----
+
+// BackupCleanupInput selects the backups to delete at once.
+type BackupCleanupInput struct {
+	// RepoID limits a site's cleanup to one destination ("": all of them).
+	RepoID string `json:"repo_id"`
+	// Kinds limits it to scheduled, manual and/or safety backups (none:
+	// every kind).
+	Kinds []string `json:"kinds"`
+}
+
+// BackupCleanupResult is recorded with a cleanup job.
+type BackupCleanupResult struct {
+	Deleted int               `json:"deleted"`
+	Freed   []string          `json:"pruned"`           // destinations whose space was given back
+	Errors  map[string]string `json:"errors,omitempty"` // destinations that failed
+}
+
+func (in *BackupCleanupInput) check() error {
+	for _, k := range in.Kinds {
+		if k != BackupScheduled && k != BackupManual && k != BackupSafety {
+			return fmt.Errorf("%w: kinds are scheduled, manual or safety", ErrInvalidInput)
+		}
+	}
+	return nil
+}
+
+// matches reports whether a backup is one the cleanup deletes.
+func (in *BackupCleanupInput) matches(b BackupInfo) bool {
+	kind := b.Kind
+	if kind == "" {
+		kind = BackupManual
+	}
+	return len(in.Kinds) == 0 || slices.Contains(in.Kinds, kind)
+}
+
+// forgetChunk keeps restic's command line short.
+const forgetChunk = 100
+
+// cleanRepo deletes the backups carrying tag that in selects from a
+// repository, then prunes it so the space is given back. It holds the
+// repository's lock (no prune or check runs meanwhile).
+func (s *Service) cleanRepo(ctx context.Context, r *store.BackupRepo, tag string, in *BackupCleanupInput,
+	report func(string)) (int, error) {
+	mu := s.repoLock(r.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	report("Listing the backups in " + r.Name)
+	snaps, err := s.Backups.Snapshots(ctx, r, "wpgenie", tag)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, sn := range snaps {
+		if in.matches(infoFrom(r.ID, sn)) {
+			ids = append(ids, sn.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	for i := 0; i < len(ids); i += forgetChunk {
+		report(fmt.Sprintf("Deleting backups in %s (%d of %d)", r.Name, i, len(ids)))
+		if err := s.Backups.Forget(ctx, r, ids[i:min(i+forgetChunk, len(ids))]); err != nil {
+			return i, err
+		}
+	}
+	report("Giving the space back in " + r.Name)
+	if err := s.Backups.Prune(ctx, r); err != nil {
+		return len(ids), fmt.Errorf("the backups are deleted, but freeing their space failed (the weekly upkeep retries): %w", err)
+	}
+	s.Store.RepoPruned(context.WithoutCancel(ctx), r.ID)
+	return len(ids), nil
+}
+
+// StartSiteCleanup deletes a site's backups (every one, or those in.
+// selects) in all destinations or one, as a job.
+func (s *Service) StartSiteCleanup(ctx context.Context, siteID string, in BackupCleanupInput) (int64, error) {
+	if s.Backups == nil {
+		return 0, errNoBackups
+	}
+	if err := in.check(); err != nil {
+		return 0, err
+	}
+	if _, err := s.Store.GetSite(ctx, siteID); err != nil {
+		return 0, err
+	}
+	var repos []*store.BackupRepo
+	if in.RepoID != "" {
+		r, err := s.Store.GetRepo(ctx, in.RepoID)
+		if err != nil {
+			return 0, err
+		}
+		repos = []*store.BackupRepo{r}
+	} else {
+		var err error
+		if repos, err = s.Store.Repos(ctx); err != nil {
+			return 0, err
+		}
+	}
+	// The site's lock: no backup of it is half-written meanwhile.
+	return s.Jobs.Submit(ctx, s.siteJob(siteID, "backup-cleanup", true), func(ctx context.Context, t *jobs.Task) error {
+		res := &BackupCleanupResult{Freed: []string{}, Errors: map[string]string{}}
+		t.SetResult(res)
+		for i, r := range repos {
+			base := i * 95 / len(repos)
+			n, err := s.cleanRepo(ctx, r, "site="+siteID, &in, func(step string) { t.Progress(base+2, step) })
+			res.Deleted += n
+			if err != nil {
+				res.Errors[r.ID] = err.Error()
+			} else if n > 0 {
+				res.Freed = append(res.Freed, r.ID)
+			}
+		}
+		s.event(siteID, "backup", fmt.Sprintf("Deleted %d backup(s) in one go", res.Deleted))
+		if len(res.Errors) > 0 {
+			return fmt.Errorf("%d destination(s) failed: %s", len(res.Errors), firstError(res.Errors))
+		}
+		return nil
+	})
+}
+
+// StartRepoCleanup deletes every WPGenie backup in a destination (of
+// every site, deleted ones included; or the kinds in. selects), as a job.
+// The destination itself stays, ready for the next backups.
+func (s *Service) StartRepoCleanup(ctx context.Context, repoID string, in BackupCleanupInput) (int64, error) {
+	if s.Backups == nil {
+		return 0, errNoBackups
+	}
+	if err := in.check(); err != nil {
+		return 0, err
+	}
+	r, err := s.Store.GetRepo(ctx, repoID)
+	if err != nil {
+		return 0, err
+	}
+	return s.Jobs.Submit(ctx, jobs.Spec{Kind: "repo-cleanup", Heavy: true}, func(ctx context.Context, t *jobs.Task) error {
+		res := &BackupCleanupResult{Freed: []string{}}
+		t.SetResult(res)
+		n, err := s.cleanRepo(ctx, r, "wpgenie", &in, func(step string) { t.Progress(10, step) })
+		res.Deleted = n
+		if err != nil {
+			res.Errors = map[string]string{r.ID: err.Error()}
+			return err
+		}
+		if n > 0 {
+			res.Freed = append(res.Freed, r.ID)
+		}
+		return nil
+	})
+}
+
+func firstError(errs map[string]string) string {
+	keys := slices.Sorted(maps.Keys(errs))
+	return keys[0] + ": " + errs[keys[0]]
+}
+
 // ---- Restoring ----
 
 // RestoreInput selects what to restore from a backup.
@@ -751,6 +1130,9 @@ func (s *Service) StartRestore(ctx context.Context, siteID string, in RestoreInp
 		res := &RestoreResult{Backup: b.ShortID}
 		t.SetResult(res)
 		safetyRepo, err := s.siteRepo(ctx, siteID)
+		if errors.Is(err, errNoDestination) {
+			safetyRepo, err = repo, nil // next to the backup being restored
+		}
 		if err != nil {
 			return err
 		}

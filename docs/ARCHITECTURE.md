@@ -1197,8 +1197,20 @@ all of them. Destinations: a directory on this server (`local`, created on first
   (taken before a restore or a push; kept 7 days). Data of forgotten snapshots goes with a weekly `prune`
   (and `check`) per repository in the maintenance window.
 - **Schedule**: daily and longer schedules run in the maintenance window (before the night's automatic
-  updates); shorter ones by interval; a failed attempt is retried after an hour. New live sites get daily
-  local backups (7 daily, 4 weekly, 6 monthly); sites that existed before keep none until one is set.
+  updates); shorter ones by interval; a failed attempt is retried after an hour.
+- **Where backups go.** This server's own disk is never chosen for anyone: it holds backups only for sites
+  someone pointed at it. New live sites get daily backups (7 daily, 4 weekly, 6 monthly) to the
+  *preferred* destination: an S3 one if there is any (reachable before failing, then the oldest), else
+  B2, else SFTP. Without an off-server destination a new site has none, and a manual backup, a staging push
+  or a search & replace (without the person's word that they have a backup) are refused until one is
+  chosen; a restore's safety backup then goes next to the backup being restored. When a destination that
+  becomes the preferred one is added (on the panel, or arriving on a node), sites without a schedule take it
+  over; `POST /backups/repos/{id}/adopt` with `move_local` also moves the sites on a server's own disk
+  (schedule kept; their old backups stay until deleted), on every server. `GET /backups/coverage` counts
+  the sites with no destination and those only on this server.
+- **Deleting in bulk**: `POST /sites/{id}/backups/cleanup` (all of a site's backups, or one destination's,
+  or some kinds) and `POST /backups/repos/{id}/cleanup` (every backup in a destination, deleted sites'
+  included) are jobs: `forget` in batches, then `prune` right away so the space comes back.
 - **Restore** backs the site up first (*safety*), then restores files and/or the database. Files come out
   of restic as a tar stream and are written by the site user inside its container (never as root, see
   *WordPress updates*), in two phases: extracted into a temporary directory, and swapped in only after the
@@ -1752,7 +1764,7 @@ a site down for good) and a second pass copies the database again and the files 
 back) is after the first pass began, then deletes on the target what the source no longer has (a manifest of
 the source's paths): the only downtime, usually seconds to a few minutes. The site's SFTP logins are frozen
 from the maintenance page on, so nothing changes behind the last copy. The target goes live with them,
-CDN settings, own certificate, backup policy (the local repository becomes the target's own), uploads offload
+CDN settings, own certificate, backup policy (another server's own disk becomes the preferred off-server destination, or none), uploads offload
 (with its sync history: the bucket already holds what it says) and mail credentials; the registry switches.
 Anything failing before then deletes the half-imported copy and takes the source out of maintenance. If the
 panel stops following a move (it died, or the network did), each end cleans up after an hour: an import that

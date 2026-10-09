@@ -113,7 +113,7 @@ export function SiteWorkspace({ id, section }: { id: string; section?: string })
 
         <section aria-label={current.label} className="min-w-0">
           {current.key !== "overview" && (
-            <h2 className="mb-4 flex items-center gap-2.5 font-heading text-[1.375rem] font-bold tracking-[-0.02em]">
+            <h2 className="mb-4 flex items-center gap-2.5 font-heading text-lg font-semibold">
               <IconTile icon={current.icon} tint={current.tint} size="md" />
               {current.label}
             </h2>
@@ -144,7 +144,7 @@ function SiteHeader({ siteId }: { siteId: string }) {
     <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
       <SiteAvatar site={site} size="lg" />
       <div className="min-w-0 flex-1">
-        <h1 className="truncate font-heading text-[1.75rem] leading-tight font-bold tracking-[-0.022em] sm:text-[2.125rem]">{site.primary_domain}</h1>
+        <h1 className="truncate font-heading text-2xl leading-tight font-semibold">{site.primary_domain}</h1>
         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
           <span className="font-mono text-xs">{site.id}</span>
           <span>· PHP {site.php_version}</span>
