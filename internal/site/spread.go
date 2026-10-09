@@ -768,10 +768,19 @@ func (s *Service) guestFiles(ctx context.Context, id string, keepUploads bool, r
 	}
 	// The home's copy carries its managed wrappers already; this server has
 	// no record of the site to rewrite them from.
-	return s.replaceInstallAs(ctx, id, 0, keep, false, func(w io.Writer) error {
+	err := s.replaceInstallAs(ctx, id, 0, keep, false, func(w io.Writer) error {
 		_, err := io.Copy(w, r)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	// The home's Divi license wrapper came with the files; its
+	// credentials are this server's copy of the license.
+	if err := s.writeDiviCreds(ctx, id); err != nil {
+		s.Log.Warn("divi: a guest site's license", "site", id, "err", err)
+	}
+	return nil
 }
 
 // guestTrim drains and stops this site's guest replicas not in keep.
