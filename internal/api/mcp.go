@@ -168,6 +168,8 @@ var mcpTools = []mcpTool{
 			{Name: "name", Type: "string", In: "body:name", Description: "The site's title (default: the domain)."},
 			{Name: "admin_user", Type: "string", In: "body:admin_user",
 				Description: "The administrator's username (default: a generated one, never 'admin')."},
+			{Name: "divi", Type: "boolean", In: "body:divi",
+				Description: "Install and activate the Divi theme (when the host has a Divi license; default: the host's setting for new sites)."},
 		},
 		Description: "Creates a new WordPress site. Returns a job_id: follow it with get_job. The administrator's password is not returned here: it is shown once in the WPGenie panel to whoever started the job (or reset it there)."},
 	{Name: "purge_cache", Title: "Clear the cache", Idempotent: true,
@@ -234,6 +236,10 @@ var mcpTools = []mcpTool{
 			{Name: "slug", Type: "string", Required: true, In: "body:slug",
 				Description: "The theme's WordPress.org name, as in wordpress.org/themes/<slug>."}},
 		Description: "Installs a theme from WordPress.org (not activated). Returns a job_id: follow it with get_job."},
+	{Name: "install_divi", Title: "Install Divi", Idempotent: true,
+		Pattern:     "POST /api/v1/sites/{id}/divi",
+		Params:      []mcpParam{siteParam()},
+		Description: "Installs and activates the Divi theme with the host's license (or just activates it if it's installed). Returns a job_id: follow it with get_job."},
 	{Name: "activate_theme", Title: "Switch theme", Idempotent: true,
 		Pattern: "POST /api/v1/sites/{id}/tools/themes/{theme}/activate",
 		Params: []mcpParam{siteParam(),
@@ -243,7 +249,7 @@ var mcpTools = []mcpTool{
 }
 
 const mcpInstructions = `WPGenie hosts WordPress sites. Use list_sites to find a site's ID, then the site tools.
-Long operations (creating a site, backups, staging copies, theme installs) return a job_id: follow them with get_job. WordPress updates return a run_id: follow them with update_history.
+Long operations (creating a site, backups, staging copies, theme or Divi installs) return a job_id: follow them with get_job. WordPress updates return a run_id: follow them with update_history.
 Updates are safe: a snapshot is taken first and the site is rolled back automatically if it breaks.
 Passwords and sign-in links are never returned here; they are in the WPGenie panel.
 Deleting sites, restoring backups and editing files are done in the panel, not here.`
