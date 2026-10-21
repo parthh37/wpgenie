@@ -2,8 +2,13 @@
 # daemon, which proxies it on a site's own domain behind a short-lived
 # token and logs in with a temporary database account (see
 # internal/phpmyadmin). Built by the daemon the first time it is used.
-FROM phpmyadmin:5.2.3-fpm-alpine
+# Pinned by digest: the daemon rebuilds this image when these sources
+# change, and a bare tag would rebuild on the PHP it first downloaded.
+FROM phpmyadmin:5.2.3-fpm-alpine@sha256:6fda6542ee42f679a6701a3e6fc53bd9ae3bc4a67438f8b600d8bb90f46dcfa1
 USER root
+# The same PHP security floor as images/php (PHP2Shell, CVE-2026-109618/9).
+RUN php -r '$floor = ["8.2" => "8.2.35", "8.3" => "8.3.36", "8.4" => "8.4.27", "8.5" => "8.5.12"][PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION] ?? null; \
+    if ($floor === null || version_compare(PHP_VERSION, $floor, "<")) { fwrite(STDERR, "PHP " . PHP_VERSION . " is below the security floor " . ($floor ?? "(unsupported line)") . "\n"); exit(1); }'
 # phpMyAdmin is served under /_wpgenie/phpmyadmin/ (the path the daemon
 # proxies) through a symlink in the built-in server's document root, so
 # its own URLs and cookie paths are right without rewriting anything.

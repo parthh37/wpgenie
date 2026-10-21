@@ -70,6 +70,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t wpgenie/php:8.3 images/php
+      # Each build fails if its pinned base is below the line's PHP security
+      # floor (images/php/Dockerfile), so this proves every line is patched.
+      - name: the other PHP lines build at or above their security floor
+        run: for v in 8.2 8.4; do docker build -q -t "wpgenie/php:$v" --build-arg "PHP_VERSION=$v" images/php; done
+      - run: docker build -q -t wpgenie/phpmyadmin:ci images/phpmyadmin
       - name: smoke test (hardened flags)
         run: |
           # Same layout site.prepareFiles creates: dir root:82 0750, docroot

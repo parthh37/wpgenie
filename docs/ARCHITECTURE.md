@@ -1315,7 +1315,11 @@ previous certificate is put back.
 default's is built by the installer and updates, others by the daemon the first time a site switches (a
 job). The switch is a blue/green reconcile, health-checked like updates: a site working before and
 broken after (a plugin using something the new PHP removed) is switched back. After a self-update,
-images of other versions in use are rebuilt before sites are rolled. **PHP settings** (memory_limit,
+images of other versions in use, or already built, are rebuilt before sites are rolled (a failed rebuild is an
+event on each site left on the old image). Each line's base image is pinned by digest, since `docker build`
+never re-pulls a tag it has, and the build refuses a PHP below the line's security floor (the PHP2Shell
+fixes; phpMyAdmin's image and the pinned Roundcube image are held to the same floor). The site report flags
+a site whose running PHP is below it (`php-unpatched`, critical). **PHP settings** (memory_limit,
 upload size, max_execution_time, max_input_vars) reach FPM as `WPG_*` variables read by `pool.conf`
 (defaults in the image); FPM's `request_terminate_timeout` is kept 30 s above max_execution_time. They
 only enter the replica spec when set, so upgrading doesn't roll sites that don't use them.
