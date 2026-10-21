@@ -270,7 +270,7 @@ func componentLabel(kind, slug string) string {
 // managedFiles are WPGenie's own wrappers: rewritten whenever the panel's
 // settings change, so not a finding while they're WPGenie's (trustedManaged).
 var managedFiles = []string{pageCacheWrapperPath, smtpWrapperPath, imagesWrapperPath, cdnWrapperPath,
-	offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath, maintenanceWrapperPath}
+	offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath, maintenanceWrapperPath, diviWrapperPath}
 
 // trustedManaged lists (relative to wp-content) the wrappers that are
 // WPGenie's as they are on disk: regular files owned by this daemon's user

@@ -28,6 +28,7 @@ export const JOB_NAMES: Record<string, string> = {
   "search-replace": "Search & replace",
   "search-replace-preview": "Search & replace preview",
   "theme-install": "Theme install",
+  "divi-install": "Divi install",
 }
 
 export interface JobResult {

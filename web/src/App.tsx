@@ -1,11 +1,16 @@
-import { useState } from "react"
+import { lazy, Suspense, useState } from "react"
 import { AppShell, PageSpinner } from "@/app/shell"
 import { ConfirmHost } from "@/components/app/confirm"
 import { SecretHost } from "@/components/app/secret"
 import { Toaster } from "@/components/app/toaster"
 import { Button } from "@/components/ui/button"
 import { SignIn, Setup, SSO } from "@/features/auth/sign-in"
+import { useRoute } from "@/lib/router"
 import { useSession } from "@/lib/session"
+
+// An AI assistant asking for access (#/connect, from /oauth/authorize): a
+// screen of its own, after signing in.
+const Connect = lazy(() => import("@/features/connect"))
 
 // A one-time sign-in link: #sso=<token> (the fragment never reaches a
 // server or a Referer). Taken out of the address at once.
@@ -19,6 +24,7 @@ function takeSSOToken() {
 export default function App() {
   const s = useSession()
   const [sso, setSSO] = useState(takeSSOToken)
+  const route = useRoute()
 
   let screen
   if (sso) screen = <SSO token={sso} onDone={() => setSSO(null)} />
@@ -26,12 +32,18 @@ export default function App() {
   else if (!s.state) screen = <LoadFailed />
   else if (s.state.setup) screen = <Setup />
   else if (!s.me) screen = <SignIn />
+  else if (route[0] === "connect")
+    screen = (
+      <Suspense fallback={<PageSpinner />}>
+        <Connect />
+      </Suspense>
+    )
   else screen = <AppShell />
 
   return (
     <>
       {screen}
-      {!s.me && <Toaster />}
+      {(!s.me || route[0] === "connect") && <Toaster />}
       <ConfirmHost />
       <SecretHost />
     </>
