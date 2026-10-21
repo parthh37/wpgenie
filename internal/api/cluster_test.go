@@ -226,9 +226,33 @@ func TestClusterForwarding(t *testing.T) {
 		Password: "pw", Secrets: store.RepoSecrets{AccessKeyID: "AK", SecretAccessKey: "SK"}}); err != nil {
 		t.Fatal(err)
 	}
+	// The Divi license reaches the node whole (it installs Divi on its own
+	// sites); the panel's answer never carries the key.
+	var dv site.DiviView
+	if st := panel.do(t, "PUT", "/api/v1/settings/divi", `{"username":"acme","api_key":"abcdef0123456789"}`, &dv); st != 200 ||
+		!dv.Configured || !dv.NewSites || dv.KeyHint != "…6789" {
+		t.Fatalf("divi license: %d %+v", st, dv)
+	}
+	if l, _ := node.svc.Divi(ctx); l.Username != "acme" || l.APIKey != "abcdef0123456789" || !l.NewSites {
+		t.Fatalf("divi license on the node: %+v", l)
+	}
+	// Only the switch changes on the panel: the node still gets the key.
+	if st := panel.do(t, "PUT", "/api/v1/settings/divi", `{"new_sites":false}`, nil); st != 200 {
+		t.Fatalf("divi switch: %d", st)
+	}
+	if l, _ := node.svc.Divi(ctx); l.APIKey != "abcdef0123456789" || l.NewSites {
+		t.Fatalf("divi switch on the node: %+v", l)
+	}
+	// A node that lost it (or paired later) gets it when configured.
+	if _, err := node.svc.SetDivi(ctx, site.DiviInput{APIKey: new(string)}); err != nil {
+		t.Fatal(err)
+	}
 	nd, _ := panel.st.GetNode(ctx, "web-2")
 	if err := panel.api.ConfigureNode(ctx, nd); err != nil {
 		t.Fatal(err)
+	}
+	if l, _ := node.svc.Divi(ctx); l.APIKey != "abcdef0123456789" || l.Username != "acme" {
+		t.Fatalf("divi license after configuring the node: %+v", l)
 	}
 	if r, err := node.st.GetRepo(ctx, "rs3"); err != nil || r.Password != "pw" || r.Secrets.SecretAccessKey != "SK" {
 		t.Fatalf("repository on the node: %+v %v", r, err)

@@ -596,7 +596,7 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 		return err
 	}
 	for _, name := range []string{pageCacheWrapperPath, objectCacheDropIn, smtpWrapperPath, imagesWrapperPath, cdnWrapperPath,
-		offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath} {
+		offloadWrapperPath, optimizeWrapperPath, brandWrapperPath, hardeningWrapperPath, diviWrapperPath} {
 		if b, err := root.ReadFile(name); err == nil && bytes.Contains(b, []byte(managedMarker)) {
 			if err := root.Remove(name); err != nil {
 				root.Close()
@@ -618,6 +618,9 @@ func (s *Service) rewriteManagedFiles(ctx context.Context, id string) error {
 		return err
 	}
 	if err := s.writeBrandWrapper(ctx, st.ID); err != nil {
+		return err
+	}
+	if err := s.writeDiviFiles(ctx, st.ID); err != nil {
 		return err
 	}
 	assetURL, err := s.assetCDNURL(ctx, st.ID)

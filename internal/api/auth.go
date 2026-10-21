@@ -59,6 +59,9 @@ type Principal struct {
 	AccountID int64
 	// TokenID is the user's API token the request came with (0: none).
 	TokenID int64
+	// ClientID: the token was granted to an AI assistant (oauth.go). It
+	// only reaches the API through the MCP tools (mcp.go), never directly.
+	ClientID string
 }
 
 // owner is the stable identity job secrets are bound to: the user ID (a
@@ -81,14 +84,15 @@ func principalFrom(ctx context.Context) *Principal {
 }
 
 var (
-	errUnauthorized = errors.New("unauthorized")
-	errForbidden    = errors.New("forbidden: your role doesn't allow this")
-	errCSRF         = errors.New("missing " + csrfHeader + " header")
-	err2FARequired  = errors.New("two-factor authentication is required on this panel: enable it under Account first")
-	errTooMany      = errors.New("too many failed sign-in attempts; try again later")
-	errBadLogin     = errors.New("invalid username, password or code")
-	errLastAdmin    = errors.New("that would leave the panel without an active administrator")
-	errConflict     = errors.New("conflict")
+	errUnauthorized   = errors.New("unauthorized")
+	errForbidden      = errors.New("forbidden: your role doesn't allow this")
+	errCSRF           = errors.New("missing " + csrfHeader + " header")
+	err2FARequired    = errors.New("two-factor authentication is required on this panel: enable it under Account first")
+	errTooMany        = errors.New("too many failed sign-in attempts; try again later")
+	errBadLogin       = errors.New("invalid username, password or code")
+	errLastAdmin      = errors.New("that would leave the panel without an active administrator")
+	errConflict       = errors.New("conflict")
+	errAssistantToken = errors.New("forbidden: an AI assistant's token only works through its MCP tools at /mcp")
 )
 
 // authenticate resolves the API token, a user's API token or a session
@@ -203,6 +207,12 @@ func (s *Server) route(mux *http.ServeMux, pattern, role string, h handlerFunc) 
 		accountRoute := routeScope(pattern) == scopeSelf && !strings.HasPrefix(pathOf(pattern), "/api/v1/account/tokens")
 		if (p.SessionID != "" || p.TokenID != 0) && !p.TOTP && !accountRoute && s.require2FA(r.Context()) {
 			deny(err2FARequired, "code", "totp_required")
+			return
+		}
+		// An assistant's token works only for the route of the MCP tool
+		// being called: what the person approved, not the whole API.
+		if p.ClientID != "" && mcpToolPattern(r.Context()) != pattern {
+			deny(errAssistantToken)
 			return
 		}
 		if auth.IsTenant(p.Role) {

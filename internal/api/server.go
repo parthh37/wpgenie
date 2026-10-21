@@ -90,6 +90,10 @@ type Server struct {
 	routes []routeInfo
 	// measured: account ID -> last on-demand disk measurement.
 	measured sync.Map
+	// mux is the route table, for MCP tools calling routes in-process
+	// (mcp.go); oauth is the AI assistants' authorization codes (oauth.go).
+	mux   *http.ServeMux
+	oauth oauthState
 }
 
 // routeInfo is one authenticated route: its pattern and the staff role it
@@ -108,6 +112,7 @@ const (
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.mux = mux
 
 	// Shield endpoints: reached only through Caddy (loopback listener).
 	mux.Handle("GET /_shield/check", s.Shield.CheckHandler()) // forward_auth always uses GET
@@ -159,6 +164,9 @@ func (s *Server) Handler() http.Handler {
 	s.logshipRoutes(mux, r)
 	s.sharingRoutes(r)
 	s.edgeRoutes(r)
+	// AI assistants: the MCP server and the OAuth that connects them.
+	s.oauthRoutes(mux, r)
+	s.mcpRoutes(mux)
 
 	// Your own account: any role, and reachable before enrolling in 2FA
 	// when the panel requires it.
@@ -232,6 +240,7 @@ func (s *Server) Handler() http.Handler {
 	r("GET /api/v1/settings/branding", viewer, s.branding)
 	r("PUT /api/v1/settings/branding", admin, s.setBranding)
 	r("GET /api/v1/settings/branding/logo", viewer, s.brandLogo)
+	s.diviRoutes(r)
 
 	r("GET /api/v1/jobs", viewer, s.listJobs)
 	r("GET /api/v1/jobs/{id}", viewer, s.getJob)

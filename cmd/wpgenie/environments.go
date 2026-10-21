@@ -110,16 +110,21 @@ func truncate(s string, n int) string {
 func createSiteCmd(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("site create", flag.ContinueOnError)
 	node := fs.String("node", "", "server to create it on (default: the one with the most room; \"local\": the panel's)")
-	if err := fs.Parse(reorderFlags(args)); err != nil {
+	noDivi := fs.Bool("no-divi", false, "don't install Divi, even with a Divi license set for new sites")
+	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("usage: wpgenie site create <domain> <admin-email> [--node ID]")
+		return errors.New("usage: wpgenie site create <domain> <admin-email> [--node ID] [--no-divi]")
+	}
+	in := site.CreateInput{Domain: fs.Arg(0), AdminEmail: fs.Arg(1)}
+	if *noDivi {
+		in.Divi = new(bool)
 	}
 	v, out, err := startJob(cfg, "POST", "/sites", struct {
 		site.CreateInput
 		Node string `json:"node,omitempty"`
-	}{site.CreateInput{Domain: fs.Arg(0), AdminEmail: fs.Arg(1)}, *node})
+	}{in, *node})
 	if err != nil {
 		return err
 	}
@@ -133,12 +138,13 @@ func createSiteCmd(cfg *config.Config, args []string) error {
 
 // reorderFlags moves flags ahead of positional arguments, so they may come
 // last ("site create a.com me@a.com --node web-2") as the usage shows.
-func reorderFlags(args []string) []string {
+// Boolean flags (--no-divi) take no value.
+func reorderFlags(fs *flag.FlagSet, args []string) []string {
 	var flags, rest []string
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
 			flags = append(flags, args[i])
-			if !strings.Contains(args[i], "=") && i+1 < len(args) {
+			if !strings.Contains(args[i], "=") && i+1 < len(args) && !isBoolFlag(fs, args[i]) {
 				flags = append(flags, args[i+1])
 				i++
 			}
@@ -147,6 +153,15 @@ func reorderFlags(args []string) []string {
 		rest = append(rest, args[i])
 	}
 	return append(flags, rest...)
+}
+
+func isBoolFlag(fs *flag.FlagSet, arg string) bool {
+	f := fs.Lookup(strings.TrimLeft(arg, "-"))
+	if f == nil {
+		return false
+	}
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
 }
 
 // ---- Backups ----

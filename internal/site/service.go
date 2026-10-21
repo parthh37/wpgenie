@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -163,6 +164,12 @@ type Service struct {
 	cdn       cdnState
 	offload   offloadState
 	brand     brandState
+	divi      diviState
+	// DiviAPI is Elegant Themes' download endpoint ("": DefaultDiviAPI)
+	// and DiviClient the client for it (nil: a default one); tests
+	// replace both.
+	DiviAPI    string
+	DiviClient *http.Client
 	// builds: PHP version -> *sync.Mutex, so one image builds at a time.
 	builds sync.Map
 	// repoMu serialises repository maintenance (prune, check) per repo.
@@ -184,6 +191,9 @@ type CreateInput struct {
 	Name       string `json:"name"`
 	AdminEmail string `json:"admin_email"`
 	AdminUser  string `json:"admin_user"`
+	// Divi installs and activates the Divi theme with the host's license
+	// (see divi.go); absent: the license's default for new sites.
+	Divi *bool `json:"divi,omitempty"`
 }
 
 type Credentials struct {
@@ -427,6 +437,10 @@ func (s *Service) install(ctx context.Context, b *siteBuild, in CreateInput, rep
 		"--admin_user="+in.AdminUser, "--admin_email="+in.AdminEmail,
 		"--prompt=admin_password", "--skip-email"); err != nil {
 		return nil, err
+	}
+	// Never a reason to fail the site (see installDiviOnNew).
+	if s.wantDivi(ctx, in.Divi) {
+		s.installDiviOnNew(ctx, st.ID, report)
 	}
 	if err := b.finish(ctx, report); err != nil {
 		return nil, err
