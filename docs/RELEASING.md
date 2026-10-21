@@ -36,6 +36,23 @@ Drafting the release in the GitHub UI instead (with a new tag) works too: the wo
 the signed artifacts to the existing release. Until that run finishes, the release has no assets
 and servers that check for updates will fail to download it, so prefer pushing the tag.
 
+## PHP security releases
+
+Servers never pull a newer PHP on their own: every PHP runtime is pinned by digest (the multi-arch
+index), so a PHP fix reaches them only through a WPGenie release. When PHP ships security fixes:
+
+1. Wait for the official images to carry them, then pull each and read the digest and version:
+   `docker pull wordpress:php8.3-fpm-alpine && docker image inspect --format '{{index .RepoDigests 0}}' wordpress:php8.3-fpm-alpine`
+   and `docker run --rm --entrypoint php <image@digest> -r 'echo PHP_VERSION;'` (check `--platform linux/amd64` too).
+2. Update the digests of the `base-<line>` stages in `images/php/Dockerfile`, of `images/phpmyadmin/Dockerfile`
+   and of `WebmailImage` in `internal/config/config.go` (Roundcube).
+3. Raise the floors: the table in both Dockerfiles and `phpSecurityFloor` in `internal/site/php.go`
+   (`TestImagesEnforceTheSecurityFloor` fails if they disagree, or if a PHP version has no pinned base).
+4. Release. The self-update rebuilds the default line's image (the previous version's applier runs a plain
+   `docker build`, which the digest pin is enough for), the new daemon rebuilds the other lines' images and
+   rolls every site onto them, and phpMyAdmin and webmail are recreated from their new images. Nodes update
+   from *Servers*.
+
 ## Releases that change the host
 
 Self-update swaps the binary, `/opt/wpgenie` and the systemd unit, rebuilds the PHP image and runs

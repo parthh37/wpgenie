@@ -382,6 +382,15 @@ func analyse(st *store.Site, f *SiteFacts, scan *ScanReport, plugins *PluginRepo
 
 	// --- Inside WordPress.
 	if f != nil {
+		if fixed, bad := phpUnpatched(f.PHPVersion); bad {
+			detail := "PHP2Shell (CVE-2026-109618, CVE-2026-109619) lets anyone run code on the server and read other requests' passwords, cookies and keys. "
+			if fixed != "" {
+				detail += "Fixed in PHP " + fixed + ": updating WPGenie (System) rebuilds the PHP images and moves every site onto them; update each server under Servers too."
+			} else {
+				detail += "This PHP line gets no more fixes: switch the site to a supported version."
+			}
+			add("php-unpatched", SevCritical, CatSecurity, "PHP "+f.PHPVersion+" can be taken over remotely", detail, "")
+		}
 		if f.UsersCanRegister && f.DefaultRole == "administrator" {
 			add("register-admin", SevCritical, CatSecurity, "Anyone can register as an administrator",
 				"Registration is open and new users get the administrator role.", FixDefaultRole)

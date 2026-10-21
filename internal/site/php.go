@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/parthh37/wpgenie/internal/jobs"
@@ -187,20 +188,85 @@ func (s *Service) applyPHP(ctx context.Context, id string, in, prev PHPInput) er
 }
 
 // buildImagesInUse rebuilds the images of the non-default PHP versions
-// sites use (after WPGenie updated itself, so they get the new image too).
+// (after WPGenie updated itself, so they get the new sources too): the ones
+// sites use, and the ones already built, which ensurePHPImage would hand a
+// site switching later as they are. A failed rebuild leaves its sites on the
+// previous image; each of them says so.
 func (s *Service) buildImagesInUse(ctx context.Context, sites []*store.Site) {
 	if s.Images == nil {
 		return
 	}
-	done := map[string]bool{s.Cfg.DefaultPHPVersion(): true}
+	users := map[string][]string{}
+	versions := slices.Clone(s.Cfg.PHPVersions)
 	for _, st := range sites {
-		if done[st.PHPVersion] || st.Status != store.StatusActive {
+		if st.Status != store.StatusActive || st.PHPVersion == "" {
 			continue
 		}
-		done[st.PHPVersion] = true
-		image := s.Cfg.PHPImageFor(st.PHPVersion)
-		if err := s.Images.Build(ctx, image, filepath.Join(s.Cfg.ImagesDir, "php"), "PHP_VERSION="+st.PHPVersion); err != nil {
-			s.Log.Error("rebuilding a PHP image", "version", st.PHPVersion, "err", err)
+		if !slices.Contains(versions, st.PHPVersion) { // dropped from the config, still in use
+			versions = append(versions, st.PHPVersion)
+		}
+		users[st.PHPVersion] = append(users[st.PHPVersion], st.ID)
+	}
+	for _, v := range versions {
+		image := s.Cfg.PHPImageFor(v)
+		if v == s.Cfg.DefaultPHPVersion() || (len(users[v]) == 0 && !s.Images.ImageExists(ctx, image)) {
+			continue
+		}
+		if err := s.Images.Build(ctx, image, filepath.Join(s.Cfg.ImagesDir, "php"), "PHP_VERSION="+v); err != nil {
+			s.Log.Error("rebuilding a PHP image", "version", v, "err", err)
+			for _, id := range users[v] {
+				s.event(id, "update", "Rebuilding the PHP "+v+" image failed, so the site stays on the previous one: "+err.Error())
+			}
 		}
 	}
+}
+
+// phpSecurityFloor is each PHP line's first release with PHP2Shell fixed
+// (CVE-2026-109618, CVE-2026-109619: unauthenticated remote code execution
+// and cross-request memory disclosure, in every PHP since 5.4). Lines older
+// than these are out of support and never got the fix. images/php and
+// images/phpmyadmin refuse to build below the same floors.
+var phpSecurityFloor = map[string]string{"8.2": "8.2.35", "8.3": "8.3.36", "8.4": "8.4.27", "8.5": "8.5.12"}
+
+// phpUnpatched reports whether a PHP version (PHP_VERSION, e.g. "8.3.30") is
+// below its line's security floor, and the release that fixes it ("" for a
+// line too old to get one). Lines newer than the table came out after the
+// fix; a version that doesn't parse isn't judged.
+func phpUnpatched(v string) (fixedIn string, unpatched bool) {
+	n, ok := phpVersionParts(v)
+	if !ok {
+		return "", false
+	}
+	if floor, ok := phpSecurityFloor[fmt.Sprintf("%d.%d", n[0], n[1])]; ok {
+		f, _ := phpVersionParts(floor)
+		return floor, n[2] < f[2]
+	}
+	for line := range phpSecurityFloor {
+		l, _ := phpVersionParts(line + ".0")
+		if n[0] < l[0] || (n[0] == l[0] && n[1] < l[1]) {
+			return "", true // older than a fixed line and not one itself: out of support
+		}
+	}
+	return "", false // newer than every fixed line
+}
+
+// phpVersionParts parses major.minor.patch, ignoring a suffix ("8.5.0RC1",
+// "8.3.36-dev").
+func phpVersionParts(v string) ([3]int, bool) {
+	var n [3]int
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) != 3 {
+		return n, false
+	}
+	for i, p := range parts {
+		if end := strings.IndexFunc(p, func(r rune) bool { return r < '0' || r > '9' }); end >= 0 {
+			p = p[:end]
+		}
+		x, err := strconv.Atoi(p)
+		if err != nil {
+			return n, false
+		}
+		n[i] = x
+	}
+	return n, true
 }

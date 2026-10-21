@@ -4,7 +4,21 @@
 # (8.2, 8.3, 8.4: tagged wpgenie/php:<version>; the daemon builds the ones
 # other than the default when a site first switches to them).
 ARG PHP_VERSION=8.3
-FROM wordpress:php${PHP_VERSION}-fpm-alpine
+# Each line's base is pinned by digest (the multi-arch index): docker build
+# never re-pulls a tag it already has, so with a bare tag a server keeps
+# rebuilding on whatever PHP it first downloaded. Only the selected stage is
+# pulled. Bump these with PHP's security releases (docs/RELEASING.md).
+FROM wordpress:php8.2-fpm-alpine@sha256:aafcecb7a4554c4dd5ad170e96e9dbc01c134534866701f52a3796a16364130e AS base-8.2
+FROM wordpress:php8.3-fpm-alpine@sha256:d0d4f306d3bc343f5429356e085d0bde8fbd048ebac33f41a26d2ed6edc5df95 AS base-8.3
+FROM wordpress:php8.4-fpm-alpine@sha256:e6c1d1f10b3eefcf3d67cc83249ec906fbb6a30e396567e5da19db36f70771df AS base-8.4
+FROM base-${PHP_VERSION}
+
+# Never ship a PHP older than its line's latest security fix: PHP2Shell
+# (CVE-2026-109618, CVE-2026-109619) is unauthenticated remote code
+# execution in every release before these. Same floors as
+# internal/site/php.go (phpSecurityFloor); a line not listed fails too.
+RUN php -r '$floor = ["8.2" => "8.2.35", "8.3" => "8.3.36", "8.4" => "8.4.27", "8.5" => "8.5.12"][PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION] ?? null; \
+    if ($floor === null || version_compare(PHP_VERSION, $floor, "<")) { fwrite(STDERR, "PHP " . PHP_VERSION . " is below the security floor " . ($floor ?? "(unsupported line)") . "\n"); exit(1); }'
 
 ARG WP_CLI_VERSION=2.12.0
 ARG WP_CLI_SHA256=ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c

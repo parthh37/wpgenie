@@ -148,7 +148,7 @@ func Default() *Config {
 		MaintenanceHour:  3,
 		UpdateRepo:       "parthh37/wpgenie",
 		MailImage:        "ghcr.io/docker-mailserver/docker-mailserver:16",
-		WebmailImage:     "roundcube/roundcubemail:1.7.x-apache",
+		WebmailImage:     "roundcube/roundcubemail:1.7.x-apache@sha256:734d9162c5225f4dcd744948ef915373afae6cece69bc1768b544615123ddc05", // pinned: a cached tag is never re-pulled; PHP 8.4.27
 		WebmailPort:      8089,
 		CaddyDataDir:     "/var/lib/wpgenie/caddy",
 		MariaDBHost:      "wpgenie-mariadb",
